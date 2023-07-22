@@ -11,7 +11,8 @@ class ThreadAdmin(admin.ModelAdmin):
         "is_active",
         "id",
         "text",
-        "create_at"
+        "create_at",
+        "update_at"
     )
     
     search_fields = ("text", "id")
