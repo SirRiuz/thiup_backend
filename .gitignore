@@ -7,3 +7,5 @@ __pycache__/
 */__pycache__/
 **/migrations/*
 !**/migrations/__init__.py
+**/migrations/*
+!**/migrations/__init__.py
