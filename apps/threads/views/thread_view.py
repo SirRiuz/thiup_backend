@@ -61,8 +61,7 @@ class ThreadsViewSet(GenericViewSet):
             sub_tread = get_object_or_404(
                 Thread.objects.filter(id=sub_tread)).id
         
-        serializer = self.get_serializer(
-            data=({"text": text, "sub": sub_tread}))
+        serializer = self.get_serializer(data=request.data)
         
         serializer.is_valid(raise_exception=True)
         serializer.save()
