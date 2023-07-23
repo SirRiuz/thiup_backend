@@ -18,13 +18,16 @@ from apps.threads.methods.files import save_files
 class ThreadSerializer(serializers.ModelSerializer):
     
     media = serializers.ListField(
-        required=False, child=MediaFileSerializer())
+        required=False, child=MediaFileSerializer(
+            required=False))
     
     def create(self, validated_data):
         data = validated_data.copy()
-        data.pop("media")
+        if "media" in data:
+            del data["media"]
+            
         obj = super().create(data)
-        media_data = validated_data["media"]
+        media_data = validated_data.get("media", [])
         save_files(files=media_data, thread=obj)
         return obj
     
