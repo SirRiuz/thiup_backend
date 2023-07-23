@@ -9,14 +9,19 @@ from apps.threads.models.media import ThreadFile
 @admin.register(Thread)
 class ThreadAdmin(admin.ModelAdmin):
     list_display = (
-        "is_active",
         "id",
+        "is_active",
         "text",
+        "attach_files",
         "create_at",
         "update_at")
     
     search_fields = ("text", "id")
-
+    
+    def attach_files(self, instance):
+        return ThreadFile.objects.filter(
+            is_active=True,
+            thread=instance).count()
 
 @admin.register(ThreadFile)
 class ThreadFileAdmin(admin.ModelAdmin):

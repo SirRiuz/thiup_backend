@@ -20,6 +20,13 @@ class ThreadsViewSet(GenericViewSet):
         
         if self.action == 'retrieve':
             thread_id = self.kwargs.get("pk")
+            short_id_size = 5
+            
+            if len(thread_id) == short_id_size:
+                return Thread.objects.filter(
+                is_active=True,
+                id__startswith=thread_id)
+            
             return Thread.objects.filter(
                 is_active=True,
                 id=thread_id)
