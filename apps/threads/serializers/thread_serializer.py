@@ -1,5 +1,9 @@
+# Python
+import datetime
+
 # Django
 from rest_framework import serializers
+from django.utils import timezone
 
 # Models
 from apps.threads.models.thread import Thread
@@ -33,11 +37,14 @@ class ThreadSerializer(serializers.ModelSerializer):
     
     def to_representation(self, instance):
         representation = super().to_representation(instance)
+        now_date = timezone.now()
         subs = Thread.objects.filter(is_active=True, sub=instance)
         media = ThreadFile.objects.filter(
             is_active=True, thread=instance)
         
         representation["responses_count"] = subs.count()
+        representation["is_expired"] = (now_date > instance.expire_date if \
+            instance.expire_date else None)
         representation["media"] = ThreadMediaSerializer(
             media, many=True).data
         

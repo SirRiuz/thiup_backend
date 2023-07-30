@@ -11,6 +11,7 @@ class ThreadAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "is_active",
+        "is_expired",
         "text",
         "attach_files",
         "create_at",
@@ -22,6 +23,9 @@ class ThreadAdmin(admin.ModelAdmin):
         return ThreadFile.objects.filter(
             is_active=True,
             thread=instance).count()
+        
+    def is_expired(self, instance):
+        pass
 
 @admin.register(ThreadFile)
 class ThreadFileAdmin(admin.ModelAdmin):

@@ -1,4 +1,6 @@
 # Django
+from django.utils import timezone
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.response import Response
@@ -8,15 +10,18 @@ from rest_framework.status import *
 from apps.threads.models.thread import Thread
 
 # Serailizers
-from apps.threads.serializers.thread_serializer import ThreadSerializer
+from apps.threads.serializers.thread_serializer import \
+    ThreadSerializer
 
 
 class ThreadsViewSet(GenericViewSet):
 
-    queryset = Thread.objects.filter(is_active=True)
+    queryset = Thread.objects.filter(
+        is_active=True, visibility=True)
     
     def get_queryset(self):
         queryset = super().get_queryset()
+        now_date = timezone.localtime(timezone.now())
         
         if self.action == 'retrieve':
             thread_id = self.kwargs.get("pk")
@@ -24,10 +29,14 @@ class ThreadsViewSet(GenericViewSet):
             
             if len(thread_id) == short_id_size:
                 return Thread.objects.filter(
-                is_active=True,
-                id__startswith=thread_id)
+                    Q(expire_date__gte=now_date) \
+                        | Q(expire_date__isnull=True),
+                    is_active=True,
+                    id__startswith=thread_id)
             
             return Thread.objects.filter(
+                Q(expire_date__gte=now_date) \
+                    | Q(expire_date__isnull=True),
                 is_active=True,
                 id=thread_id)
         
@@ -35,11 +44,17 @@ class ThreadsViewSet(GenericViewSet):
             query = self.request.GET.get("q")
             if query:
                 return Thread.objects.filter(
+                    Q(expire_date__gte=now_date) \
+                        | Q(expire_date__isnull=True),
+                    visibility=True,
                     is_active=True,
-                    text__icontains=query,
-                    sub__isnull=True)
-                
+                    sub__isnull=True,
+                    text__icontains=query)
+            
             return Thread.objects.filter(
+                Q(expire_date__gte=now_date) \
+                    | Q(expire_date__isnull=True),
+                visibility=True,
                 is_active=True,
                 sub__isnull=True)
         
