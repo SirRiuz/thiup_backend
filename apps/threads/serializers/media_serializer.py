@@ -12,7 +12,6 @@ class MediaFileSerializer(serializers.Serializer):
     type = serializers.CharField()
     data = serializers.CharField()
 
-
 class ThreadMediaSerializer(serializers.ModelSerializer):
     
     def to_representation(self, instance):
