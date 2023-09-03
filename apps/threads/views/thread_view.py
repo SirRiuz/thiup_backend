@@ -1,9 +1,13 @@
+import time
+
 # Django
 from django.utils import timezone
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
+from rest_framework.decorators import action
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.response import Response
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.status import *
 
 # Models
@@ -12,10 +16,15 @@ from apps.threads.models.thread import Thread
 # Serailizers
 from apps.threads.serializers.thread_serializer import \
     ThreadSerializer
+    
+# Libs
+from apps.threads.pagination.thread_pagination import \
+    CustomThreadPagination
 
 
 class ThreadsViewSet(GenericViewSet):
-
+    pagination_class = CustomThreadPagination
+    serializer_class = ThreadSerializer
     queryset = Thread.objects.filter(
         is_active=True, visibility=True)
     
@@ -23,7 +32,7 @@ class ThreadsViewSet(GenericViewSet):
         queryset = super().get_queryset()
         now_date = timezone.localtime(timezone.now())
         
-        if self.action == 'retrieve':
+        if self.action == 'retrieve' or self.action == 'responses':
             thread_id = self.kwargs.get("pk")
             short_id_size = 5
             
@@ -59,17 +68,16 @@ class ThreadsViewSet(GenericViewSet):
                 sub__isnull=True)
         
         return queryset
-
-    def get_serializer_class(self):
-        return ThreadSerializer
-
+    
     def list(self, request):
+        pages = self.paginate_queryset(self.get_queryset())
         serializer = self.get_serializer(
-            self.get_queryset(),
-            many=True, context=(
-                {"short": True}))
+            pages,
+            many=True,
+            context=({"short": True}))
         
-        return Response(serializer.data, status=HTTP_200_OK)
+        return self.get_paginated_response(({
+            "data": serializer.data}))
 
     def retrieve(self, request, pk):
         thread = get_object_or_404(self.get_queryset())
@@ -87,4 +95,18 @@ class ThreadsViewSet(GenericViewSet):
         
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response("Create a new thread", status=HTTP_200_OK)
+        return Response(serializer.data, status=HTTP_200_OK)
+
+    @action(detail=True, methods=['GET'])
+    def responses(self, request, pk):
+        thread = get_object_or_404(self.get_queryset())
+        head_serializer = self.get_serializer(thread, many=False)
+        responses = Thread.objects.filter(is_active=True, sub=thread)
+        pages = self.paginate_queryset(responses)
+        serializer = self.get_serializer(pages, many=True)
+        return self.get_paginated_response(({
+            "data": serializer.data,
+            "context": ({
+                "head": head_serializer.data
+            })
+        }))

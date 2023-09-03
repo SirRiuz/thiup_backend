@@ -53,9 +53,8 @@ class ThreadSerializer(serializers.ModelSerializer):
                 annotate(reaction_count=Count(
                     'reactionrelation')).\
                         order_by('-reaction_count', 'id')
-        
+
         representation["parent"] = head_id
-        #representation["continue_secuence"] = head_id == self.context.get("head")
         representation["responses_count"] = subs.count()
         representation["short_id"] = str(instance.id)[0:5]
         representation["is_expired"] = (now_date > instance.expire_date if \
