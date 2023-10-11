@@ -18,6 +18,7 @@ from apps.threads.serializers.thread_serializer import \
     ThreadSerializer
     
 # Libs
+from apps.default.methods.user import get_user
 from apps.threads.pagination.thread_pagination import \
     CustomThreadPagination
 
@@ -71,10 +72,13 @@ class ThreadsViewSet(GenericViewSet):
     
     def list(self, request):
         pages = self.paginate_queryset(self.get_queryset())
+        user = get_user(request)
         serializer = self.get_serializer(
             pages,
             many=True,
-            context=({"short": True}))
+            context=({
+                "user": user,
+                "short": True}))
         
         return self.get_paginated_response(({
             "data": serializer.data}))
@@ -99,11 +103,14 @@ class ThreadsViewSet(GenericViewSet):
 
     @action(detail=True, methods=['GET'])
     def responses(self, request, pk):
+        user = get_user(request)
         thread = get_object_or_404(self.get_queryset())
         head_serializer = self.get_serializer(thread, many=False)
         responses = Thread.objects.filter(is_active=True, sub=thread)
         pages = self.paginate_queryset(responses)
-        serializer = self.get_serializer(pages, many=True)
+        serializer = self.get_serializer(pages, many=True, context=({
+            "user": user}))
+            
         return self.get_paginated_response(({
             "data": serializer.data,
             "context": ({
