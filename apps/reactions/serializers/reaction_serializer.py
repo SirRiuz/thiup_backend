@@ -8,6 +8,26 @@ from apps.reactions.models.reaction import Reaction
 from apps.threads.models.thread import Thread
 
 
+class BaseReactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Reaction
+        fields = (
+            "id",
+            "name",
+            "icon")
+
+
+class ReactionCountSerializer(serializers.ModelSerializer):
+    reaction_count = serializers.IntegerField(required=False)
+    class Meta:
+        model = Reaction
+        fields = (
+            "id",
+            "name",
+            "icon",
+            "reaction_count")
+
+
 class ReactionSerializer(serializers.ModelSerializer):
     
     def to_representation(self, instance):
@@ -28,6 +48,7 @@ class ReactionSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "icon")
+
         
 class ReactionShortSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
@@ -54,6 +75,7 @@ class ReactionShortSerializer(serializers.ModelSerializer):
             "thread",
             "reaction")
 
+
 class ReactionRelationSerializer(serializers.Serializer):
     reaction = serializers.PrimaryKeyRelatedField(
         required=False,
@@ -68,11 +90,13 @@ class ReactionRelationSerializer(serializers.Serializer):
             id=validated_data["thread"])
 
         hash_last_reaction = ReactionRelation.objects.filter(
-            thread=thread,
-            user=validated_data["user"])
+            thread=thread, user=validated_data["user"]).first()
         
-        if hash_last_reaction.exists():
+        if hash_last_reaction:
+            last_reaction = hash_last_reaction.reaction
             hash_last_reaction.delete()
+            if (last_reaction == reaction):
+                return
             
         return ReactionRelation.objects.create(
             reaction=reaction,
@@ -86,4 +110,3 @@ class ReactionRelationSerializer(serializers.Serializer):
     class Meta:
         model = ReactionRelation
         exclude = ("is_active", "user")
-

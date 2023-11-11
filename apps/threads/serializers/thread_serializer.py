@@ -52,7 +52,13 @@ class ThreadSerializer(serializers.ModelSerializer):
             reactionrelation__thread=instance).\
                 annotate(reaction_count=Count(
                     'reactionrelation')).\
-                        order_by('-reaction_count', 'id')
+                        order_by(
+                            '-reaction_count')
+                       
+        last_reaction = ReactionRelation.objects.filter(
+            thread=instance,
+            is_active=True,
+            user=self.context.get("user"))
 
         representation["parent"] = head_id
         representation["responses_count"] = subs.count()
@@ -62,7 +68,8 @@ class ThreadSerializer(serializers.ModelSerializer):
         representation["media"] = ThreadMediaSerializer(
             media, many=True).data
 
-
+        representation["last_reaction"] = last_reaction[0].reaction.id if \
+            last_reaction.exists() else None
         representation["reactions"] = ReactionSerializer(
             thread_reactions,
             many=True,
@@ -73,10 +80,11 @@ class ThreadSerializer(serializers.ModelSerializer):
                 subs,
                 many=True,
                 context=({
-                    "head": instance.id})).data
+                    "user": self.context.get("user"),
+                    "short": True})).data
 
         representation.pop("sub")
-        representation.pop("create_at")
+        #representation.pop("create_at")
         representation.pop("update_at")
         return representation
 

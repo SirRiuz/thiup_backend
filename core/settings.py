@@ -25,11 +25,12 @@ SECRET_KEY = "django-insecure-2)@8ymo$2*x1_bh7w1qs#jv3y*nut!o4vb8ka0l&(@7xqgnp4d
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["*"]
 
 CORS_ORIGIN_ALLOW_ALL = False
 CORS_ORIGIN_WHITELIST = (
   'http://localhost:3000',
+  'https://green-crabs-decide.loca.lt'
 )
 
 
