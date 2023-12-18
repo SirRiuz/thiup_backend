@@ -21,22 +21,31 @@ from apps.threads.serializers.media_serializer import (
 )
 
 # Libs
+import humanize
 from apps.threads.methods.files import save_files
+from apps.masks.models.mask_model import Mask
+from apps.tags.methods.tags import create_tags, get_tags_list
+from apps.masks.serializers.mask_serializer import MaskSerializer
 
 
 class ThreadSerializer(serializers.ModelSerializer):
-    
+                
+    content = serializers.JSONField(required=True)
     media = serializers.ListField(
         required=False, child=MediaFileSerializer(
             required=False))
-    
+
     def create(self, validated_data):
         data = validated_data.copy()
         if "media" in data:
             del data["media"]
-            
-        obj = super().create(data)
+ 
+        mask = self.context["mask"]
+        obj = super().create({"mask": mask, **data})
         media_data = validated_data.get("media", [])
+        tags = get_tags_list(data["text"])
+
+        create_tags(obj, tags)
         save_files(files=media_data, thread=obj)
         return obj
     
@@ -54,11 +63,12 @@ class ThreadSerializer(serializers.ModelSerializer):
                     'reactionrelation')).\
                         order_by(
                             '-reaction_count')
-                       
+        
         last_reaction = ReactionRelation.objects.filter(
             thread=instance,
-            is_active=True,
-            user=self.context.get("user"))
+            is_active=True, 
+            mask=self.context["mask"]
+        )
 
         representation["parent"] = head_id
         representation["responses_count"] = subs.count()
@@ -68,26 +78,31 @@ class ThreadSerializer(serializers.ModelSerializer):
         representation["media"] = ThreadMediaSerializer(
             media, many=True).data
 
-        representation["last_reaction"] = last_reaction[0].reaction.id if \
-            last_reaction.exists() else None
-        representation["reactions"] = ReactionSerializer(
-            thread_reactions,
-            many=True,
-            context=({"thread": instance})).data
-        
-        if not self.context.get("short"):
+        if self.context.get("show_responses"):
             representation["responses"] = ThreadSerializer(
                 subs,
                 many=True,
                 context=({
-                    "user": self.context.get("user"),
+                    "mask": self.context["mask"],
                     "short": True})).data
 
-        representation.pop("sub")
-        #representation.pop("create_at")
-        representation.pop("update_at")
+        representation["last_reaction"] = last_reaction[0].reaction.id if \
+            last_reaction.exists() else None
+        
+        representation["reactions"] = ReactionSerializer(
+                thread_reactions, many=True, context=({
+                    "thread": instance})).data
+        
+        mask_data = MaskSerializer(instance.mask, many=False).data if \
+            instance.mask else None
+            
+        representation["mask"] = mask_data
+        representation["is_new"] = instance.is_new()
+        representation["create_at"] = humanize.naturaldelta(
+            timezone.now() - instance.create_at)
+
         return representation
 
     class Meta:
         model = Thread
-        exclude = ('is_active',)
+        exclude = ("is_active", "update_at")

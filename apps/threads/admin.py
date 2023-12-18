@@ -11,13 +11,15 @@ class ThreadAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "is_active",
+        "mask",
         "is_expired",
         "text",
         "attach_files",
+        "sub",
         "create_at",
         "update_at")
     
-    search_fields = ("text", "id")
+    search_fields = ("text", "id", "sub__id", "mask__hash")
     
     def attach_files(self, instance):
         return ThreadFile.objects.filter(
