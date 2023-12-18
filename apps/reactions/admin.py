@@ -27,7 +27,7 @@ class ReactionRelationsAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "is_active",
-        "user",
+        #"user",
         "thread",
         "reaction_prev",
         "create_at",

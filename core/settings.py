@@ -26,13 +26,8 @@ SECRET_KEY = "django-insecure-2)@8ymo$2*x1_bh7w1qs#jv3y*nut!o4vb8ka0l&(@7xqgnp4d
 DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
-
 CORS_ORIGIN_ALLOW_ALL = False
-CORS_ORIGIN_WHITELIST = (
-  'http://localhost:3000',
-  'https://green-crabs-decide.loca.lt'
-)
-
+CORS_ORIGIN_WHITELIST = ("http://localhost:3000",)
 
 # Application definition
 
@@ -40,7 +35,15 @@ PROJECT_APPS = [
     "apps.threads",
     "apps.default",
     "apps.reactions",
-    "corsheaders"
+    "apps.tags",
+    "apps.masks",
+    "apps.security",
+]
+
+EXTERNAL_APPS = [
+    "corsheaders",
+    "drf_yasg",
+    "rest_framework_swagger"
 ]
 
 DJANGO_APPS = [
@@ -53,7 +56,7 @@ DJANGO_APPS = [
     "rest_framework"
 ]
 
-INSTALLED_APPS = DJANGO_APPS + PROJECT_APPS
+INSTALLED_APPS = DJANGO_APPS + EXTERNAL_APPS + PROJECT_APPS
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -65,6 +68,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "apps.masks.middlewares.mask.MaskMiddleware"
 ]
 
 
@@ -73,7 +77,9 @@ ROOT_URLCONF = "core.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [
+            "templates"
+        ],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -100,8 +106,14 @@ DATABASES = {
 }
 
 REST_FRAMEWORK = {
+    'PAGE_SIZE': 15,
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 15
+    'DEFAULT_THROTTLE_CLASSES': (
+        'apps.security.throttling.CustomAnonRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/day'
+    }
 }
 
 # Password validation
@@ -127,7 +139,6 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/4.1/topics/i18n/
 
 LANGUAGE_CODE = "en-us"
-
 TIME_ZONE = "America/Bogota"
 
 USE_I18N = True
@@ -138,6 +149,8 @@ USE_TZ = True
 # Media
 MEDIA_ROOT = "media"
 MEDIA_URL = "/media/"
+
+GEOLITE_DIR = "geolite2-country.mmdb"
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.1/howto/static-files/

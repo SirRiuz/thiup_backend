@@ -17,7 +17,7 @@ def save_files(files, thread):
         file_name = uuid.uuid4().__hash__().__str__()
         file_name = f"{file_name}{extension}"
         file_bytes = ContentFile(f_bytes, name=file_name)
-        
+
         if extension:
             ThreadFile.objects.create(
                 file=file_bytes, thread=thread)
