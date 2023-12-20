@@ -143,7 +143,6 @@ class ThreadsViewSet(GenericViewSet):
                 "mask": request.mask,
                 "short": True}))
                 
-        time.sleep(6)
         return self.get_paginated_response(({
             "data": serializer.data}))
 
@@ -281,8 +280,6 @@ class ThreadsViewSet(GenericViewSet):
             "show_responses": True
             }))
 
-
-        time.sleep(6)
         return self.get_paginated_response(({
             "data": serializer.data,
             "context": ({

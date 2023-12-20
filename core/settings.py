@@ -113,7 +113,10 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_THROTTLE_RATES': {
         'anon': '100/day'
-    }
+    },
+    # 'DEFAULT_RENDERER_CLASSES': [
+    #     #'apps.security.renders.MiRenderizador',
+    # ],
 }
 
 # Password validation
