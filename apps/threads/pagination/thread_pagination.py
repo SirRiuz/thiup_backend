@@ -5,16 +5,9 @@ from rest_framework.pagination import PageNumberPagination
 
 class CustomThreadPagination(PageNumberPagination):
 
-    def get_paginated_response(self, data) -> Response:
+    def get_paginated_response(self, data) -> (Response):
         context = data.get("context", {})
         data = data["data"]
         response = super().get_paginated_response(data)
         response.data = {**context, **response.data}
         return response
-
-    def paginate_queryset(self, queryset, request, view=None):
-        queryset = super().paginate_queryset(queryset, request, view=None)
-        # print("DAtos paginados")
-        # print(queryset)
-        # print(request.mask)
-        return queryset

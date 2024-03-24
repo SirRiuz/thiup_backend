@@ -27,8 +27,7 @@ schema_view = get_schema_view(
 urlpatterns = [
     path('admin/swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path("admin/", admin.site.urls),
-    path("api/", include("apps.threads.urls")),
-    path("api/", include("apps.reactions.urls")),
-    path("api/", include("apps.tags.urls")),
-    path("api/", include("apps.security.urls")),
+    path("", include("apps.threads.urls")),
+    path("", include("apps.reactions.urls")),
+    path("", include("apps.tags.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -6,7 +6,6 @@ from apps.default.models.base_model import BaseModel
 from apps.masks.models.miniature_model import Miniature
 
 
-
 class Mask(BaseModel):
 
     hash = models.CharField(unique=True, max_length=250)

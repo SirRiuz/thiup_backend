@@ -36,12 +36,11 @@ class ReactionSerializer(serializers.ModelSerializer):
         representation = super().to_representation(instance)
         if "thread" in self.context:
             thread = self.context["thread"]
-            reaction_count = ReactionRelation.objects.filter(
+            representation["reaction_count"] = ReactionRelation.objects.filter(
                 is_active=True,
                 thread=thread,
                 reaction=instance
             ).count()
-            representation["reaction_count"] = reaction_count
             
         return representation
     
@@ -84,7 +83,6 @@ class ReactionShortSerializer(serializers.ModelSerializer):
 class ReactionRelationSerializer(serializers.Serializer):
 
     reaction = serializers.PrimaryKeyRelatedField(
-        required=False,
         queryset=Reaction.objects.filter(
             is_active=True))
 
@@ -95,11 +93,9 @@ class ReactionRelationSerializer(serializers.Serializer):
     def create(self, validated_data) -> (ReactionRelation):
         reaction = Reaction.objects.get(id=validated_data["reaction"])
         thread = Thread.objects.get(id=validated_data["thread"])
-
         hash_last_reaction = ReactionRelation.objects.filter(
-            thread=thread,
-            mask=validated_data["mask"]
-        ).first()
+            mask=validated_data["mask"],
+            thread=thread).first()
         
         if hash_last_reaction:
             last_reaction = hash_last_reaction.reaction
@@ -108,10 +104,9 @@ class ReactionRelationSerializer(serializers.Serializer):
                 return
             
         return ReactionRelation.objects.create(
+            mask=validated_data["mask"],
             reaction=reaction,
-            thread=thread,
-            mask=validated_data["mask"]
-        )
+            thread=thread)
         
     def to_representation(self, instance):
         representation = super().to_representation(instance)

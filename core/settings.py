@@ -9,7 +9,7 @@ https://docs.djangoproject.com/en/4.1/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.1/ref/settings/
 """
-
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -21,13 +21,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = "django-insecure-2)@8ymo$2*x1_bh7w1qs#jv3y*nut!o4vb8ka0l&(@7xqgnp4d"
+API_SECRET_KEY = "key"
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
-CORS_ORIGIN_ALLOW_ALL = False
-CORS_ORIGIN_WHITELIST = ("http://localhost:3000",)
+#CORS_ORIGIN_ALLOW_ALL = True
+CORS_ORIGIN_WHITELIST = ("http://thiup.com:8080", "http://localhost:3000")
+
+CORS_EXPOSE_HEADERS = ("x-response-payload",)
+
+# Security config
+ENCRYPTED_RESPONSE = False
+SINGLE_REQUEST_PROTECT = False
 
 # Application definition
 
@@ -36,8 +43,7 @@ PROJECT_APPS = [
     "apps.default",
     "apps.reactions",
     "apps.tags",
-    "apps.masks",
-    "apps.security",
+    "apps.masks"
 ]
 
 EXTERNAL_APPS = [
@@ -68,7 +74,8 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django.middleware.common.CommonMiddleware",
-    "apps.masks.middlewares.mask.MaskMiddleware"
+    "apps.masks.middlewares.mask.MaskMiddleware",
+    #"apps.default.middlewares.SimulateDelayMiddleware"
 ]
 
 
@@ -108,15 +115,10 @@ DATABASES = {
 REST_FRAMEWORK = {
     'PAGE_SIZE': 15,
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'DEFAULT_THROTTLE_CLASSES': (
-        'apps.security.throttling.CustomAnonRateThrottle',
-    ),
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/day'
-    },
-    # 'DEFAULT_RENDERER_CLASSES': [
-    #     #'apps.security.renders.MiRenderizador',
-    # ],
+    'DEFAULT_RENDERER_CLASSES': [
+        'apps.default.renders.encoder.EncodeRenderer' if ENCRYPTED_RESPONSE \
+            else 'rest_framework.renderers.JSONRenderer',
+    ],
 }
 
 # Password validation
@@ -150,7 +152,7 @@ USE_TZ = True
 
 
 # Media
-MEDIA_ROOT = "media"
+MEDIA_ROOT = os.path.join(BASE_DIR, "media/")
 MEDIA_URL = "/media/"
 
 GEOLITE_DIR = "geolite2-country.mmdb"

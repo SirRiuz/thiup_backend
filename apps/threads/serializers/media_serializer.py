@@ -9,8 +9,10 @@ from apps.threads.models.media import ThreadFile
 
 
 class MediaFileSerializer(serializers.Serializer):
+    
     type = serializers.CharField()
     data = serializers.CharField()
+
 
 class ThreadMediaSerializer(serializers.ModelSerializer):
     
