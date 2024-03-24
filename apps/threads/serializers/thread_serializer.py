@@ -86,8 +86,9 @@ class ThreadSerializer(serializers.ModelSerializer):
                     "mask": self.context["mask"],
                     "short": True})).data
 
-        representation["last_reaction"] = last_reaction[0].reaction.id if \
-            last_reaction.exists() else None
+        last_reaction = last_reaction[0].reaction if last_reaction else None
+        representation["last_reaction"] = ReactionSerializer(last_reaction, many=False).data if \
+            last_reaction else None
         
         representation["reactions"] = ReactionSerializer(
                 thread_reactions, many=True, context=({
@@ -102,6 +103,7 @@ class ThreadSerializer(serializers.ModelSerializer):
             timezone.now() - instance.create_at)
 
         return representation
+
 
     class Meta:
         model = Thread

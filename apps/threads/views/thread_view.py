@@ -1,5 +1,6 @@
 # Python
 import time
+from datetime import datetime, timedelta
 
 # Django
 from django.utils import timezone
@@ -22,11 +23,10 @@ from apps.threads.serializers.thread_serializer import \
     ThreadSerializer
 
 # Libs
+from apps.default.permissions.client import IsClientAuthenticated
 from apps.threads.pagination.thread_pagination import CustomThreadPagination
-from apps.reactions.models.reaction_relation import (
-    ReactionRelation,
-    Reaction
-)
+from apps.threads.methods.threads import get_ranked_thread
+from apps.reactions.models.reaction_relation import ReactionRelation, Reaction
 from apps.reactions.serializers.reaction_serializer import (
     ReactionCountSerializer,
     BaseReactionSerializer
@@ -35,10 +35,10 @@ from apps.reactions.serializers.reaction_serializer import (
 
 class ThreadsViewSet(GenericViewSet):
 
+    queryset = Thread.objects.filter(is_active=True, visibility=True)
     pagination_class = CustomThreadPagination
     serializer_class = ThreadSerializer
-    queryset = Thread.objects.filter(
-        is_active=True, visibility=True)
+    permission_classes = (IsClientAuthenticated, )
 
     def get_queryset(self) -> (QuerySet):
         queryset = super().get_queryset()
@@ -60,7 +60,7 @@ class ThreadsViewSet(GenericViewSet):
         if self.action == "list":
             query = self.request.GET.get("q")
             tag = self.request.GET.get("tag")
-            threads = Thread.objects.filter(
+            threads = get_ranked_thread().filter(
                 Q(expire_date__gte=now_date)
                 | Q(expire_date__isnull=True),
                 visibility=True,
@@ -68,13 +68,14 @@ class ThreadsViewSet(GenericViewSet):
                 sub__isnull=True)
 
             if tag:
-                return threads.filter(tag__name=tag.lower())
+                return threads.filter(
+                    tag__name=tag.lower()).order_by("-index")
 
             if query:
                 return threads.filter(
-                    text__icontains=query)
+                    text__icontains=query).order_by("-index")
 
-            return threads
+            return threads.order_by("-index")
 
         return queryset
 
@@ -95,7 +96,7 @@ class ThreadsViewSet(GenericViewSet):
         ---
         response code: 200
         ---
-        response body:
+        Response Body:
 
                 {
                     "count": 0,
@@ -134,14 +135,18 @@ class ThreadsViewSet(GenericViewSet):
                         ...
                     ]
                 }
+
+        Response codes:
+
+            201 - Obtains a list of threads.
+            401 - The client is not authorized.
+            500 - An error occurred on the server.
         """
         pages = self.paginate_queryset(self.get_queryset())
         serializer = self.get_serializer(
             pages,
             many=True,
-            context=({
-                "mask": request.mask,
-                "short": True}))
+            context=({"mask": request.mask, "short": True}))
                 
         return self.get_paginated_response(({
             "data": serializer.data}))
@@ -158,7 +163,7 @@ class ThreadsViewSet(GenericViewSet):
         ---
         response code: 200
         ---
-        response body:
+        Response Body:
 
                 {
                     "id": "...",
@@ -189,6 +194,12 @@ class ThreadsViewSet(GenericViewSet):
                     ],
                     "is_new": false
                 }
+
+        Response codes:
+
+            201 - Obtains an object of a thread.
+            401 - The client is not authorized.
+            500 - An error occurred on the server.
         """
         thread = get_object_or_404(self.get_queryset())
         serializer = self.get_serializer(
@@ -197,7 +208,7 @@ class ThreadsViewSet(GenericViewSet):
 
         return Response(serializer, status=HTTP_200_OK)
 
-    def create(self, request):
+    def create(self, request) -> (Response):
         """
         Create a new thread
         ---
@@ -206,6 +217,8 @@ class ThreadsViewSet(GenericViewSet):
         ---
         Header Parameters:
             token: Auth token
+        ---
+        response code: 200
         ---
         Request body:
 
@@ -222,10 +235,8 @@ class ThreadsViewSet(GenericViewSet):
                     "sub": null,
                     "mask": null
                 }
-        ---
-        response code: 200
-        ---
-        response body:
+        
+        Response Body:
 
                 {
                     "id": "...",
@@ -248,6 +259,12 @@ class ThreadsViewSet(GenericViewSet):
                     "responses": [],
                     "is_new": true
                 }
+
+        Response codes:
+
+            201 - Obtains an object of the created thread.
+            401 - The client is not authorized.
+            500 - An error occurred on the server.
         """
         sub_tread = request.data.get("sub")
         text = request.data.get("text")
@@ -266,53 +283,95 @@ class ThreadsViewSet(GenericViewSet):
     @action(detail=True, methods=["GET"])
     def responses(self, request, pk) -> (Response):
         """
+        Get responses of the thread
+        ---
+        Content/Type:
+            application/json
+        ---
+        Header Parameters:
+            token: Auth token
+        ---
+        response code: 200
+        ---
+        Response Body:
+
+                {
+                    "head": {
+                        "id": "...",
+                        "content": "...",
+                        "create_at": "11 days",
+                        "text": "...",
+                        "visibility": true,
+                        "expire_date": null,
+                        "sub": null,
+                        "mask": {
+                            "id": "...",
+                            "is_active": true,
+                            "hash": "...",
+                            "country_code": "Unknow",
+                            "miniature": null
+                        },
+                        "parent": null,
+                        "responses_count": 13,
+                        "short_id": "4c9a8",
+                        "is_expired": null,
+                        "media": [],
+                        "last_reaction": null,
+                        "reactions": [],
+                        "is_new": false
+                    },
+                    "count": 13,
+                    "next": null,
+                    "previous": "...",
+                    "results": [
+                        {
+                            "id": "...",
+                            "content": "...",
+                            "create_at": "10 days",
+                            "text": "low",
+                            "visibility": true,
+                            "expire_date": null,
+                            "sub": "...",
+                            "mask": {
+                                "id": "...",
+                                "is_active": true,
+                                "hash": "...",
+                                "country_code": "Unknow",
+                                "miniature": null
+                            },
+                            "parent": "...",
+                            "responses_count": 0,
+                            "short_id": "...",
+                            "is_expired": null,
+                            "media": [],
+                            "responses": [],
+                            "last_reaction": null,
+                            "reactions": [],
+                            "is_new": false
+                        },
+                        ...
+                    ]
+                }
+
+        Response codes:
+
+            200 - Returns a list with the responses of a thread.
+            401 - The client is not authorized.
+            500 - An error occurred on the server.
         """
         thread = get_object_or_404(self.get_queryset())
         head_serializer = self.get_serializer(
             thread, many=False, context=({
-                "mask": request.mask
-                }))
+                "mask": request.mask}))
 
-        responses = Thread.objects.filter(is_active=True, sub=thread)
+        responses = get_ranked_thread().filter(
+            is_active=True, sub=thread).order_by("-index")
+
         pages = self.paginate_queryset(responses)
         serializer = self.get_serializer(pages, many=True, context=({
-            "mask": request.mask,
-            "show_responses": True
-            }))
+            "mask": request.mask, "show_responses": True}))
 
         return self.get_paginated_response(({
             "data": serializer.data,
-            "context": ({
-                "head": head_serializer.data
-            })
+            "context": {"head": head_serializer.data}
         }))
-
-    @action(detail=True, methods=['GET'])
-    def stats(self, request, pk) -> (Response):
-        queryset = Thread.objects.filter(is_active=True, id=pk)
-        thread = get_object_or_404(queryset)
-        reactions_relations = ReactionRelation.objects.filter(
-            is_active=True, thread=thread).values_list(
-                "reaction", flat=True).distinct()    
-        reactions = Reaction.objects.filter(
-            is_active=True, id__in=reactions_relations).annotate(
-                reaction_count=Count(
-                    "reactionrelation"))\
-                        .order_by("-reaction_count")
-                   
-        my_reaction = ReactionRelation.objects.filter(
-            is_active=True, 
-            mask=request.mask
-        )
-        my_reaction = my_reaction.first().reaction if \
-            my_reaction.exists() else None
-            
-        serializer = ReactionCountSerializer(reactions, many=True)
-        my_reaction_s = BaseReactionSerializer(my_reaction, many=False)
-
-        return Response({
-            "my_reaction": (my_reaction_s.data if\
-                my_reaction else None),
-            "reactions": serializer.data,
-            "views": "..."
-            }, status=HTTP_200_OK)

@@ -15,9 +15,7 @@ class ThreadFile(BaseModel):
                 'png',
                 'jpg',
                 'jpeg',
-                'mp4',
-                'mov',
-                'ogg'])])
+                'mp4'])])
     
-    def __str__(self):
+    def __str__(self) -> (str):
         return self.id

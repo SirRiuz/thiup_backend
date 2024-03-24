@@ -8,4 +8,4 @@ from apps.tags.models.tag import Tag
 class TagSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tag
-        fields = ('name', 'count')
+        fields = ("name", "count")

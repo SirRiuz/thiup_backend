@@ -11,6 +11,10 @@ from apps.threads.models.media import ThreadFile
 
 
 def save_files(files, thread):
+    """
+    This function is responsible for saving
+    the multimedia files of a thread.
+    """
     for file in files:
         f_bytes = base64.b64decode(file["data"])
         extension = mimetypes.guess_extension(file["type"])
