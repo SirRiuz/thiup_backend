@@ -9,7 +9,7 @@ from Crypto.Util.Padding import pad
 
 def encryptor(plain_text) -> (tuple):
     """
-    Se encarga de encriptar los datos
+    It is responsible for encrypting the data.
     """
     key = get_random_bytes(16)
     data = plain_text.encode()
@@ -26,7 +26,7 @@ def encryptor(plain_text) -> (tuple):
 
 def decryptor(key, data, iv) -> (str):
     """
-    Se encaerga de desencriptar los datos
+    It is responsible for decrypting the data.
     """
     key = base64.b64decode(key)
     data = base64.b64decode(data)

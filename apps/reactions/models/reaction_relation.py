@@ -13,7 +13,7 @@ class ReactionRelation(BaseModel):
         to=Thread,
         on_delete=models.CASCADE,
         help_text="Reaction thread")
-    
+
     mask = models.ForeignKey(
         to=Mask,
         on_delete=models.CASCADE,

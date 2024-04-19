@@ -19,7 +19,6 @@ class EncodeRenderer(BaseRenderer):
 
     def render(self, data, media_type=None, renderer_context=None) -> (str):
         key, data, iv = encryptor(json.dumps(data, indent=2))
-        
         response = renderer_context["response"]
         headers = response.headers
         headers["X-Response-Payload"] = base64.b64encode(

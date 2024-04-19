@@ -7,8 +7,7 @@ from django.core.cache import cache
 
 def check_token(token) -> (bool):
     """
-    Vetifica si el token ya esta guardado
-    en la storage
+    Verifies if the token is already saved in the storage.
     """
     hash_token = hashlib.sha256(token.encode()).hexdigest()
     return cache.has_key(hash_token)
@@ -16,9 +15,8 @@ def check_token(token) -> (bool):
 
 def save_token(token):
     """
-    Guarda el hash del token en la storage
-    para evitar que se envien futuras peticiones
-    con el mismo token.
+    Saves the token hash in the storage to prevent
+    future requests from being sent with the same token.
     """
     hash_token = hashlib.sha256(token.encode()).hexdigest()
     cache.set(hash_token, token)

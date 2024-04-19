@@ -8,6 +8,10 @@ coreapi==2.3.3
 coreschema==0.0.4
 Django==4.1.7
 django-cors-headers==4.3.1
+pycryptodome==3.20.0
+boto3
+gunicorn
+django-storages==1.14.2
 django-rest-swagger==2.2.0
 djangorestframework==3.14.0
 drf-yasg==1.21.7
@@ -34,7 +38,9 @@ simplejson==3.19.2
 coverage==7.4.1
 sqlparse==0.4.4
 uritemplate==4.1.1
-urllib3==2.1.0
+urllib3
+psycopg2
+python-decouple==3.8
 wheel==0.41.2
 yarl==1.9.4
 cryptography==42.0.2

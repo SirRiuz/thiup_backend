@@ -22,14 +22,14 @@ def get_ranked_thread() -> QuerySet[Thread]:
     threads = Thread.objects.annotate(
         reaction_count=Count("reactionrelation__thread__id"),
         days_since_creation=ExpressionWrapper(
-                (timezone.now() - F("create_at")) / timedelta(days=1),
-                output_field=IntegerField()),
+            (timezone.now() - F("create_at")) / timedelta(days=1),
+            output_field=IntegerField()),
 
         sub_threads_count=Coalesce(Subquery(Thread.objects.filter(
             sub=OuterRef("pk")).values("sub").annotate(
                 count=Count("id")).values("count")[:1]), 0),
 
-        index=((F("reaction_count")* .4 + F("sub_threads_count") \
-        * .6) - F("days_since_creation") * .3))
+        index=((F("reaction_count") * .4 + F("sub_threads_count")
+                * .6) - F("days_since_creation") * .3))
 
     return threads

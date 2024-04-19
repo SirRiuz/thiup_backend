@@ -1,14 +1,10 @@
 # Django
-from django.shortcuts import get_object_or_404
 from django.db.models import Count
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.response import Response
-from rest_framework.decorators import action
-from rest_framework.status import *
+from rest_framework.status import HTTP_200_OK, HTTP_201_CREATED
 
 # Libs
-from django_ratelimit.decorators import ratelimit
-from apps.threads.models.thread import Thread
 from apps.reactions.models.reaction_relation import (
     ReactionRelation,
     Reaction
@@ -16,19 +12,17 @@ from apps.reactions.models.reaction_relation import (
 from apps.default.permissions.client import IsClientAuthenticated
 from apps.reactions.serializers.reaction_serializer import (
     ReactionRelationSerializer,
-    ReactionShortSerializer,
-    ReactionCountSerializer,
     BaseReactionSerializer,
     ReactionSerializer
 )
 
 
 class ReactionsViewSet(GenericViewSet):
-    
+
     queryset = ReactionRelation.objects.filter(is_active=True)
     serializer_class = ReactionRelationSerializer
     permission_classes = (IsClientAuthenticated, )
-    
+
     def list(self, request) -> (Response):
         """
         Retrieve a reaction list
@@ -109,18 +103,18 @@ class ReactionsViewSet(GenericViewSet):
         thread_reactions = Reaction.objects.filter(
             is_active=True,
             reactionrelation__thread=request.data["thread"]).\
-                annotate(reaction_count=Count(
-                    'reactionrelation')).\
-                        order_by(
-                            '-reaction_count')
+            annotate(reaction_count=Count(
+                'reactionrelation')).\
+            order_by(
+            '-reaction_count')
 
         my_reaction = ReactionRelationSerializer(data)
         serializer = ReactionSerializer(thread_reactions, context=({
-                    "thread": request.data["thread"]}), many=True)
+            "thread": request.data["thread"]}), many=True)
 
         return Response({
-            "my_reaction": (my_reaction.data if\
-                data else None),
-                
+            "my_reaction": (my_reaction.data if
+                            data else None),
+
             "reactions": serializer.data,
-            }, status=HTTP_201_CREATED)
+        }, status=HTTP_201_CREATED)
