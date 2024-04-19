@@ -1,7 +1,3 @@
-# Python
-import hashlib
-import json
-
 # Django
 from rest_framework.permissions import BasePermission
 from django.conf import settings
@@ -16,8 +12,8 @@ class IsClientAuthenticated(BasePermission):
     """
     Allows access only to users with the client token.
     """
-    
-    TOKEN_TYPE = "X-Dynamic-Token"
+
+    TOKEN_TYPE = "Client-assertion"
 
     def has_permission(self, request, view) -> (bool):
         client_token = request.headers.get(self.TOKEN_TYPE, "")

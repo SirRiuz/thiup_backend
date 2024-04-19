@@ -13,6 +13,7 @@ def encode_token(data) -> (str):
         algorithm="HS256"
     )
 
+
 def decode_token(token) -> (dict):
     """Decode the client access token"""
     return jwt.decode(

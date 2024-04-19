@@ -1,14 +1,8 @@
-# Python
-import time
-from datetime import datetime, timedelta
-
 # Django
 from django.utils import timezone
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
-from django.db.models import Count
 from django.db.models.query import QuerySet
-from rest_framework.throttling import AnonRateThrottle
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.viewsets import GenericViewSet
@@ -26,11 +20,6 @@ from apps.threads.serializers.thread_serializer import \
 from apps.default.permissions.client import IsClientAuthenticated
 from apps.threads.pagination.thread_pagination import CustomThreadPagination
 from apps.threads.methods.threads import get_ranked_thread
-from apps.reactions.models.reaction_relation import ReactionRelation, Reaction
-from apps.reactions.serializers.reaction_serializer import (
-    ReactionCountSerializer,
-    BaseReactionSerializer
-)
 
 
 class ThreadsViewSet(GenericViewSet):
@@ -147,7 +136,7 @@ class ThreadsViewSet(GenericViewSet):
             pages,
             many=True,
             context=({"mask": request.mask, "short": True}))
-                
+
         return self.get_paginated_response(({
             "data": serializer.data}))
 
@@ -224,18 +213,21 @@ class ThreadsViewSet(GenericViewSet):
 
                 {
                     "media": [
+                        {
+                            "data": "...",
+                            "is_video": "...",
+                            "resolution": "..."
+                        },
                         ...
                     ],
-                    "content": {
-                        ...
-                    },
+                    "content": {...},
                     "text": "...",
                     "visibility": false,
                     "expire_date": null,
                     "sub": null,
                     "mask": null
                 }
-        
+
         Response Body:
 
                 {

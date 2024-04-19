@@ -9,7 +9,6 @@ __pycache__/
 !**/migrations/__init__.py
 **/migrations/*
 !**/migrations/__init__.py
-media/*
-media
 htmlcov
+.env
 .coverage
