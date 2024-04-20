@@ -32,7 +32,13 @@ API_SECRET_KEY = config("API_SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", cast=bool)
 
-ALLOWED_HOSTS = ("thiup.com", "localhost")
+ALLOWED_HOSTS = (
+    "thiup.com",
+    "www.thiup.com",
+    "dev-api.thiup.com", 
+    "localhost"
+)
+
 CORS_ORIGIN_WHITELIST = (
     "http://localhost",
     "https://thiup.com",
