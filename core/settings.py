@@ -36,7 +36,8 @@ ALLOWED_HOSTS = (
     "thiup.com",
     "www.thiup.com",
     "dev-api.thiup.com", 
-    "localhost"
+    "localhost",
+    "api.thiup.com"
 )
 
 CSRF_TRUSTED_ORIGINS =  (
@@ -44,6 +45,7 @@ CSRF_TRUSTED_ORIGINS =  (
     "https://thiup.com",
     "https://www.thiup.com",
     "https://dev-api.thiup.com",
+    "https://api.thiup.com"
 )
 
 CORS_ORIGIN_WHITELIST = (
@@ -51,6 +53,7 @@ CORS_ORIGIN_WHITELIST = (
     "https://thiup.com",
     "https://www.thiup.com",
     "https://dev-api.thiup.com",
+    "https://api.thiup.com",
 )
 
 CORS_EXPOSE_HEADERS = ("x-response-payload",)
