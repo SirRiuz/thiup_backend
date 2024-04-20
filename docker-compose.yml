@@ -1,0 +1,23 @@
+version: '3'
+
+services:
+  web:
+    image: thiup
+    command: gunicorn core.wsgi:application --bind 0.0.0.0:80
+    expose:
+      - 80
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PYTHONUNBUFFERED: 1
+      
+  nginx:
+    image: thiup_nginx
+    build:
+      context: .
+      dockerfile: ./nginx/Dockerfile
+    ports:
+      - 80:80
+    depends_on:
+      - web

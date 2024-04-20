@@ -9,8 +9,14 @@ https://docs.djangoproject.com/en/4.1/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.1/ref/settings/
 """
-
+# Python
+import os
 from pathlib import Path
+
+# Libs
+from decouple import config
+from corsheaders.defaults import default_headers
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,19 +26,37 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/4.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-2)@8ymo$2*x1_bh7w1qs#jv3y*nut!o4vb8ka0l&(@7xqgnp4d"
+SECRET_KEY = config("SECRET_KEY")
+API_SECRET_KEY = config("API_SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config("DEBUG", cast=bool)
 
-ALLOWED_HOSTS = []
+#CORS_ORIGIN_ALLOW_ALL = True
+ALLOWED_HOSTS = ("*",)
+CORS_ORIGIN_WHITELIST = ("http://thiup.com:8080", "http://localhost:3000")
 
+CORS_EXPOSE_HEADERS = ("x-response-payload",)
+CORS_ALLOW_HEADERS = default_headers + ('client-assertion',)
+
+# Security config
+ENCRYPTED_RESPONSE = config("ENCRYPTED_RESPONSE", cast=bool)
+SINGLE_REQUEST_PROTECT = config("SINGLE_REQUEST_PROTECT", cast=bool)
 
 # Application definition
-
 PROJECT_APPS = [
     "apps.threads",
-    "apps.default"
+    "apps.default",
+    "apps.reactions",
+    "apps.tags",
+    "apps.masks"
+]
+
+EXTERNAL_APPS = [
+    "corsheaders",
+    "drf_yasg",
+    "rest_framework_swagger",
+    "storages"
 ]
 
 DJANGO_APPS = [
@@ -45,9 +69,10 @@ DJANGO_APPS = [
     "rest_framework"
 ]
 
-INSTALLED_APPS = DJANGO_APPS + PROJECT_APPS
+INSTALLED_APPS = DJANGO_APPS + EXTERNAL_APPS + PROJECT_APPS
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -55,6 +80,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "apps.masks.middlewares.mask.MaskMiddleware",
 ]
 
 ROOT_URLCONF = "core.urls"
@@ -62,7 +89,9 @@ ROOT_URLCONF = "core.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [
+            "templates"
+        ],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -77,17 +106,28 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "core.wsgi.application"
 
-
 # Database
 # https://docs.djangoproject.com/en/4.1/ref/settings/#databases
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "ENGINE": config("DATABASE_ENGINE"),
+        "NAME": config("DATABASE_NAME"),
+        "USER": config("DATABASE_USER"),
+        "HOST": config("DATABASE_HOST"),
+        "PORT": config("DATABASE_PORT"),
+        "PASSWORD": config("DATABASE_PASSWORD")
     }
 }
 
+REST_FRAMEWORK = {
+    'PAGE_SIZE': 15,
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'DEFAULT_RENDERER_CLASSES': [
+        'apps.default.renders.encoder.EncodeRenderer' if ENCRYPTED_RESPONSE \
+            else 'rest_framework.renderers.JSONRenderer',
+    ],
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/4.1/ref/settings/#auth-password-validators
@@ -112,18 +152,43 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/4.1/topics/i18n/
 
 LANGUAGE_CODE = "en-us"
-
-TIME_ZONE = "UTC"
+TIME_ZONE = "America/Bogota"
 
 USE_I18N = True
 
 USE_TZ = True
 
+# Media
+MEDIA_ROOT = os.path.join(BASE_DIR, "media/")
+REACTIONS_MEDIA_DIR = os.path.join(BASE_DIR, "media/reactions")
+MASKS_MEDIA_DIR = os.path.join(BASE_DIR, "media/masks")
+MEDIA_URL = "/media/"
+
+#STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+#STATIC_URL = "static/"
+
+USE_AWS_STORAGE = config("USE_AWS_STORAGE", cast=bool)
+
+print("Use S3 storage system :", "YES" if USE_AWS_STORAGE else "NO")
+
+if USE_AWS_STORAGE:
+    AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY")
+    AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME")
+    AWS_S3_CUSTOM_DOMAIN = config("AWS_S3_CUSTOM_DOMAIN")
+    AWS_S3_REGION_NAME = config("AWS_S3_REGION_NAME")
+
+    AWS_S3_USE_SSL = True
+    AWS_S3_VERIFY = True
+
+    STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+
+GEOLITE_DIR = "geolite2-country.mmdb"
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.1/howto/static-files/
 
-STATIC_URL = "static/"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.1/ref/settings/#default-auto-field
