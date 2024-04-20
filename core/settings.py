@@ -33,18 +33,24 @@ API_SECRET_KEY = config("API_SECRET_KEY")
 DEBUG = config("DEBUG", cast=bool)
 
 ALLOWED_HOSTS = (
-    "*.thiup.com",
+    "thiup.com",
+    "www.thiup.com",
+    "dev-api.thiup.com", 
     "localhost"
 )
 
-CSRF_TRUSTED_ORIGINS = (
+CSRF_TRUSTED_ORIGINS =  (
     "http://localhost",
-    "https://*.thiup.com",
+    "https://thiup.com",
+    "https://www.thiup.com",
+    "https://dev-api.thiup.com",
 )
 
 CORS_ORIGIN_WHITELIST = (
     "http://localhost",
-    "https://*.thiup.com",
+    "https://thiup.com",
+    "https://www.thiup.com",
+    "https://dev-api.thiup.com",
 )
 
 CORS_EXPOSE_HEADERS = ("x-response-payload",)
