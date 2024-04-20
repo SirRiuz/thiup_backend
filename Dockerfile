@@ -12,5 +12,3 @@ COPY . /app/
 RUN python3 manage.py check
 RUN python3 manage.py makemigrations
 RUN python3 manage.py migrate
-
-RUN echo "from django.contrib.auth.models import User; User.objects.create_superuser('root', 'root', 'root')" | python manage.py shell

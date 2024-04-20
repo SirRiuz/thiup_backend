@@ -1,7 +1,6 @@
 version: '3'
 
 services:
-
   web:
     image: thiup
     command: gunicorn core.wsgi:application --bind 0.0.0.0:80
@@ -9,7 +8,7 @@ services:
       - 80
     build:
       context: .
-      dockerfile: Dockerfile.local
+      dockerfile: Dockerfile
     environment:
       PYTHONUNBUFFERED: 1
       
