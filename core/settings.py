@@ -107,6 +107,7 @@ MIDDLEWARE = [
     "apps.masks.middlewares.mask.MaskMiddleware",
 ]
 
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 ROOT_URLCONF = "core.urls"
 
 TEMPLATES = [
