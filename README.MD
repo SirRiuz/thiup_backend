@@ -10,7 +10,7 @@ Thiup is an open-source project aimed at creating a free social network that pro
 * **Code & BugTracker:** https://github.com/SirRiuz/thiup_backend
 
 
-### Running Misago in development without `dev`
+### Running Thiup in development without `dev`
 
 1. `docker-compose build`: builds docker containers
 2. `docker-compose up`: starts dev server
