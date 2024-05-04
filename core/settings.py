@@ -33,18 +33,30 @@ API_SECRET_KEY = config("API_SECRET_KEY")
 DEBUG = config("DEBUG", cast=bool)
 
 ALLOWED_HOSTS = (
-    "*.thiup.com",
-    "localhost"
+    "thiup.com",
+    "www.thiup.com",
+    "dev-api.thiup.com", 
+    "localhost",
+    "api.thiup.com",
+    "localhost:3000"
 )
 
-CSRF_TRUSTED_ORIGINS = (
+CSRF_TRUSTED_ORIGINS =  (
     "http://localhost",
-    "https://*.thiup.com",
+    "https://thiup.com",
+    "https://www.thiup.com",
+    "https://dev-api.thiup.com",
+    "https://api.thiup.com",
+    "http://localhost:3000"
 )
 
 CORS_ORIGIN_WHITELIST = (
     "http://localhost",
-    "https://*.thiup.com",
+    "https://thiup.com",
+    "https://www.thiup.com",
+    "https://dev-api.thiup.com",
+    "https://api.thiup.com",
+    "http://localhost:3000"
 )
 
 CORS_EXPOSE_HEADERS = ("x-response-payload",)
@@ -95,6 +107,7 @@ MIDDLEWARE = [
     "apps.masks.middlewares.mask.MaskMiddleware",
 ]
 
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 ROOT_URLCONF = "core.urls"
 
 TEMPLATES = [

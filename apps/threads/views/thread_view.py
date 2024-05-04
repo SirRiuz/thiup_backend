@@ -30,41 +30,38 @@ class ThreadsViewSet(GenericViewSet):
     permission_classes = (IsClientAuthenticated, )
 
     def get_queryset(self) -> (QuerySet):
-        queryset = super().get_queryset()
         now_date = timezone.localtime(timezone.now())
+        queryset = super().get_queryset().filter(
+            Q(expire_date__gte=now_date)|
+            Q(expire_date__isnull=True),
+            is_active=True)
 
         if self.action == "retrieve" or self.action == "responses":
             thread_id = self.kwargs.get("pk")
             short_id_size = 5
-            thread = Thread.objects.filter(
-                Q(expire_date__gte=now_date)
-                | Q(expire_date__isnull=True),
-                is_active=True)
 
             if thread_id and len(thread_id) == short_id_size:
-                return thread.filter(id__startswith=thread_id)
+                return queryset.filter(id__startswith=thread_id)
 
-            return thread.filter(id=thread_id)
+            return queryset.filter(id=thread_id)
 
         if self.action == "list":
             query = self.request.GET.get("q")
             tag = self.request.GET.get("tag")
-            threads = get_ranked_thread().filter(
-                Q(expire_date__gte=now_date)
-                | Q(expire_date__isnull=True),
+            threads = queryset.filter(
                 visibility=True,
                 is_active=True,
                 sub__isnull=True)
 
             if tag:
                 return threads.filter(
-                    tag__name=tag.lower()).order_by("-index")
+                    tag__name=tag.lower()).order_by("-create_at")
 
             if query:
                 return threads.filter(
-                    text__icontains=query).order_by("-index")
+                    text__icontains=query).order_by("-create_at")
 
-            return threads.order_by("-index")
+            return threads.order_by("-create_at")
 
         return queryset
 
