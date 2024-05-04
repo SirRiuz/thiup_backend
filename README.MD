@@ -8,7 +8,7 @@ Thiup is an open-source project aimed at creating a free social network that pro
 
 * **Homepage:** https://www.thiup.com/
 * **Code & BugTracker:** https://github.com/SirRiuz/thiup_backend
-
+* **Front-end:** https://github.com/SirRiuz/thiup_frontend/pull/new/fix/mask-errir
 
 ### Running Thiup in development without `dev`
 
