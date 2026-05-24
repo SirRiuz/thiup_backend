@@ -1,14 +1,31 @@
-FROM python:3.9
+FROM python:3.12
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Install env dependencies in one single command/layer
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        libcurl4-openssl-dev \
+        libffi-dev \
+        libpq-dev \
+        pango1.0-tools \
+        python3-dev \
+        wget \
+        xvfb \
+        xauth \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get purge --auto-remove \
+    && apt-get clean
 
 WORKDIR /app
 
 COPY requirements.txt /app/
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
 
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
+# No EXPOSE: the port comes from .env via SERVER_PORT.
+# No CMD: defined in docker-compose.yml (command:).
 
-COPY . /app/
-
-RUN python3 manage.py check
-RUN python3 manage.py makemigrations
-RUN python3 manage.py migrate
+COPY . /app

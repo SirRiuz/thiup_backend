@@ -5,10 +5,13 @@ __pycache__/
 */*/*/__pycache__/
 */*/__pycache__/
 */__pycache__/
-**/migrations/*
-!**/migrations/__init__.py
-**/migrations/*
-!**/migrations/__init__.py
 htmlcov
 .env
 .coverage
+.coverage.*
+coverage.xml
+.pytest_cache/
+staticfiles/
+*.pyc
+*.log
+.claude

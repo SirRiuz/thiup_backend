@@ -1,0 +1,38 @@
+upstream django_backend {
+    server ${UPSTREAM_HOST}:${UPSTREAM_PORT};
+}
+
+server {
+    listen ${SERVER_PORT};
+    server_name _;
+    client_max_body_size 80M;
+
+    proxy_read_timeout 90;
+    proxy_connect_timeout 90;
+    proxy_redirect off;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    server_tokens off;
+
+    # collectstatic output — served by nginx when USE_AWS_STORAGE_SYSTEM=false.
+    location /static/ {
+        alias /app/staticfiles/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+    # User uploads — served by nginx when USE_AWS_STORAGE_SYSTEM=false.
+    # When true, Django redirects to S3 directly.
+    location /media/ {
+        alias /app/media/;
+        expires 7d;
+        add_header Cache-Control "public";
+    }
+
+    location / {
+        proxy_pass http://django_backend;
+    }
+}

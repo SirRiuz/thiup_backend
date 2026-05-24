@@ -21,7 +21,7 @@ from apps.threads.serializers.media_serializer import (
 )
 
 # Libs
-import humanize
+from apps.default.utils.time import short_delta
 from apps.threads.methods.files import save_files
 from apps.masks.models.mask_model import Mask
 from apps.tags.methods.tags import create_tags, get_tags_list
@@ -97,7 +97,7 @@ class ThreadSerializer(serializers.ModelSerializer):
         representation["mask"] = mask_data
         representation["is_new"] = instance.is_new()
         representation["is_op"] = instance.mask == self.context["mask"]
-        representation["create_at"] = humanize.naturaldelta(
+        representation["create_at"] = short_delta(
             timezone.now() - instance.create_at)
 
         return representation
