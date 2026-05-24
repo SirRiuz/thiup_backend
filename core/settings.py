@@ -16,6 +16,33 @@ from pathlib import Path
 # Libs
 from decouple import config
 from corsheaders.defaults import default_headers
+from django.core.exceptions import ImproperlyConfigured
+
+
+def env_list(name: str, default: str = "") -> list[str]:
+    """Read a comma-separated env var into a clean list.
+
+    Strips whitespace and drops empty entries (tolerant of trailing commas).
+    Example: ALLOWED_HOSTS="localhost, 127.0.0.1" -> ["localhost", "127.0.0.1"].
+    """
+    raw = os.environ.get(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def env_required(name: str, description: str = "") -> str:
+    """Read a required env var. Raise ImproperlyConfigured if missing/empty.
+
+    Fail-fast at settings import time — the app never starts listening if a
+    critical config value is absent.
+    """
+    value = os.environ.get(name, "").strip()
+    if not value:
+        hint = f" ({description})" if description else ""
+        raise ImproperlyConfigured(
+            f"Environment variable '{name}'{hint} is required but is not set "
+            f"or is empty. Edit .env and provide a valid value."
+        )
+    return value
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -25,6 +52,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.1/howto/deployment/checklist/
 
+# Runtime stage — "dev" or "prod" (controls Docker Compose profiles via the Makefile).
+STAGE = config("STAGE", default="dev")
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config("SECRET_KEY")
 API_SECRET_KEY = config("API_SECRET_KEY")
@@ -32,35 +62,49 @@ API_SECRET_KEY = config("API_SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", cast=bool)
 
-ALLOWED_HOSTS = (
-    "thiup.com",
-    "www.thiup.com",
-    "dev-api.thiup.com", 
-    "localhost",
-    "api.thiup.com",
-    "localhost:3000"
+LOG_LEVEL = "DEBUG" if STAGE == "dev" else "INFO"
+
+# Hostnames the server responds to (Host-header attack defense).
+# Format: hostnames only — NO scheme, NO port. Wildcards (*.thiup.com) allowed.
+ALLOWED_HOSTS = env_list(
+    "ALLOWED_HOSTS",
+    default="localhost,127.0.0.1",
 )
 
-CSRF_TRUSTED_ORIGINS =  (
-    "http://localhost",
-    "https://thiup.com",
-    "https://www.thiup.com",
-    "https://dev-api.thiup.com",
-    "https://api.thiup.com",
-    "http://localhost:3000"
+# Origins trusted for CSRF on cross-origin POSTs (e.g. admin login through nginx).
+# Format: full URLs — scheme AND port required (Django 4+ matches exactly).
+CSRF_TRUSTED_ORIGINS = env_list(
+    "CSRF_TRUSTED_ORIGINS",
+    default="http://localhost:8000,http://localhost:3000",
 )
 
-CORS_ORIGIN_WHITELIST = (
-    "http://localhost",
-    "https://thiup.com",
-    "https://www.thiup.com",
-    "https://dev-api.thiup.com",
-    "https://api.thiup.com",
-    "http://localhost:3000"
+# Origins allowed to make cross-origin browser requests to this backend.
+# Note: CORS_ALLOWED_ORIGINS replaces the deprecated CORS_ORIGIN_WHITELIST.
+CORS_ALLOWED_ORIGINS = env_list(
+    "CORS_ALLOWED_ORIGINS",
+    default="http://localhost:3000,http://localhost:8000",
 )
 
 CORS_EXPOSE_HEADERS = ("x-response-payload",)
 CORS_ALLOW_HEADERS = default_headers + ('client-assertion',)
+
+# Real path of the Django admin — REQUIRED. The literal /admin/ is reserved
+# as a honeypot decoy; the real admin must live at a non-predictable path.
+# Set INTERNAL_ADMIN_URL in .env. App refuses to boot if it's missing or empty.
+INTERNAL_ADMIN_URL = env_required(
+    "INTERNAL_ADMIN_URL",
+    description="Django admin path",
+)
+# Normalize to Django's path() expectations: no leading slash, trailing slash.
+INTERNAL_ADMIN_URL = INTERNAL_ADMIN_URL.lstrip("/")
+if not INTERNAL_ADMIN_URL.endswith("/"):
+    INTERNAL_ADMIN_URL += "/"
+if INTERNAL_ADMIN_URL == "admin/":
+    raise ImproperlyConfigured(
+        "INTERNAL_ADMIN_URL must not be 'admin/' — that path is reserved for "
+        "the honeypot. Set a non-predictable value in .env, e.g. "
+        "python -c \"import secrets; print(f'admin-{secrets.token_urlsafe(6)}/')\""
+    )
 
 # Security config
 ENCRYPTED_RESPONSE = config("ENCRYPTED_RESPONSE", cast=bool)
@@ -72,13 +116,13 @@ PROJECT_APPS = [
     "apps.default",
     "apps.reactions",
     "apps.tags",
-    "apps.masks"
+    "apps.masks",
+    "honeypot",
 ]
 
 EXTERNAL_APPS = [
     "corsheaders",
     "drf_yasg",
-    "rest_framework_swagger",
     "storages"
 ]
 
@@ -105,6 +149,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django.middleware.common.CommonMiddleware",
     "apps.masks.middlewares.mask.MaskMiddleware",
+    "honeypot.middleware.HoneyPotMiddleware",
 ]
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
@@ -188,8 +233,8 @@ REACTIONS_MEDIA_DIR = os.path.join(BASE_DIR, "media/reactions")
 MASKS_MEDIA_DIR = os.path.join(BASE_DIR, "media/masks")
 MEDIA_URL = "/media/"
 
-#STATIC_ROOT = os.path.join(BASE_DIR, 'static')
-#STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 
 USE_AWS_STORAGE = config("USE_AWS_STORAGE", cast=bool)
 
@@ -207,6 +252,11 @@ if USE_AWS_STORAGE:
 
     STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+else:
+    # Local media: emit absolute URLs so consumers (frontend, emails, admin)
+    # see the same shape they get from S3/R2. Origin comes from MEDIA_BASE_URL.
+    DEFAULT_FILE_STORAGE = "apps.default.storages.AbsoluteUrlFileSystemStorage"
+    MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "http://localhost:8000")
 
 GEOLITE_DIR = "geolite2-country.mmdb"
 

@@ -52,7 +52,7 @@ class ReactionsViewSet(GenericViewSet):
             500 - An error occurred on the server.
         """
         queryset = Reaction.objects.filter(is_active=True)
-        serializer = BaseReactionSerializer(queryset, many=True)
+        serializer = BaseReactionSerializer(queryset, many=True, context={"request": request})
         return Response(serializer.data, status=HTTP_200_OK)
 
     def create(self, request) -> (Response):
@@ -108,9 +108,9 @@ class ReactionsViewSet(GenericViewSet):
             order_by(
             '-reaction_count')
 
-        my_reaction = ReactionRelationSerializer(data)
-        serializer = ReactionSerializer(thread_reactions, context=({
-            "thread": request.data["thread"]}), many=True)
+        my_reaction = ReactionRelationSerializer(data, context={"request": request})
+        serializer = ReactionSerializer(thread_reactions, context={
+            "thread": request.data["thread"], "request": request}, many=True)
 
         return Response({
             "my_reaction": (my_reaction.data if
