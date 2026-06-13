@@ -6,8 +6,10 @@
 #
 aiohappyeyeballs==2.6.2
     # via aiohttp
-aiohttp==3.13.5
-    # via geoip2
+aiohttp==3.14.1
+    # via
+    #   -r requirements.in
+    #   geoip2
 aiosignal==1.4.0
     # via aiohttp
 asgiref==3.11.1
@@ -79,7 +81,7 @@ packaging==26.2
     # via
     #   drf-yasg
     #   gunicorn
-pillow==11.3.0
+pillow==12.2.0
     # via -r requirements.in
 propcache==0.5.2
     # via
@@ -110,7 +112,9 @@ six==1.17.0
 sqlparse==0.5.5
     # via django
 typing-extensions==4.15.0
-    # via aiosignal
+    # via
+    #   aiohttp
+    #   aiosignal
 tzdata==2026.2
     # via faker
 uritemplate==4.2.0
