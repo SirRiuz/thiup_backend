@@ -5,26 +5,17 @@ env:
     DOCKERFILE: "aws.Dockerfile"
     DOCKER_BUILDKIT: "1"
     IMAGE_TAG: "test"
-    IMAGE_NAME: "thiup-backend"
 
 phases:
   pre_build:
     commands:
-      # Build the full ECR repo URL from the account id + region (cortex style).
-      - ECR_URL="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${IMAGE_NAME}"
       # Log in to ECR
       - aws ecr get-login-password | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
 
   build:
     commands:
-      - |
-        docker build . \
-        --build-arg BUILDKIT_INLINE_CACHE=1 \
-        --build-arg GIT_SHA=$CODEBUILD_RESOLVED_SOURCE_VERSION \
-        --cache-from ${ECR_URL}:${IMAGE_TAG} \
-        --file $DOCKERFILE \
-        --tag ${ECR_URL}:${IMAGE_TAG}
+      - bash scripts/ecs-deploy build --tag "$IMAGE_TAG"
 
   post_build:
     commands:
-      - docker push ${ECR_URL}:${IMAGE_TAG}
+      - bash scripts/ecs-deploy deploy
