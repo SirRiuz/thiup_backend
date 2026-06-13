@@ -5,7 +5,7 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 
 # Models
-from apps.default.models.base_model import BaseModel
+from app.models.base_model import BaseModel
 from honeypot.models.login_attempt import LoginAttempt
 
 # Libs

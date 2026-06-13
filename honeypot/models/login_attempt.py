@@ -3,7 +3,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 # Models
-from apps.default.models.base_model import BaseModel
+from app.models.base_model import BaseModel
 
 
 class LoginAttempt(BaseModel):

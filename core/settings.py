@@ -15,6 +15,7 @@ from pathlib import Path
 
 # Libs
 from decouple import config
+from celery.schedules import crontab
 from corsheaders.defaults import default_headers
 from django.core.exceptions import ImproperlyConfigured
 
@@ -86,7 +87,10 @@ CORS_ALLOWED_ORIGINS = env_list(
 )
 
 CORS_EXPOSE_HEADERS = ("x-response-payload",)
-CORS_ALLOW_HEADERS = default_headers + ('client-assertion',)
+CORS_ALLOW_HEADERS = default_headers + (
+    'client-assertion',
+    'x-request-payload',  # sobre del body cifrado del request
+)
 
 # Real path of the Django admin — REQUIRED. The literal /admin/ is reserved
 # as a honeypot decoy; the real admin must live at a non-predictable path.
@@ -110,13 +114,63 @@ if INTERNAL_ADMIN_URL == "admin/":
 ENCRYPTED_RESPONSE = config("ENCRYPTED_RESPONSE", cast=bool)
 SINGLE_REQUEST_PROTECT = config("SINGLE_REQUEST_PROTECT", cast=bool)
 
+# Semilla del PATH ROTATIVO del gateway (/{hash}/). DEDICADA a derivar el
+# path — NO firma nada crítico (eso es API_SECRET_KEY). Vive también en el
+# bundle del FE → es OFUSCACIÓN ROTATIVA, no un secreto. Debe coincidir con
+# REACT_APP_GATEWAY_SEED del frontend.
+GATEWAY_SEED = config("GATEWAY_SEED", default="thiup-rotating-gateway-seed")
+
+# Celery configuration (broker: RabbitMQ).
+# The worker runs with beat embedded (celery -A core worker -B) — see the
+# `worker` service in docker-compose.yml. It starts automatically with `make up`.
+CELERY_BROKER_URL = config(
+    "CELERY_BROKER_URL",
+    default="pyamqp://guest:guest@rabbitmq:5672",
+)
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+
+CELERY_BEAT_SCHEDULE = {
+    # For You engine: precomputes momentum_score + threshold counters.
+    # The task just wraps the `recompute_momentum` management command.
+    "recompute-momentum-every-10-min": {
+        "task": "app.tasks.momentum.recompute_momentum",
+        "schedule": crontab(minute="*/10"),
+    },
+}
+
+# Backend logging: everything in the "app" namespace goes to the console with
+# timestamp and level — visible in `make logs-web` and `make logs-worker`
+# (docker captures stdout/stderr). Complements the MomentumLog record:
+# the log is the operational trace, the record is the queryable history.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] {levelname} {name} — {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        # Cubre app.tasks.*, app.management.*, app.rest.*, etc.
+        "app": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+
 # Application definition
 PROJECT_APPS = [
-    "apps.threads",
-    "apps.default",
-    "apps.reactions",
-    "apps.tags",
-    "apps.masks",
+    "app",
     "honeypot",
 ]
 
@@ -133,6 +187,9 @@ DJANGO_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    # Required for the __unaccent lookup and the UnaccentExtension migration
+    # (accent-insensitive search on PostgreSQL).
+    "django.contrib.postgres",
     "rest_framework"
 ]
 
@@ -147,12 +204,32 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "django.middleware.common.CommonMiddleware",
-    "apps.masks.middlewares.mask.MaskMiddleware",
+    # Descifra el body cifrado del request (espejo del EncodeRenderer) y
+    # entrega JSON plano a las vistas — gobernado por ENCRYPTED_RESPONSE.
+    "app.middlewares.request_crypto.RequestDecryptMiddleware",
+    # (CommonMiddleware was DUPLICATED here — it already runs above; each
+    # extra middleware is overhead per request.)
+    "app.middlewares.mask.MaskMiddleware",
     "honeypot.middleware.HoneyPotMiddleware",
 ]
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# ── Anti-fingerprinting (defense-in-depth — does NOT replace real
+# security: E2E, auth and the obfuscated admin remain the foundation) ───
+# Generically named cookies: 'csrftoken'/'sessionid' give Django away to
+# Wappalyzer. The FE does not read these cookies (the API uses the
+# client-assertion header + E2E), so renaming them is transparent; the admin
+# keeps working because Django uses these settings consistently.
+CSRF_COOKIE_NAME = config("CSRF_COOKIE_NAME", default="x_t")
+SESSION_COOKIE_NAME = config("SESSION_COOKIE_NAME", default="x_s")
+
+# Legitimate security headers (KEPT; they don't reveal the technology).
+# Note: the E2E encryption and its X-Response-Payload header are NOT touched.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "same-origin"
+X_FRAME_OPTIONS = "DENY"
+
 ROOT_URLCONF = "core.urls"
 
 TEMPLATES = [
@@ -185,15 +262,28 @@ DATABASES = {
         "USER": config("DATABASE_USER"),
         "HOST": config("DATABASE_HOST"),
         "PORT": config("DATABASE_PORT"),
-        "PASSWORD": config("DATABASE_PASSWORD")
+        "PASSWORD": config("DATABASE_PASSWORD"),
+        # Persistent connections: avoids the overhead of opening a Postgres
+        # connection on EVERY request (noticeable on limited CPU / Raspberry).
+        "CONN_MAX_AGE": 60,
     }
 }
 
 REST_FRAMEWORK = {
-    'PAGE_SIZE': 15,
+    'PAGE_SIZE': 25,
+    # Rate limit for the ticket issuer (/ticket/, AnonRateThrottle):
+    # server-side defense against bootstrap abuse, since it is AllowAny.
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '120/min',
+        # Búsqueda y autocomplete (ScopedRateThrottle, anónimo por IP).
+        # suggest más alto: se dispara al tipear (con debounce en el FE).
+        # Ajustables sin tocar código.
+        'search': config('THROTTLE_SEARCH', default='60/min'),
+        'search_suggest': config('THROTTLE_SUGGEST', default='240/min'),
+    },
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'DEFAULT_RENDERER_CLASSES': [
-        'apps.default.renders.encoder.EncodeRenderer' if ENCRYPTED_RESPONSE \
+        'app.renders.encoder.EncodeRenderer' if ENCRYPTED_RESPONSE \
             else 'rest_framework.renderers.JSONRenderer',
     ],
 }
@@ -255,7 +345,7 @@ if USE_AWS_STORAGE:
 else:
     # Local media: emit absolute URLs so consumers (frontend, emails, admin)
     # see the same shape they get from S3/R2. Origin comes from MEDIA_BASE_URL.
-    DEFAULT_FILE_STORAGE = "apps.default.storages.AbsoluteUrlFileSystemStorage"
+    DEFAULT_FILE_STORAGE = "app.storages.AbsoluteUrlFileSystemStorage"
     MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "http://localhost:8000")
 
 GEOLITE_DIR = "geolite2-country.mmdb"

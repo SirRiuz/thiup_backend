@@ -44,9 +44,25 @@ geoip2>=4.8,<5.0
 emoji-country-flag>=1.3,<2.0
 humanize>=4.9,<5.0
 
+# ─── Async tasks (Celery + RabbitMQ) ────────────────────────
+# Worker + beat embedded (celery -A core worker -B). The broker is the
+# rabbitmq service in docker-compose. No Redis: the results of the periodic
+# tasks are not queried, so no result backend is needed.
+celery>=5.3,<6.0
+
 # ─── Config ─────────────────────────────────────────────────
 python-decouple>=3.8,<4.0
 
 # ─── Production server ──────────────────────────────────────
 # Kept for STAGE=production deployments (compose dev uses runserver).
 gunicorn>=21.0,<24.0
+
+# ─── Dev / fixtures generation ──────────────────────────────
+# OFFLINE world cities (name, country, lat/lng, population) for the
+# geolocated seeding of add_dummy_threads. No network at runtime.
+geonamescache>=2.0,<3.0
+
+# Used by management commands that generate dummy data
+# (app/management/commands/add_dummy_threads.py).
+Faker>=25.0,<40.0
+shortuuid>=1.0,<2.0

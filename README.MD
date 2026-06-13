@@ -169,7 +169,7 @@ migration   collectstatic   (run in parallel after postgres is healthy)
 
 ### Regenerating manually
 
-After installing a library that ships its own assets (`drf-yasg`, `debug-toolbar`, ...) or editing assets in `apps/*/static/`:
+After installing a library that ships its own assets (`drf-yasg`, `debug-toolbar`, ...) or editing assets in `app/static/`:
 
 ```bash
 make collectstatic
@@ -236,14 +236,14 @@ Idempotent — running it twice is a no-op (it filters out Django's collision-re
 
 Django fixtures store `ImageField` values as plain path strings — they don't move or transform files. The seed data here is "scan a directory of binaries and create one row per file, letting Django's storage handle the file write." A management command expresses that directly; a fixture would require pre-renaming each binary to match the path string baked into the JSON, doubling the files in the repo for no behavior change.
 
-If you later add a static catalog (e.g. `Tag` rows, default permissions), **that** is the natural place for a JSON fixture under `apps/<app>/fixtures/`. The two patterns coexist; you pick the one that fits the data.
+If you later add a static catalog (e.g. `Tag` rows, default permissions), **that** is the natural place for a JSON fixture under `app/fixtures/`. The two patterns coexist; you pick the one that fits the data.
 
 ### Quick reference
 
 | Concept | Where it lives | In git? | Loaded with |
 |---|---|---|---|
 | Seed binaries | `media/reactions/`, `media/masks/` | yes | `make seed` |
-| Catalog rows (when added) | `apps/<app>/fixtures/*.json` | yes | `python manage.py loaddata <name>` |
+| Catalog rows (when added) | `app/fixtures/*.json` | yes | `python manage.py loaddata <name>` |
 | User uploads | `media/` (subdirs Django chooses) | no (gitignored) | runtime, by users |
 
 `media/` and `fixtures/` are different things — `media/` holds binary content (some of it bundled seed assets, the rest user-uploaded), `fixtures/` would hold versioned catalog JSON. Don't mix them.
@@ -297,12 +297,12 @@ The production playbook is to apply migrations in a dedicated CI/CD step **befor
 ### Typical workflow
 
 ```bash
-vim apps/threads/models/thread.py     # change a model
-make makemigrations                   # generates apps/threads/migrations/00XX_*.py
+vim app/models/thread.py     # change a model
+make makemigrations                   # generates app/migrations/00XX_*.py
 make sqlmigrate APP=threads MIGRATION=00XX   # optional: review the SQL
 make migrate                          # apply
 make showmigrations                   # confirm
-git add apps/threads/migrations/00XX_*.py
+git add app/migrations/00XX_*.py
 git commit -m "Migration for <change>"
 ```
 

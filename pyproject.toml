@@ -6,10 +6,10 @@ addopts = [
     "--strict-markers",
     "--tb=short",
 ]
-testpaths = ["apps"]
+testpaths = ["app"]
 
 [tool.coverage.run]
-source = ["apps", "core"]
+source = ["app", "core"]
 omit = [
     "*/migrations/*",
     "*/tests/*",

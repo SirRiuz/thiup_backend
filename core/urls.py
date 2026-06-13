@@ -9,6 +9,9 @@ from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 
+# Views
+from app.rest.health import HealthCheckView
+
 
 schema_view = get_schema_view(
     openapi.Info(
@@ -29,7 +32,9 @@ urlpatterns = [
     path("admin/", include("honeypot.urls")),
     # Real admin lives at INTERNAL_ADMIN_URL (set in .env).
     path(settings.INTERNAL_ADMIN_URL, admin.site.urls),
-    path("", include("apps.threads.urls")),
-    path("", include("apps.reactions.urls")),
-    path("", include("apps.tags.urls")),
+    # PRIVATE healthcheck + E2E (same rules as the other endpoints).
+    path("health/", HealthCheckView.as_view()),
+    # REST API (threads, reactions, tags, search, users/me).
+    # GraphQL (future) will be mounted separately without touching this.
+    path("", include("app.rest.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

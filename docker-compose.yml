@@ -83,7 +83,10 @@ services:
     restart: always
     build:
       context: .
-    command: python manage.py runserver 0.0.0.0:${SERVER_PORT:-}
+    # Dev: runserver (autoreload). Prod (Raspberry): set WEB_COMMAND in
+    # .env to serve with gunicorn (tuned config in gunicorn.conf.py):
+    #   WEB_COMMAND=gunicorn core.wsgi:application -c gunicorn.conf.py -b 0.0.0.0:${SERVER_PORT}
+    command: ${WEB_COMMAND:-python manage.py runserver 0.0.0.0:${SERVER_PORT:-}}
     tty: true
     expose:
       - ${SERVER_PORT:-}
@@ -107,6 +110,8 @@ services:
       - DEBUG=${DEBUG:-}
       - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
       - SINGLE_REQUEST_PROTECT=${SINGLE_REQUEST_PROTECT:-}
+      # Celery (to enqueue tasks from requests in the future).
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-pyamqp://guest:guest@rabbitmq:5672}
       # Media settings.
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
@@ -129,6 +134,63 @@ services:
         condition: service_completed_successfully
         required: false
       collectstatic:
+        condition: service_completed_successfully
+        required: false
+    networks:
+      - internal
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: "${APP_NAME}_rabbitmq"
+    restart: unless-stopped
+    # No published ports: only services on the internal network talk to
+    # the broker (web/worker). The management UI (15672) can be exposed
+    # occasionally for debugging if needed.
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  worker:
+    container_name: "${APP_NAME}_worker"
+    restart: always
+    build:
+      context: .
+    # Worker + beat integrated in ONE container (-B): beat enqueues
+    # recompute_momentum every 10 min (CELERY_BEAT_SCHEDULE in settings) and
+    # the worker runs it. A single extra process, suitable for Raspberry.
+    command: celery -A core worker -B -l info -Q celery --max-tasks-per-child=10
+    environment:
+      - DATABASE_ENGINE=${DATABASE_ENGINE:-}
+      - DATABASE_HOST=${DATABASE_HOST:-}
+      - DATABASE_NAME=${DATABASE_NAME:-}
+      - DATABASE_USER=${DATABASE_USER:-}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
+      - DATABASE_PORT=${DATABASE_PORT:-}
+      - SECRET_KEY=${SECRET_KEY:-}
+      - API_SECRET_KEY=${API_SECRET_KEY:-}
+      - STAGE=${STAGE:-}
+      - DEBUG=${DEBUG:-}
+      - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
+      - SINGLE_REQUEST_PROTECT=${SINGLE_REQUEST_PROTECT:-}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-}
+      - INTERNAL_ADMIN_URL=${INTERNAL_ADMIN_URL:-}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-pyamqp://guest:guest@rabbitmq:5672}
+      - USE_AWS_STORAGE_SYSTEM=${USE_AWS_STORAGE_SYSTEM:-}
+      - USE_AWS_STORAGE=${USE_AWS_STORAGE_SYSTEM:-}
+      - MEDIA_BASE_URL=${MEDIA_BASE_URL:-}
+    volumes:
+      - .:/app:Z
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+        required: false
+      migration:
         condition: service_completed_successfully
         required: false
     networks:

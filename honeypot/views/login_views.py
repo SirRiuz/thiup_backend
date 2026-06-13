@@ -6,7 +6,7 @@ from django.contrib import messages
 # Libs
 from honeypot.forms import LoginForm
 from honeypot.models.login_attempt import LoginAttempt
-from apps.default.utils.client import get_client_addres
+from app.utils.client import get_client_addres
 from honeypot.app_settings import HONEYPOT_LOGIN_TRYOUT
 
 
