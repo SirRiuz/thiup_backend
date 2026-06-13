@@ -1,0 +1,335 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Thiup backend - test infrastructure WITH a public Application Load Balancer.
+  Internet -> ALB (stable DNS) -> Fargate ECS service. Gives a fixed public URL
+  (http://<alb-dns>) that does NOT change between deploys, so you can CNAME a
+  Cloudflare subdomain to it. Uses the default VPC and an EXTERNAL PostgreSQL
+  (no RDS created here).
+
+################################################################################
+# Parameters                                                                   #
+################################################################################
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Default VPC id (e.g. vpc-xxxx).
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: First public subnet of the default VPC. MUST be a different subnet (different AZ) than PublicSubnet2.
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second public subnet, in a DIFFERENT Availability Zone than PublicSubnet1. The ALB requires two AZs.
+
+  ImageRepoName:
+    Type: String
+    Default: thiup-backend
+
+  ImageTag:
+    Type: String
+    Default: test
+
+  ContainerPort:
+    Type: Number
+    Default: 8000
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+
+  TaskCpu:
+    Type: String
+    Default: "256"
+    AllowedValues: ["256", "512", "1024"]
+
+  TaskMemory:
+    Type: String
+    Default: "512"
+
+  # ---- App config (required at Django boot) ----
+  StageValue:
+    Type: String
+    Default: prod
+
+  DebugValue:
+    Type: String
+    Default: "False"
+    AllowedValues: ["True", "False"]
+
+  AllowedHosts:
+    Type: String
+    Default: "*"
+    Description: >
+      Django ALLOWED_HOSTS. Keep "*" initially (ALB health checks send the task's
+      private IP as Host; a narrow list 400s them). Later add your Cloudflare
+      subdomain, e.g. api.tudominio.com.
+
+  EncryptedResponse:
+    Type: String
+    Default: "True"
+    AllowedValues: ["True", "False"]
+
+  SingleRequestProtect:
+    Type: String
+    Default: "False"
+    AllowedValues: ["True", "False"]
+
+  GatewaySeed:
+    Type: String
+    Default: thiup-rotating-gateway-seed
+
+  InternalAdminUrl:
+    Type: String
+    AllowedPattern: "^(?!admin/).+/$"
+    ConstraintDescription: Must end with "/" and must not be "admin/".
+
+  MediaBaseUrl:
+    Type: String
+    Default: ""
+
+  CorsAllowedOrigins:
+    Type: String
+    Default: ""
+
+  CsrfTrustedOrigins:
+    Type: String
+    Default: ""
+
+  SecretKey:
+    Type: String
+    NoEcho: true
+
+  ApiSecretKey:
+    Type: String
+    NoEcho: true
+
+  # ---- External database ----
+  DatabaseEngine:
+    Type: String
+    Default: django.db.backends.postgresql
+
+  DatabaseHost:
+    Type: String
+
+  DatabaseName:
+    Type: String
+
+  DatabaseUser:
+    Type: String
+
+  DatabasePassword:
+    Type: String
+    NoEcho: true
+
+  DatabasePort:
+    Type: String
+    Default: "5432"
+
+################################################################################
+# Resources                                                                    #
+################################################################################
+Resources:
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${AWS::StackName}-cluster"
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${AWS::StackName}-web"
+      RetentionInDays: 14
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-exec-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+
+  # ---- Security groups ----
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} ALB - public HTTP"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Public HTTP
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} service - traffic from ALB only"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: From ALB to container
+
+  # ---- Application Load Balancer ----
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${AWS::StackName}-alb"
+      Type: application
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-tg"
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: HTTP
+      Port: !Ref ContainerPort
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health/
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ---- Task definition ----
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${AWS::StackName}-web"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: web
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}:${ImageTag}"
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: web
+          Environment:
+            - { Name: STAGE,                  Value: !Ref StageValue }
+            - { Name: DEBUG,                  Value: !Ref DebugValue }
+            - { Name: SERVER_PORT,            Value: !Ref ContainerPort }
+            - { Name: ALLOWED_HOSTS,          Value: !Ref AllowedHosts }
+            - { Name: ENCRYPTED_RESPONSE,     Value: !Ref EncryptedResponse }
+            - { Name: SINGLE_REQUEST_PROTECT, Value: !Ref SingleRequestProtect }
+            - { Name: GATEWAY_SEED,           Value: !Ref GatewaySeed }
+            - { Name: INTERNAL_ADMIN_URL,     Value: !Ref InternalAdminUrl }
+            - { Name: MEDIA_BASE_URL,         Value: !Ref MediaBaseUrl }
+            - { Name: CORS_ALLOWED_ORIGINS,   Value: !Ref CorsAllowedOrigins }
+            - { Name: CSRF_TRUSTED_ORIGINS,   Value: !Ref CsrfTrustedOrigins }
+            - { Name: USE_AWS_STORAGE,        Value: "False" }
+            - { Name: USE_AWS_STORAGE_SYSTEM, Value: "False" }
+            - { Name: SECRET_KEY,             Value: !Ref SecretKey }
+            - { Name: API_SECRET_KEY,         Value: !Ref ApiSecretKey }
+            - { Name: DATABASE_ENGINE,        Value: !Ref DatabaseEngine }
+            - { Name: DATABASE_HOST,          Value: !Ref DatabaseHost }
+            - { Name: DATABASE_NAME,          Value: !Ref DatabaseName }
+            - { Name: DATABASE_USER,          Value: !Ref DatabaseUser }
+            - { Name: DATABASE_PASSWORD,      Value: !Ref DatabasePassword }
+            - { Name: DATABASE_PORT,          Value: !Ref DatabasePort }
+
+  # ---- ECS service (fronted by the ALB) ----
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      ServiceName: !Sub "${AWS::StackName}-svc"
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      # Give Django time to boot before unhealthy checks count against the task.
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        # Auto-roll back a deploy that never becomes healthy.
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # Public subnets + public IP so the task can pull from ECR without a NAT.
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnet1
+            - !Ref PublicSubnet2
+          SecurityGroups:
+            - !Ref ServiceSecurityGroup
+      LoadBalancers:
+        - ContainerName: web
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+################################################################################
+# Outputs                                                                      #
+################################################################################
+Outputs:
+  ClusterName:
+    Description: Set this as CLUSTER in the CodeBuild project env.
+    Value: !Ref Cluster
+
+  ServiceName:
+    Description: Set this as SERVICE in the CodeBuild project env.
+    Value: !GetAtt Service.Name
+
+  LoadBalancerDNS:
+    Description: ALB DNS name. CNAME your Cloudflare subdomain to THIS value.
+    Value: !GetAtt LoadBalancer.DNSName
+
+  LoadBalancerURL:
+    Description: Stable public URL of the app (does not change between deploys).
+    Value: !Sub "http://${LoadBalancer.DNSName}"

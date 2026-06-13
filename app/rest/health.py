@@ -1,8 +1,10 @@
 # Django
-from django.db import connection
+# TEMPORARY: re-enable these imports when restoring the DB check below.
+# from django.db import connection
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.status import HTTP_200_OK, HTTP_503_SERVICE_UNAVAILABLE
+from rest_framework.status import HTTP_200_OK
+# from rest_framework.status import HTTP_503_SERVICE_UNAVAILABLE
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
@@ -29,11 +31,14 @@ class HealthCheckView(APIView):
     permission_classes = (IsClientAuthenticated,)
 
     def get(self, request) -> Response:
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT 1")
-        except Exception:
-            return Response(
-                {"status": "error"}, status=HTTP_503_SERVICE_UNAVAILABLE
-            )
+        # TEMPORARY: DB check disabled so the ALB target stays healthy while we
+        # bring up / debug the ECS infra independently of the database.
+        # REVERT THIS before relying on /health/ as a real readiness probe.
+        # try:
+        #     with connection.cursor() as cursor:
+        #         cursor.execute("SELECT 1")
+        # except Exception:
+        #     return Response(
+        #         {"status": "error"}, status=HTTP_503_SERVICE_UNAVAILABLE
+        #     )
         return Response({"status": "ok"}, status=HTTP_200_OK)
