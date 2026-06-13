@@ -5,13 +5,15 @@ env:
     DOCKERFILE: "aws.Dockerfile"
     DOCKER_BUILDKIT: "1"
     IMAGE_TAG: "test"
+    IMAGE_NAME: "thiup-backend"
 
 phases:
   pre_build:
     commands:
-      # Log in to ECR using only the registry host (strip the /repo suffix).
-      - REGISTRY_HOST="${IMAGE_REPO_URL%%/*}"
-      - aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY_HOST"
+      # Build the full ECR repo URL from the account id + region (cortex style).
+      - ECR_URL="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${IMAGE_NAME}"
+      # Log in to ECR
+      - aws ecr get-login-password | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
 
   build:
     commands:
@@ -19,10 +21,10 @@ phases:
         docker build . \
         --build-arg BUILDKIT_INLINE_CACHE=1 \
         --build-arg GIT_SHA=$CODEBUILD_RESOLVED_SOURCE_VERSION \
-        --cache-from ${IMAGE_REPO_URL}:${IMAGE_TAG} \
+        --cache-from ${ECR_URL}:${IMAGE_TAG} \
         --file $DOCKERFILE \
-        --tag ${IMAGE_REPO_URL}:${IMAGE_TAG}
+        --tag ${ECR_URL}:${IMAGE_TAG}
 
   post_build:
     commands:
-      - docker push ${IMAGE_REPO_URL}:${IMAGE_TAG}
+      - docker push ${ECR_URL}:${IMAGE_TAG}
