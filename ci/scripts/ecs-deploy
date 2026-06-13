@@ -24,6 +24,12 @@ dependency_verification() {
     echo "AWS CLI ('aws') is required to run this script. Install it and run 'aws configure'."
     MISSING_DEPENDENCIES=true
   fi
+  # jq is used by 'collectstatic' to read the service network configuration.
+  which jq > /dev/null
+  if [[ $? -ne 0 ]]; then
+    echo "jq is required to run this script (used by the collectstatic subcommand)."
+    MISSING_DEPENDENCIES=true
+  fi
   if [[ $MISSING_DEPENDENCIES == true ]]; then
     return 1
   fi
@@ -50,8 +56,9 @@ summary() {
   echo "    Bridge command for the Thiup deploy cycle."
   echo ""
   echo "subcommands:"
-  echo "    build    Build ci/aws.Dockerfile and push the image to ECR."
-  echo "    deploy   Force a new ECS deployment, wait, and print the public URL."
+  echo "    build          Build ci/aws.Dockerfile and push the image to ECR."
+  echo "    collectstatic  Run-task that uploads static to S3 (uses the service's task def)."
+  echo "    deploy         Force a new ECS deployment, wait, and print the public URL."
   echo ""
   echo "build and push an image (all values via flags):"
   echo "    bash ci/scripts/ecs-deploy build --account 123 --region us-east-1 \\"
@@ -116,6 +123,53 @@ build() {
     --image-name "$IMAGE_NAME" \
     --tag "$IMAGE_TAG" \
     --dockerfile "$DOCKERFILE"
+}
+
+################################################################################
+# collectstatic (ephemeral run-task that uploads static to S3)                 #
+################################################################################
+
+collectstatic() {
+  require_vars CLUSTER SERVICE REGION
+  echo "Collecting static via run-task: cluster=${CLUSTER} service=${SERVICE}"
+
+  # Reuse the service's task definition + network config (subnets/SG/public IP).
+  TASK_DEF=$(aws ecs describe-services \
+    --cluster "$CLUSTER" --services "$SERVICE" --region "$REGION" \
+    --query 'services[0].taskDefinition' --output text)
+  NETWORK_CONFIGURATION=$(aws ecs describe-services \
+    --cluster "$CLUSTER" --services "$SERVICE" --region "$REGION" \
+    --query 'services[0].networkConfiguration' --output json | jq -c)
+
+  OVERRIDES='{"containerOverrides":[{"name":"web","command":["python","manage.py","collectstatic","--noinput"]}]}'
+
+  TASK_ARN=$(aws ecs run-task \
+    --cluster "$CLUSTER" \
+    --task-definition "$TASK_DEF" \
+    --launch-type FARGATE \
+    --network-configuration "$NETWORK_CONFIGURATION" \
+    --overrides "$OVERRIDES" \
+    --region "$REGION" \
+    --query 'tasks[0].taskArn' --output text)
+
+  if [[ -z "$TASK_ARN" || "$TASK_ARN" == "None" ]]; then
+    echo "ERROR: could not start the collectstatic task." >&2
+    exit 1
+  fi
+
+  echo "Waiting for collectstatic task to finish: ${TASK_ARN}"
+  aws ecs wait tasks-stopped \
+    --cluster "$CLUSTER" --tasks "$TASK_ARN" --region "$REGION"
+
+  EXIT_CODE=$(aws ecs describe-tasks \
+    --cluster "$CLUSTER" --tasks "$TASK_ARN" --region "$REGION" \
+    --query 'tasks[0].containers[?name==`web`].exitCode | [0]' --output text)
+
+  if [[ "$EXIT_CODE" != "0" ]]; then
+    echo "ERROR: collectstatic exited with code ${EXIT_CODE}. Check CloudWatch logs." >&2
+    exit 1
+  fi
+  echo "collectstatic OK — static synced to S3."
 }
 
 ################################################################################
@@ -232,6 +286,7 @@ elif [[ $SUMMARY == true ]]; then
 else
   case "$SUBCOMMAND" in
   build) build ;;
+  collectstatic) collectstatic ;;
   deploy) deploy ;;
   "") help ;;
   *) echo "Unknown subcommand: $SUBCOMMAND"; help; exit 1 ;;

@@ -32,6 +32,13 @@ phases:
 
   post_build:
     commands:
+      # Sync static (admin/swagger/DRF) to S3 with the freshly built image,
+      # then roll the service.
+      - >-
+        bash ci/scripts/ecs-deploy collectstatic
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+        --region "$AWS_DEFAULT_REGION"
       - >-
         bash ci/scripts/ecs-deploy deploy
         --cluster "$CLUSTER"

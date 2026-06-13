@@ -30,29 +30,6 @@ RUN pip install --upgrade pip \
 
 COPY . .
 
-# collectstatic runs at build time (whitenoise serves the result at runtime).
-# settings.py fails fast on missing config, so we feed DUMMY values for every
-# required var. These are build-only and never reach the running container.
-# DATABASE_* are required by settings import even though collectstatic never
-# opens a connection — hence the throwaway values below.
-RUN SECRET_KEY=dummy-build-secret \
-    GATEWAY_SEED=build-only-seed \
-    INTERNAL_ADMIN_URL=build-only-admin/ \
-    DEBUG=False \
-    STAGE=prod \
-    ALLOWED_HOSTS=* \
-    ENCRYPTED_RESPONSE=False \
-    SINGLE_REQUEST_PROTECT=False \
-    USE_AWS_STORAGE=False \
-    USE_AWS_STORAGE_SYSTEM=False \
-    DATABASE_ENGINE=django.db.backends.postgresql \
-    DATABASE_NAME=build \
-    DATABASE_USER=build \
-    DATABASE_HOST=localhost \
-    DATABASE_PORT=5432 \
-    DATABASE_PASSWORD=build \
-    python manage.py collectstatic --noinput
-
 # GIT_SHA at the end — declaring it earlier would bust the cache for every
 # layer below it on each commit.
 ARG GIT_SHA

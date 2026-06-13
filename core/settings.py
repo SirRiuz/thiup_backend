@@ -327,14 +327,21 @@ USE_AWS_STORAGE = config("USE_AWS_STORAGE", cast=bool)
 print("Use S3 storage system :", "YES" if USE_AWS_STORAGE else "NO")
 
 if USE_AWS_STORAGE:
-    AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY")
+    # Optional: empty -> None so boto3/django-storages fall back to the AWS
+    # credential chain (the ECS task role on Fargate). No static keys needed.
+    AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="") or None
+    AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="") or None
     AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME")
     AWS_S3_CUSTOM_DOMAIN = config("AWS_S3_CUSTOM_DOMAIN")
     AWS_S3_REGION_NAME = config("AWS_S3_REGION_NAME")
 
     AWS_S3_USE_SSL = True
     AWS_S3_VERIFY = True
+    # Public, non-expiring URLs for assets (admin/swagger/DRF static + media):
+    # no per-object ACLs (bucket uses BucketOwnerEnforced + a public-read
+    # policy) and no querystring signing.
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = False
 
     STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'

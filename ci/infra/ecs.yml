@@ -39,6 +39,13 @@ Parameters:
     Type: Number
     Default: 1
 
+  MomentumScheduleExpression:
+    Type: String
+    Default: "rate(10 minutes)"
+    Description: >
+      How often the momentum recompute runs (EventBridge Scheduler). Default is
+      every 10 minutes; FlexibleTimeWindow is OFF so it fires on time.
+
   TaskCpu:
     Type: String
     Default: "256"
@@ -166,6 +173,53 @@ Resources:
           - Effect: Allow
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
+      Policies:
+        # The app + the deploy-time collectstatic task write/read assets in S3
+        # (django-storages uses this role via the AWS credential chain).
+        - PolicyName: s3-assets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+                Resource: !Sub "${StaticBucket.Arn}/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt StaticBucket.Arn
+
+  # ---- S3 bucket for static (admin/swagger/DRF) + media assets ----
+  # Public-read: the runtime container is gunicorn-only, so assets are served
+  # from S3, not the app. (Thiup posts/media are public anyway.)
+  StaticBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-assets-${AWS::AccountId}"
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET, HEAD]
+            AllowedOrigins: ["*"]
+            AllowedHeaders: ["*"]
+
+  StaticBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadAssets
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${StaticBucket.Arn}/*"
 
   # ---- Security groups ----
   AlbSecurityGroup:
@@ -271,8 +325,10 @@ Resources:
             - { Name: MEDIA_BASE_URL,         Value: !Ref MediaBaseUrl }
             - { Name: CORS_ALLOWED_ORIGINS,   Value: !Ref CorsAllowedOrigins }
             - { Name: CSRF_TRUSTED_ORIGINS,   Value: !Ref CsrfTrustedOrigins }
-            - { Name: USE_AWS_STORAGE,        Value: "False" }
-            - { Name: USE_AWS_STORAGE_SYSTEM, Value: "False" }
+            - { Name: USE_AWS_STORAGE,        Value: "True" }
+            - { Name: AWS_STORAGE_BUCKET_NAME, Value: !Ref StaticBucket }
+            - { Name: AWS_S3_CUSTOM_DOMAIN,   Value: !Sub "${StaticBucket}.s3.${AWS::Region}.amazonaws.com" }
+            - { Name: AWS_S3_REGION_NAME,     Value: !Ref AWS::Region }
             - { Name: SECRET_KEY,             Value: !Ref SecretKey }
             - { Name: DATABASE_ENGINE,        Value: !Ref DatabaseEngine }
             - { Name: DATABASE_HOST,          Value: !Ref DatabaseHost }
@@ -314,6 +370,80 @@ Resources:
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref TargetGroup
 
+  # ---- Momentum recompute: EventBridge Scheduler -> ephemeral Fargate task ----
+  # Replaces the old Celery beat + RabbitMQ. Every 10 min the scheduler launches
+  # a ONE-OFF task from the SAME task definition as the web service, overriding
+  # the command to run `python manage.py recompute_momentum`. Because the image
+  # tag is mutable (e.g. :test) and Fargate pulls the image fresh on every task
+  # launch, each run uses the LATEST image pushed by CodeBuild — no extra wiring
+  # needed for "always up to date". The task starts, computes, and exits.
+
+  # Role EventBridge Scheduler assumes to run the task on the cluster.
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-scheduler-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: run-momentum-task
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # RunTask on any revision of this stack's web task-definition
+              # family, scoped to this cluster.
+              - Effect: Allow
+                Action: ecs:RunTask
+                Resource: !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${AWS::StackName}-web:*"
+                Condition:
+                  ArnLike:
+                    ecs:cluster: !GetAtt Cluster.Arn
+              # The scheduler must pass the task's execution + task roles to ECS.
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !GetAtt ExecutionRole.Arn
+                  - !GetAtt TaskRole.Arn
+
+  MomentumSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-momentum"
+      Description: Recompute For You momentum every 10 min (ephemeral Fargate task).
+      ScheduleExpression: !Ref MomentumScheduleExpression
+      ScheduleExpressionTimezone: UTC
+      State: ENABLED
+      # OFF = fire exactly on schedule (no jitter window) — punctual every 10 min.
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt Cluster.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        # Idempotent command: a missed/failed tick is recovered by the next one,
+        # so don't pile up retries.
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+        EcsParameters:
+          TaskDefinitionArn: !Ref TaskDefinition
+          LaunchType: FARGATE
+          TaskCount: 1
+          NetworkConfiguration:
+            AwsvpcConfiguration:
+              # Public IP so the task can pull from ECR and reach the DB.
+              AssignPublicIp: ENABLED
+              Subnets:
+                - !Ref PublicSubnet1
+                - !Ref PublicSubnet2
+              SecurityGroups:
+                - !Ref ServiceSecurityGroup
+        # Override gunicorn with the management command for this run only.
+        Input: !Sub |
+          {"containerOverrides":[{"name":"web","command":["python","manage.py","recompute_momentum"]}]}
+
 ################################################################################
 # Outputs                                                                      #
 ################################################################################
@@ -333,3 +463,15 @@ Outputs:
   LoadBalancerURL:
     Description: Stable public URL of the app (does not change between deploys).
     Value: !Sub "http://${LoadBalancer.DNSName}"
+
+  MomentumScheduleName:
+    Description: EventBridge schedule that runs recompute_momentum.
+    Value: !Ref MomentumSchedule
+
+  StaticBucketName:
+    Description: S3 bucket holding collected static + media assets.
+    Value: !Ref StaticBucket
+
+  StaticBaseUrl:
+    Description: Public base URL for assets (AWS_S3_CUSTOM_DOMAIN).
+    Value: !Sub "https://${StaticBucket}.s3.${AWS::Region}.amazonaws.com/"
