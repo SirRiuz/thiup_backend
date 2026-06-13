@@ -1,13 +1,7 @@
 #!/bin/bash
 
-################################################################################
-# Configuration (override with flags)                                          #
-################################################################################
-AWS_ACCOUNT_ID="202569682529"
-REGION="us-east-1"
-IMAGE_NAME="thiup-backend"
-IMAGE_TAG="test"
-DOCKERFILE="aws.Dockerfile"
+# All configuration (account, region, image name, tag, Dockerfile) is supplied
+# as flags by scripts/ecs-deploy; require_config below enforces that they are set.
 
 ################################################################################
 # Dependency Verification                                                      #
@@ -49,14 +43,15 @@ summary() {
   # Display Summary
   # This string replacement is the name of the file/script
   echo "${0##*/}"
-  echo "    Build the Thiup web image from ${DOCKERFILE} and push it to ECR."
+  echo "    Build the Thiup web image from the given Dockerfile and push it to ECR."
   echo "    Local equivalent of the CodeBuild buildspec (login -> build -> push)."
   echo ""
-  echo "build and push the ':${IMAGE_TAG}' image:"
-  echo "    bash scripts/build-base-image.sh"
+  echo "    Not meant to be run directly: all configuration (account, region, image"
+  echo "    name, tag, Dockerfile) is owned by scripts/ecs-deploy and passed in as"
+  echo "    flags. Use 'bash scripts/ecs-deploy build' instead."
   echo ""
-  echo "build and push a different tag:"
-  echo "    bash scripts/build-base-image.sh -t my-tag"
+  echo "build and push (driven by ecs-deploy):"
+  echo "    bash scripts/ecs-deploy build --tag my-tag"
 }
 
 ################################################################################
@@ -67,14 +62,34 @@ help() {
    # Display Help
    summary
    echo ""
-   echo "options:"
+   echo "options (all required, normally supplied by scripts/ecs-deploy):"
    echo "-h, --help           Print this help."
    echo "-s, --summary        Print a summary of the script."
-   echo "-t, --tag            Image tag to build and push (default: ${IMAGE_TAG})."
-   echo "-a, --account        AWS account id (default: ${AWS_ACCOUNT_ID})."
-   echo "-r, --region         AWS region (default: ${REGION})."
+   echo "-t, --tag            Image tag to build and push."
+   echo "-a, --account        AWS account id."
+   echo "-r, --region         AWS region."
+   echo "-i, --image-name     ECR repository / image name."
+   echo "-f, --dockerfile     Dockerfile to build from."
    echo ""
    echo "Requires AWS credentials configured locally (aws configure) and a running Docker daemon."
+}
+
+################################################################################
+# Configuration validation                                                     #
+################################################################################
+
+require_config() {
+  local missing=false
+  local var
+  for var in AWS_ACCOUNT_ID REGION IMAGE_NAME IMAGE_TAG DOCKERFILE; do
+    if [[ -z "${!var}" ]]; then
+      echo "Missing required value: ${var}. Run 'bash scripts/ecs-deploy build' or see -h." >&2
+      missing=true
+    fi
+  done
+  if [[ $missing == true ]]; then
+    exit 1
+  fi
 }
 
 ################################################################################
@@ -82,6 +97,8 @@ help() {
 ################################################################################
 
 build_and_push() {
+  require_config
+
   REGISTRY_HOST="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
   ECR_URL="${REGISTRY_HOST}/${IMAGE_NAME}"
   GIT_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -122,6 +139,8 @@ do
   -t|--tag) IMAGE_TAG=$2; shift 2 ;;
   -a|--account) AWS_ACCOUNT_ID=$2; shift 2 ;;
   -r|--region) REGION=$2; shift 2 ;;
+  -i|--image-name) IMAGE_NAME=$2; shift 2 ;;
+  -f|--dockerfile) DOCKERFILE=$2; shift 2 ;;
   *) echo "Unknown option: $1"; help; exit 1 ;;
   esac
 done

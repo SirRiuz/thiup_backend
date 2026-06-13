@@ -2,9 +2,17 @@ version: 0.2
 
 env:
   variables:
+    # ecs-deploy keeps its own defaults for manual/local runs; the values below
+    # (and the ones from CodeBuild) override them via flags in CI.
+    #
+    # Provided by the CodeBuild project environment (not declared here):
+    #   AWS_ACCOUNT_ID, AWS_DEFAULT_REGION  -> account + region
+    #   IMAGE_NAME, IMAGE_TAG               -> image to build/push
+    #   CLUSTER, SERVICE                    -> ECS service to deploy
     DOCKERFILE: "aws.Dockerfile"
     DOCKER_BUILDKIT: "1"
-    IMAGE_TAG: "test"
+    TIMEOUT: "600"
+    CONTAINER_PORT: "8000"
 
 phases:
   pre_build:
@@ -14,8 +22,20 @@ phases:
 
   build:
     commands:
-      - bash scripts/ecs-deploy build --tag "$IMAGE_TAG"
+      - >-
+        bash scripts/ecs-deploy build
+        --account "$AWS_ACCOUNT_ID"
+        --region "$AWS_DEFAULT_REGION"
+        --image-name "$IMAGE_NAME"
+        --tag "$IMAGE_TAG"
+        --dockerfile "$DOCKERFILE"
 
   post_build:
     commands:
-      - bash scripts/ecs-deploy deploy
+      - >-
+        bash scripts/ecs-deploy deploy
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+        --region "$AWS_DEFAULT_REGION"
+        --timeout "$TIMEOUT"
+        --port "$CONTAINER_PORT"
