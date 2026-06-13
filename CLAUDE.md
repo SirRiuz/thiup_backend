@@ -87,16 +87,27 @@ exempt so it can answer when the DB is down.
   `points = unique_reactors + unique_commenters×3 + commenters_replied_by_author×5`;
   `momentum_score = points / (age_hours + 2)^1.5`.
   Golden rule: every signal counts **distinct masks** and **excludes the author**.
-- Runs as a Celery beat task every 10 min (`app/tasks/momentum.py` wraps the command;
-  `CELERY_BEAT_SCHEDULE` in `core/settings.py`). Manually: `make recompute_momentum`.
-- Bulk reads + batched `bulk_update`, skips unchanged rows, configurable window (default 30 days).
-  Each run also rewrites the `TrendingTag` table (top tags by momentum sum) and logs a
-  `MomentumLog` row.
+- Trigger today (verified): a **Celery beat task every 10 min** — `app/tasks/momentum.py` is a
+  thin `@shared_task` that just `call_command("recompute_momentum")`; the schedule is
+  `CELERY_BEAT_SCHEDULE` in `core/settings.py`; beat runs **embedded** in the worker
+  (`celery -A core worker -B`, see `docker-compose.yml`). There is **no OS cron and no embedded
+  in-process scheduler** (no APScheduler/threading). Manually: `make recompute_momentum`.
+- The logic is a standalone management command: bulk reads + batched `bulk_update`, skips
+  unchanged rows, configurable window (default 30 days). Each run also rewrites the `TrendingTag`
+  table (top tags by momentum sum) and logs a `MomentumLog` row. The command runs fine on its own
+  — Celery only schedules it, it carries no logic.
 
-**Async stack reality check**: there is **no Redis**. Celery IS used — broker is RabbitMQ
-(`pyamqp://`), no result backend, one `worker` container running worker+beat (`-B`). Its only job
-is the momentum recompute. Don't add new heavy async machinery; prefer precompute-on-cron via this
-existing task or management commands.
+**Async stack reality check (cost-relevant)**: there is **no Redis**. Celery IS wired — broker is
+RabbitMQ (`pyamqp://`), no result backend, one `worker` container running worker+beat (`-B`),
+whose **only** job is this 10-min recompute. Measured idle RAM: **Celery worker+beat ≈ 540–580 MB**
+and **RabbitMQ ≈ 184 MB** — i.e. ~750 MB of *always-on* memory to run a job that takes seconds
+every 10 min, vs ~50 MB (PSS) for the whole web app. On metered cloud (App Runner) this is the
+single largest avoidable cost. **Prod caveat**: the prod compose profile is `web + nginx` only and
+App Runner deploys a single container, so the worker/RabbitMQ are NOT on the web instance —
+confirm where (or whether) momentum actually recomputes in prod. **Preferred pattern**: an
+*ephemeral* trigger (OS/EventBridge cron → a short-lived task running
+`python manage.py recompute_momentum`, which starts, computes, exits) — no permanent worker, no
+broker, no Redis. Don't add new always-on async machinery.
 
 **Honeypot** — the literal `/admin/` path is a fake login (`honeypot/`) that records credentials,
 IP and user-agent; ≥5 attempts from one IP → `BlackList` → `HoneyPotMiddleware` returns 403 for

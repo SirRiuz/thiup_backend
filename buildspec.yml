@@ -1,0 +1,28 @@
+version: 0.2
+
+env:
+  variables:
+    DOCKERFILE: "aws.Dockerfile"
+    DOCKER_BUILDKIT: "1"
+    IMAGE_TAG: "test"
+
+phases:
+  pre_build:
+    commands:
+      # Log in to ECR using only the registry host (strip the /repo suffix).
+      - REGISTRY_HOST="${IMAGE_REPO_URL%%/*}"
+      - aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY_HOST"
+
+  build:
+    commands:
+      - |
+        docker build . \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        --build-arg GIT_SHA=$CODEBUILD_RESOLVED_SOURCE_VERSION \
+        --cache-from ${IMAGE_REPO_URL}:${IMAGE_TAG} \
+        --file $DOCKERFILE \
+        --tag ${IMAGE_REPO_URL}:${IMAGE_TAG}
+
+  post_build:
+    commands:
+      - docker push ${IMAGE_REPO_URL}:${IMAGE_TAG}
