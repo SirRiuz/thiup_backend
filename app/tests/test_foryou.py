@@ -4,7 +4,7 @@ import base64
 from datetime import datetime, timedelta
 
 # Django
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TestCase, SimpleTestCase, override_settings
 from django.core.management import call_command
 from django.utils import timezone
 from rest_framework import status
@@ -1041,3 +1041,64 @@ class RequestCryptoTest(TestCase):
         # lee directa para conocer el flag antes de fijar el transporte.
         self.assertEqual(client.get("/config/").status_code,
                          status.HTTP_200_OK)
+
+    def test_honeypot_admin_exempt_from_encryption(self):
+        # Honeypot (/admin/): HTML server-rendered, manda formularios en claro.
+        # NO debe exigir body cifrado → el POST llega a la vista, no al 400 del
+        # middleware ("Encrypted request body required").
+        r = client.post(
+            "/admin/login/",
+            {"email": "scanner@evil.test", "password": "x"},
+            HTTP_CLIENT_ASSERTION=self.__token())
+        self.assertNotEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_real_admin_exempt_from_encryption(self):
+        # Admin real (ruta ofuscada de settings.INTERNAL_ADMIN_URL): el POST de
+        # login en claro llega a la vista de admin (no al 400 del middleware).
+        from django.conf import settings
+        r = client.post(
+            f"/{settings.INTERNAL_ADMIN_URL}login/",
+            {"username": "x", "password": "y"},
+            HTTP_CLIENT_ASSERTION=self.__token())
+        self.assertNotEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_api_not_exempted_by_admin_rule(self):
+        # La exención es SOLO admin+honeypot: un endpoint de API con body en
+        # claro sigue rechazado con 400 (la exención no se filtró a la API).
+        r = client.post(
+            "/threads/foryou/", {}, content_type="application/json",
+            HTTP_CLIENT_ASSERTION=self.__token())
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class SecretDerivationTest(SimpleTestCase):
+    """API_SECRET_KEY is derived from SECRET_KEY; GATEWAY_SEED stays separate."""
+
+    @staticmethod
+    def _derive(secret_key: str) -> str:
+        # Mirror of core/settings.py: HMAC-SHA256 with a fixed context label.
+        import hmac
+        import hashlib
+        return hmac.new(
+            secret_key.encode(), b"thiup-api-secret", hashlib.sha256
+        ).hexdigest()
+
+    def test_api_secret_key_is_derived_from_secret_key(self):
+        # The value the app signs tickets with is the derivation, not an env var.
+        from django.conf import settings
+        self.assertEqual(
+            settings.API_SECRET_KEY, self._derive(settings.SECRET_KEY))
+
+    def test_derivation_is_deterministic_and_key_dependent(self):
+        # Same SECRET_KEY -> same key (issued tickets keep verifying across
+        # restarts); a different SECRET_KEY yields a different key.
+        self.assertEqual(self._derive("seed-A"), self._derive("seed-A"))
+        self.assertNotEqual(self._derive("seed-A"), self._derive("seed-B"))
+
+    def test_gateway_seed_is_independent_from_secret_key(self):
+        # GATEWAY_SEED is PUBLIC obfuscation: it must NOT be derived from the
+        # secret, so it never equals the derived key.
+        from django.conf import settings
+        self.assertNotEqual(settings.GATEWAY_SEED, settings.API_SECRET_KEY)
+        self.assertNotEqual(
+            settings.GATEWAY_SEED, self._derive(settings.SECRET_KEY))

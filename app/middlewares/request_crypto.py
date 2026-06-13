@@ -7,6 +7,7 @@ import logging
 # Django
 from django.conf import settings
 from django.http import JsonResponse
+from django.urls import resolve, Resolver404
 
 # Libs
 from Crypto.Cipher import AES
@@ -50,6 +51,11 @@ class RequestDecryptMiddleware:
       - Requests sin body (GET/DELETE/HEAD/OPTIONS): no hay nada que cifrar.
       - /ticket/ y /config/: bootstrap del esquema (GET sin body de todos
         modos); contrato fijo, independientes de los flags.
+      - Real admin (obfuscated settings.INTERNAL_ADMIN_URL) and honeypot
+        (/admin/): server-rendered HTML with plain forms via the normal Django
+        cycle (CSRF + session). Identified by the resolved URL app_name, not by
+        hardcoded prefixes. E2E encryption is for the SPA/API; these surfaces
+        keep their native Django protections.
     """
 
     HEADER = "HTTP_X_REQUEST_PAYLOAD"
@@ -59,6 +65,11 @@ class RequestDecryptMiddleware:
     # Prefijos exentos del enforcement (bootstrap). Son GET sin body, pero
     # se listan explícitos por robustez.
     EXEMPT_PREFIXES = ("/ticket/", "/config/", "/health/")
+    # Server-rendered HTML surfaces, identified by the app_name that Django's
+    # URLconf resolves to (NOT by hardcoded path prefixes): the real admin
+    # (obfuscated path) and the honeypot. They use the normal Django cycle
+    # (CSRF + session + forms) and never carry encrypted bodies.
+    EXEMPT_APP_NAMES = ("admin", "honeypot")
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -71,7 +82,17 @@ class RequestDecryptMiddleware:
         return self.get_response(request)
 
     def _is_exempt(self, request) -> (bool):
-        return any(request.path.startswith(p) for p in self.EXEMPT_PREFIXES)
+        # Bootstrap API endpoints: cheap prefix check.
+        if any(request.path.startswith(p) for p in self.EXEMPT_PREFIXES):
+            return True
+        # Server-rendered HTML surfaces (real admin + honeypot): let Django's
+        # own URLconf classify the request by app_name instead of duplicating
+        # routes here. Same resolve() approach the gateway uses.
+        try:
+            match = resolve(request.path_info)
+        except Resolver404:
+            return False
+        return match.app_name in self.EXEMPT_APP_NAMES
 
     def _maybe_decrypt(self, request):
         payload = request.META.get(self.HEADER)

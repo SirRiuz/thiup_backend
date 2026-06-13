@@ -17,8 +17,9 @@ endif
 export COMPOSE_PROFILES
 
 .PHONY: help stage build up up-d down restart logs logs-web logs-db logs-nginx \
+        logs-momentum \
         ps shell shell-db migrate makemigrations showmigrations sqlmigrate \
-        migrate-rollback migrate-fake collectstatic createsuperuser seed \
+        migrate-rollback migrate-fake collectstatic createsuperuser \
         load_fixtures add_dummy_threads recompute_momentum \
         validate-config \
         test test-fast test-coverage clean clean-volumes \
@@ -43,8 +44,7 @@ help:
 	@echo '    make logs-web        Tail Django logs'
 	@echo '    make logs-db         Tail PostgreSQL logs'
 	@echo '    make logs-nginx      Tail nginx logs'
-	@echo '    make logs-worker     Tail Celery worker+beat logs'
-	@echo '    make logs-rabbitmq   Tail RabbitMQ logs'
+	@echo '    make logs-momentum   Tail the momentum recompute loop logs'
 	@echo '    make ps              Container status'
 	@echo ''
 	@echo '  Django:'
@@ -52,10 +52,9 @@ help:
 	@echo '    make shell-db          psql against the DB'
 	@echo '    make collectstatic     Collect static files'
 	@echo '    make createsuperuser   Create a superuser'
-	@echo '    make seed              Ingest media/{reactions,masks} into the DB (idempotent)'
 	@echo '    make load_fixtures     Load predefined fixtures (reactions, …)'
 	@echo '    make add_dummy_threads [N]  Create N dummy threads (default 10). E.g. make add_dummy_threads 50'
-	@echo '    make recompute_momentum  Recompute For You momentum NOW (Celery beat already runs it every 10 min)'
+	@echo '    make recompute_momentum  Recompute For You momentum NOW (the scheduler already runs it every 10 min)'
 	@echo '    make validate-config   Load settings.py once and surface config errors'
 	@echo ''
 	@echo '  Migrations:'
@@ -130,11 +129,8 @@ logs-db:
 logs-nginx:
 	docker compose logs -f nginx
 
-logs-worker:
-	docker compose logs -f worker
-
-logs-rabbitmq:
-	docker compose logs -f rabbitmq
+logs-momentum:
+	docker compose logs -f momentum
 
 ps:
 	docker compose ps
@@ -189,9 +185,6 @@ collectstatic:
 createsuperuser:
 	docker compose exec web python manage.py createsuperuser
 
-seed:
-	docker compose run --rm web python manage.py seed_media
-
 load_fixtures:
 	docker compose run --rm web python manage.py load_fixtures
 
@@ -211,11 +204,9 @@ endif
 add_dummy_threads:
 	docker compose run --rm web python manage.py add_dummy_threads --number $(or $(ADT_NUM),10)
 
-# For You: precompute momentum_score + threshold counters.
-# The AUTOMATIC scheduling is done by Celery beat (every 10 min, see
-# CELERY_BEAT_SCHEDULE in core/settings.py + the compose `worker` service:
-# starts automatically with `make up`). This target is left for manual runs
-# (debug / immediate backfill).
+# For You momentum recompute. An external scheduler runs it every 10 min
+# (the `momentum` compose service locally, EventBridge in prod); this target
+# is for manual runs.
 recompute_momentum:
 	docker compose exec -T web python manage.py recompute_momentum
 

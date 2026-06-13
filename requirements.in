@@ -44,12 +44,6 @@ geoip2>=4.8,<5.0
 emoji-country-flag>=1.3,<2.0
 humanize>=4.9,<5.0
 
-# ─── Async tasks (Celery + RabbitMQ) ────────────────────────
-# Worker + beat embedded (celery -A core worker -B). The broker is the
-# rabbitmq service in docker-compose. No Redis: the results of the periodic
-# tasks are not queried, so no result backend is needed.
-celery>=5.3,<6.0
-
 # ─── Config ─────────────────────────────────────────────────
 python-decouple>=3.8,<4.0
 

@@ -1,12 +1,10 @@
 # Django
 from django.contrib import admin
-from django.utils.html import format_html
 
 # Models
 from app.models.thread import Thread
 from app.models.media import ThreadFile
 from app.models.mask import Mask
-from app.models.miniature import Miniature
 from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
@@ -62,7 +60,7 @@ class ThreadAdmin(BaseModelAdmin):
         "update_at",
     )
 
-    # Precomputed by Celery beat (recompute_momentum): shown in the
+    # Precomputed by the scheduled recompute_momentum run: shown in the
     # form but not editable — a manual value would be overwritten on the
     # next run and would break the score/counters consistency.
     readonly_fields = (
@@ -105,18 +103,6 @@ class ThreadFileAdmin(BaseModelAdmin):
     autocomplete_fields = ("thread",)
 
 
-@admin.register(Miniature)
-class MiniatureAdmin(BaseModelAdmin):
-
-    list_display = ("id", "is_active", "preview", "create_at", "update_at")
-
-    # Target of the Mask.miniature autocomplete.
-    search_fields = ("name",)
-
-    def preview(self, obj):
-        return format_html(f'<img width="50" src="{obj.icon.url}"/>')
-
-
 @admin.register(Mask)
 class MaskAdmin(BaseModelAdmin):
 
@@ -127,15 +113,9 @@ class MaskAdmin(BaseModelAdmin):
         "country_flag",
         "create_at",
         "update_at",
-        "preview",
     )
 
     search_fields = ("hash", "country_code")
-    autocomplete_fields = ("miniature",)
-
-    def preview(self, obj):
-        if obj.miniature:
-            return format_html(f'<img width="50" src="{obj.miniature.icon.url}"/>')
 
     def mask(self, obj) -> str:
         return str(obj)
@@ -179,9 +159,9 @@ class TagsAdmin(BaseModelAdmin):
 @admin.register(MomentumLog)
 class MomentumLogAdmin(BaseModelAdmin):
     """
-    Log of the momentum worker: READ-ONLY. The records are created
-    only by the management command `recompute_momentum` (triggered by
-    Celery beat every 10 min) — from the admin they can't be created or edited;
+    Log of the momentum recompute: READ-ONLY. The records are created
+    only by the management command `recompute_momentum` (run by the external
+    scheduler every 10 min) — from the admin they can't be created or edited;
     deleting is allowed, as housekeeping of old logs.
     """
 
@@ -197,7 +177,7 @@ class MomentumLogAdmin(BaseModelAdmin):
     date_hierarchy = "create_at"
 
     def has_add_permission(self, request) -> (bool):
-        # Only the worker creates records (recount run).
+        # Only the scheduled recompute_momentum run creates records.
         return False
 
     def has_change_permission(self, request, obj=None) -> (bool):
@@ -209,7 +189,7 @@ class MomentumLogAdmin(BaseModelAdmin):
 class TrendingTagAdmin(BaseModelAdmin):
     """
     Tendencias precomputadas del autocomplete: SOLO LECTURA. La tabla la
-    REESCRIBE entera el cron `recompute_momentum` (Celery beat, /10 min);
+    REESCRIBE entera el cron `recompute_momentum` (scheduler externo, /10 min);
     crear o editar a mano no tiene sentido — se pisaría en la próxima
     corrida. Útil para inspeccionar qué tags están en tendencia y su score.
     """

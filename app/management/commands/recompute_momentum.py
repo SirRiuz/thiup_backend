@@ -17,7 +17,6 @@ from app.models.momentum_log import MomentumLog
 from app.models.tag import Tag
 from app.models.trending_tag import TrendingTag
 
-
 LOGGER = logging.getLogger(__name__)
 
 
@@ -50,10 +49,10 @@ class Command(BaseCommand):
     help = (
         "Recalcula momentum_score y los contadores del For You para los "
         "posts raíz de la ventana activa (default 30 días). Idempotente y "
-        "barato: 3 queries agregadas + bulk_update en lotes. Celery beat lo "
-        "ejecuta cada 10 min vía app.tasks.momentum.recompute_momentum "
-        "(CELERY_BEAT_SCHEDULE); este command queda invocable a mano para "
-        "debug o backfill: make recompute_momentum"
+        "barato: 3 queries agregadas + bulk_update en lotes. Un scheduler "
+        "externo lo ejecuta cada 10 min (EventBridge Scheduler en prod, el "
+        "servicio `momentum` de docker-compose en local); tambien invocable a "
+        "mano para debug o backfill: make recompute_momentum"
     )
 
     def add_arguments(self, parser):
@@ -77,8 +76,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         started = time.monotonic()
         LOGGER.info(
-            "recompute_momentum: iniciando reconteo (ventana=%sd, "
-            "batch=%s)", options["days"], options["batch_size"],
+            "recompute_momentum: iniciando reconteo (ventana=%sd, " "batch=%s)",
+            options["days"],
+            options["batch_size"],
         )
 
         # Each run leaves its record in MomentumLog (read-only log in the
@@ -93,7 +93,8 @@ class Command(BaseCommand):
             # .exception includes the full traceback in the log.
             LOGGER.exception(
                 "recompute_momentum: FALLÓ tras %sms (ventana=%sd)",
-                duration_ms, options["days"],
+                duration_ms,
+                options["days"],
             )
             MomentumLog.objects.create(
                 window_days=options["days"],
@@ -116,15 +117,18 @@ class Command(BaseCommand):
             "recompute_momentum: OK — %s posts en ventana (%sd), %s "
             "actualizados, %.2fs. Términos: reactores ✓, comentaristas ✓, "
             "diálogo-autor ✓, views ✗ (sin contador en v1).",
-            processed, options["days"], updated, elapsed,
+            processed,
+            options["days"],
+            updated,
+            elapsed,
         )
-        self.stdout.write(self.style.SUCCESS(
-            f"recompute_momentum: {processed} posts en ventana "
-            f"({options['days']}d), {updated} actualizados, "
-            f"{elapsed:.2f}s."
-        ))
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"recompute_momentum: {processed} posts en ventana " f"({options['days']}d), {updated} actualizados, " f"{elapsed:.2f}s."
+            )
+        )
 
-    def _recompute(self, options) -> (tuple):
+    def _recompute(self, options) -> tuple:
         """Performs the recount and returns (processed, updated)."""
         now = timezone.now()
         window_start = now - timedelta(days=options["days"])
@@ -143,11 +147,11 @@ class Command(BaseCommand):
                 thread__is_active=True,
                 thread__sub__isnull=True,
                 thread__create_at__gte=window_start,
-            ).filter(
-                Q(thread__mask__isnull=True) | ~Q(mask=F("thread__mask"))
-            ).values("thread_id").annotate(
-                c=Count("mask", distinct=True)
-            ).values_list("thread_id", "c")
+            )
+            .filter(Q(thread__mask__isnull=True) | ~Q(mask=F("thread__mask")))
+            .values("thread_id")
+            .annotate(c=Count("mask", distinct=True))
+            .values_list("thread_id", "c")
         )
 
         # 2/3 — Unique commenters per post: DISTINCT masks ≠ author at
@@ -156,34 +160,38 @@ class Command(BaseCommand):
         #       thread where only the author talks = 0. (root, mask) pairs
         #       from both levels are merged into sets so that the same
         #       person commenting at both levels counts ONCE.
-        depth1_pairs = Thread.objects.filter(
-            is_active=True,
-            mask__isnull=False,
-            sub__isnull=False,
-            sub__sub__isnull=True,
-            sub__is_active=True,
-            sub__create_at__gte=window_start,
-        ).filter(
-            Q(sub__mask__isnull=True) | ~Q(mask=F("sub__mask"))
-        ).values_list("sub_id", "mask_id").distinct()
+        depth1_pairs = (
+            Thread.objects.filter(
+                is_active=True,
+                mask__isnull=False,
+                sub__isnull=False,
+                sub__sub__isnull=True,
+                sub__is_active=True,
+                sub__create_at__gte=window_start,
+            )
+            .filter(Q(sub__mask__isnull=True) | ~Q(mask=F("sub__mask")))
+            .values_list("sub_id", "mask_id")
+            .distinct()
+        )
 
-        depth2_pairs = Thread.objects.filter(
-            is_active=True,
-            mask__isnull=False,
-            sub__isnull=False,
-            sub__is_active=True,
-            sub__sub__isnull=False,
-            sub__sub__sub__isnull=True,
-            sub__sub__is_active=True,
-            sub__sub__create_at__gte=window_start,
-        ).filter(
-            Q(sub__sub__mask__isnull=True) | ~Q(mask=F("sub__sub__mask"))
-        ).values_list("sub__sub_id", "mask_id").distinct()
+        depth2_pairs = (
+            Thread.objects.filter(
+                is_active=True,
+                mask__isnull=False,
+                sub__isnull=False,
+                sub__is_active=True,
+                sub__sub__isnull=False,
+                sub__sub__sub__isnull=True,
+                sub__sub__is_active=True,
+                sub__sub__create_at__gte=window_start,
+            )
+            .filter(Q(sub__sub__mask__isnull=True) | ~Q(mask=F("sub__sub__mask")))
+            .values_list("sub__sub_id", "mask_id")
+            .distinct()
+        )
 
         commenters = defaultdict(set)
-        for root_id, mask_id in chain(
-            depth1_pairs.iterator(), depth2_pairs.iterator()
-        ):
+        for root_id, mask_id in chain(depth1_pairs.iterator(), depth2_pairs.iterator()):
             commenters[root_id].add(mask_id)
 
         # 3/3 — Author dialogue: DISTINCT people (≠ author) the author
@@ -193,7 +201,7 @@ class Command(BaseCommand):
             Thread.objects.filter(
                 is_active=True,
                 mask__isnull=False,
-                mask=F("sub__sub__mask"),    # whoever replies IS the author
+                mask=F("sub__sub__mask"),  # whoever replies IS the author
                 sub__isnull=False,
                 sub__is_active=True,
                 sub__mask__isnull=False,
@@ -201,11 +209,11 @@ class Command(BaseCommand):
                 sub__sub__sub__isnull=True,  # the grandparent is the root post
                 sub__sub__is_active=True,
                 sub__sub__create_at__gte=window_start,
-            ).exclude(
-                sub__mask=F("sub__sub__mask")  # don't count the author themselves
-            ).values("sub__sub_id").annotate(
-                c=Count("sub__mask", distinct=True)
-            ).values_list("sub__sub_id", "c")
+            )
+            .exclude(sub__mask=F("sub__sub__mask"))  # don't count the author themselves
+            .values("sub__sub_id")
+            .annotate(c=Count("sub__mask", distinct=True))
+            .values_list("sub__sub_id", "c")
         )
 
         # Score per post, in Python (the ^1.5 power is not done in SQL nor
@@ -224,23 +232,13 @@ class Command(BaseCommand):
             replied = author_replied.get(thread.id, 0)
             # views: no counter in the model → term omitted (v1).
 
-            points = (
-                reactors
-                + commenter_count * COMMENTER_WEIGHT
-                + replied * AUTHOR_REPLY_WEIGHT
-            )
+            points = reactors + commenter_count * COMMENTER_WEIGHT + replied * AUTHOR_REPLY_WEIGHT
             age_hours = (now - thread.create_at).total_seconds() / 3600
-            momentum = points / (
-                (age_hours + AGE_SOFTENER_HOURS) ** DECAY_EXPONENT
-            )
+            momentum = points / ((age_hours + AGE_SOFTENER_HOURS) ** DECAY_EXPONENT)
 
             # Skip no-changes: the dead tail (points=0, score=0) is not
             # rewritten — fewer writes on each cron run.
-            if (
-                thread.momentum_score == momentum
-                and thread.unique_reactors_count == reactors
-                and thread.unique_commenters_count == commenter_count
-            ):
+            if thread.momentum_score == momentum and thread.unique_reactors_count == reactors and thread.unique_commenters_count == commenter_count:
                 continue
 
             thread.momentum_score = momentum
@@ -259,7 +257,7 @@ class Command(BaseCommand):
 
         return processed, updated
 
-    def _recompute_trending(self) -> (None):
+    def _recompute_trending(self) -> None:
         """
         Tendencias del autocomplete: por NOMBRE de tag, score = suma del
         momentum_score de sus hilos activos. UNA query agregada + un
@@ -295,4 +293,5 @@ class Command(BaseCommand):
         TrendingTag.objects.all().delete()
         if trending:
             TrendingTag.objects.bulk_create(trending)
+            
         LOGGER.info("recompute_momentum: %s trending tags", len(trending))

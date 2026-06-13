@@ -35,7 +35,7 @@ services:
       - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
       - DATABASE_PORT=${DATABASE_PORT:-}
       - SECRET_KEY=${SECRET_KEY:-}
-      - API_SECRET_KEY=${API_SECRET_KEY:-}
+      - GATEWAY_SEED=${GATEWAY_SEED:-}
       - STAGE=${STAGE:-}
       - DEBUG=${DEBUG:-}
       - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
@@ -62,7 +62,7 @@ services:
     environment:
       # Minimal env — collectstatic does not need DB connectivity.
       - SECRET_KEY=${SECRET_KEY:-}
-      - API_SECRET_KEY=${API_SECRET_KEY:-}
+      - GATEWAY_SEED=${GATEWAY_SEED:-}
       - DEBUG=${DEBUG:-True}
       - STAGE=${STAGE:-}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-}
@@ -101,7 +101,7 @@ services:
       # Project config.
       - SERVER_PORT=${SERVER_PORT:-}
       - SECRET_KEY=${SECRET_KEY:-}
-      - API_SECRET_KEY=${API_SECRET_KEY:-}
+      - GATEWAY_SEED=${GATEWAY_SEED:-}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-}
       - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS:-}
       - INTERNAL_ADMIN_URL=${INTERNAL_ADMIN_URL:-}
@@ -110,8 +110,6 @@ services:
       - DEBUG=${DEBUG:-}
       - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
       - SINGLE_REQUEST_PROTECT=${SINGLE_REQUEST_PROTECT:-}
-      # Celery (to enqueue tasks from requests in the future).
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-pyamqp://guest:guest@rabbitmq:5672}
       # Media settings.
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
@@ -139,30 +137,21 @@ services:
     networks:
       - internal
 
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    container_name: "${APP_NAME}_rabbitmq"
+  momentum:
+    container_name: "${APP_NAME}_momentum"
     restart: unless-stopped
-    # No published ports: only services on the internal network talk to
-    # the broker (web/worker). The management UI (15672) can be exposed
-    # occasionally for debugging if needed.
-    healthcheck:
-      test: ["CMD-SHELL", "rabbitmq-diagnostics ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - internal
-
-  worker:
-    container_name: "${APP_NAME}_worker"
-    restart: always
     build:
       context: .
-    # Worker + beat integrated in ONE container (-B): beat enqueues
-    # recompute_momentum every 10 min (CELERY_BEAT_SCHEDULE in settings) and
-    # the worker runs it. A single extra process, suitable for Raspberry.
-    command: celery -A core worker -B -l info -Q celery --max-tasks-per-child=10
+    # Local stand-in for AWS EventBridge Scheduler: runs the management command
+    # every 10 min. In AWS this is an ephemeral Fargate RunTask; here it's a
+    # tiny sleep-loop so there is NO broker (RabbitMQ) and NO always-on Celery
+    # worker. The recompute_momentum command is self-contained — Celery only
+    # used to schedule it.
+    command: >
+      sh -c 'while true; do
+               python manage.py recompute_momentum;
+               sleep 600;
+             done'
     environment:
       - DATABASE_ENGINE=${DATABASE_ENGINE:-}
       - DATABASE_HOST=${DATABASE_HOST:-}
@@ -171,22 +160,19 @@ services:
       - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
       - DATABASE_PORT=${DATABASE_PORT:-}
       - SECRET_KEY=${SECRET_KEY:-}
-      - API_SECRET_KEY=${API_SECRET_KEY:-}
+      - GATEWAY_SEED=${GATEWAY_SEED:-}
       - STAGE=${STAGE:-}
       - DEBUG=${DEBUG:-}
       - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
       - SINGLE_REQUEST_PROTECT=${SINGLE_REQUEST_PROTECT:-}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-}
       - INTERNAL_ADMIN_URL=${INTERNAL_ADMIN_URL:-}
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-pyamqp://guest:guest@rabbitmq:5672}
       - USE_AWS_STORAGE_SYSTEM=${USE_AWS_STORAGE_SYSTEM:-}
       - USE_AWS_STORAGE=${USE_AWS_STORAGE_SYSTEM:-}
       - MEDIA_BASE_URL=${MEDIA_BASE_URL:-}
     volumes:
       - .:/app:Z
     depends_on:
-      rabbitmq:
-        condition: service_healthy
       postgres:
         condition: service_healthy
         required: false

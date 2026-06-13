@@ -19,8 +19,8 @@ A standard-library-only script (uses `tokenize` + `ast`) flags comments that
 look like Spanish:
 
 ```bash
-python scripts/check_comment_language.py            # scan app/, core/, honeypot/
-python scripts/check_comment_language.py <file.py>  # scan specific files
+python ci/scripts/check_comment_language.py            # scan app/, core/, honeypot/
+python ci/scripts/check_comment_language.py <file.py>  # scan specific files
 ```
 
 Because it parses with `tokenize`/`ast`, it inspects **only** `#` comments

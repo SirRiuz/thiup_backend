@@ -9,7 +9,7 @@ env:
     #   AWS_ACCOUNT_ID, AWS_DEFAULT_REGION  -> account + region
     #   IMAGE_NAME, IMAGE_TAG               -> image to build/push
     #   CLUSTER, SERVICE                    -> ECS service to deploy
-    DOCKERFILE: "aws.Dockerfile"
+    DOCKERFILE: "ci/aws.Dockerfile"
     DOCKER_BUILDKIT: "1"
     TIMEOUT: "600"
     CONTAINER_PORT: "8000"
@@ -23,7 +23,7 @@ phases:
   build:
     commands:
       - >-
-        bash scripts/ecs-deploy build
+        bash ci/scripts/ecs-deploy build
         --account "$AWS_ACCOUNT_ID"
         --region "$AWS_DEFAULT_REGION"
         --image-name "$IMAGE_NAME"
@@ -33,7 +33,7 @@ phases:
   post_build:
     commands:
       - >-
-        bash scripts/ecs-deploy deploy
+        bash ci/scripts/ecs-deploy deploy
         --cluster "$CLUSTER"
         --service "$SERVICE"
         --region "$AWS_DEFAULT_REGION"
