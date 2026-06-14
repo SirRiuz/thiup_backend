@@ -190,8 +190,9 @@ request path; expose it as a precomputed indexed column like `momentum_score`.
 - Files: `app/tests/test_foryou.py` (momentum, For You/Close You, search, request crypto),
   `test_gateway.py` (rotation, HMAC validation, anti-SSRF, toggles), `test_thread_view.py`
   (CRUD/replies/search, uses `TransactionTestCase`), `test_reaction_view.py`.
-- Run inside Docker: `make test` (coverage term + HTML), `make test-fast` (`-x`),
-  `make test-coverage` (CI gate: **≥70%**). Or `docker compose exec web pytest`.
+- Run inside Docker: `make test` — a one-off container running pytest with coverage
+  (term + HTML) and the **≥70%** gate (`--cov-fail-under=70`); no running stack required
+  (the local image bakes in the dev deps). Or `docker compose exec web pytest`.
 - Tests are **sensitive to `ENCRYPTED_RESPONSE` / `SINGLE_REQUEST_PROTECT`**: crypto/gateway
   tests pin the flags with `@override_settings`. When writing tests that hit the API, either
   pin the flags or use the existing helpers (`encrypted_post`, `gateway_post`, `decode_body`,
@@ -203,9 +204,9 @@ request path; expose it as a precomputed indexed column like `momentum_score`.
 
 ```bash
 cp .env.template .env   # fill in: SECRET_KEY, API_SECRET_KEY, INTERNAL_ADMIN_URL, DB creds...
-make build && make up-d
-make migrate
-make load_fixtures                 # reaction catalog
+make build
+make up                            # the `migration` compose service applies migrations on start
+make load_fixtures                 # reaction catalog (separate shell; `make up` runs in foreground)
 make test
 ```
 
@@ -215,7 +216,9 @@ make test
   `SERVER_PORT` (default 8080).
 - Useful targets (see `make help`): `make shell`, `make shell-db` (psql), `make logs-web`,
   `make add_dummy_threads`, `make recompute_momentum`, `make validate-config`,
-  `make dependencies` (pip-tools: edit `requirements.in`, never `requirements.txt` directly).
+  `make dependencies` (rebuild the web image to pick up requirements changes; the local
+  image installs prod + `requirements.dev`). Edit `requirements.in`, never `requirements.txt`
+  directly; regenerate the lock with `pip-compile` (`requirements.dev` adds the test tooling).
 - Admin: `http://localhost:8080/{INTERNAL_ADMIN_URL}` (from your `.env`). `/admin/` is the
   honeypot — don't "fix" it.
 - Python 3.12 (Docker image). `app/` directory does all the work; `media/` and `staticfiles/`
@@ -252,8 +255,8 @@ make test
    cron or a management command.
 5. **Privacy**: never log/persist queries, feed inputs or histories; only public identifiers are
    searchable; never leak data through logs, error messages, OG tags or titles.
-6. **Write/update tests** for every added or changed behavior; keep `make test-coverage` ≥70%
-   green; pin `ENCRYPTED_RESPONSE`/`SINGLE_REQUEST_PROTECT` in API tests.
+6. **Write/update tests** for every added or changed behavior; keep `make test` (≥70%
+   gate) green; pin `ENCRYPTED_RESPONSE`/`SINGLE_REQUEST_PROTECT` in API tests.
 7. **Clean migrations** for any model/index change — including backfills for derived `*_norm`
    columns and index additions/removals (see migration `0012` as the model to follow).
 8. **Don't break API contracts**: response shapes, headers, pagination and status codes are

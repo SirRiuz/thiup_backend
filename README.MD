@@ -33,11 +33,10 @@ sed -i 's/^STAGE=.*/STAGE=prod/' .env   # Linux
 sed -i '' 's/^STAGE=.*/STAGE=prod/' .env   # macOS
 
 # Re-create the stack
-make down
-make up-d
+make restart
 
 # Confirm
-make stage
+make validate-config
 ```
 
 ### Important when STAGE=prod
@@ -54,8 +53,8 @@ The local `postgres` service is intentionally skipped in this mode — that's a 
 ### Verifying
 
 ```bash
-make stage   # prints the detected STAGE and the services that should run
-make ps      # lists the containers actually running
+make validate-config   # prints the detected STAGE
+docker compose ps      # lists the containers actually running
 ```
 
 ### Under the hood
@@ -81,7 +80,7 @@ INTERNAL_ADMIN_URL=admin-Hk9_x2lT/
 python -c "import secrets; print(f'admin-{secrets.token_urlsafe(6)}/')"
 ```
 
-Paste the output into `.env`, then `make down && make up-d` so the container re-reads the file.
+Paste the output into `.env`, then `make restart` so the container re-reads the file.
 
 ### Fail-fast
 
@@ -133,8 +132,7 @@ Three separate Django lists, all driven from `.env`. They look similar but their
 Containers read `.env` once at start. `docker compose restart` does **not** reload it:
 
 ```bash
-make down
-make up-d
+make restart
 ```
 
 ## Static files
@@ -151,7 +149,7 @@ Static assets (Django admin CSS/JS, DRF, drf-yasg, anything in app `static/` dir
 ### Automatic dev flow
 
 ```
-make up-d
+make up
     │
     ▼
 postgres (healthy)
@@ -267,7 +265,7 @@ All targets use `docker compose run --rm web …` so they work even when the sta
 
 ### Automatic in dev
 
-With `STAGE=dev`, `make up-d` chains startup like this:
+With `STAGE=dev`, `make up` chains startup like this:
 
 ```
 postgres (healthy)

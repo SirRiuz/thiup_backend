@@ -56,7 +56,8 @@ help() {
    echo "options (all required, normally supplied by ci/scripts/ecs-deploy):"
    echo "-h, --help           Print this help."
    echo "-s, --summary        Print a summary of the script."
-   echo "-t, --tag            Image tag to build and push."
+   echo "-t, --tag            Image tag to build and push (mutable, e.g. test)."
+   echo "    --immutable-tag  Extra immutable tag to push (e.g. the commit SHA, optional)."
    echo "-a, --account        AWS account id."
    echo "-r, --region         AWS region."
    echo "-i, --image-name     ECR repository / image name."
@@ -93,18 +94,29 @@ build_and_push() {
     | docker login --username AWS --password-stdin "$REGISTRY_HOST"
 
   echo "Building ${ECR_URL}:${IMAGE_TAG} (GIT_SHA=${GIT_SHA})"
+  BUILD_TAGS=(--tag "${ECR_URL}:${IMAGE_TAG}")
+  # Immutable per-build tag: lets the deploy register a revision that pins this
+  # exact image, so a later deploy can still run tasks on the previous image
+  # (required to reverse migrations during automigrate).
+  if [[ -n "$IMMUTABLE_TAG" ]]; then
+    BUILD_TAGS+=(--tag "${ECR_URL}:${IMMUTABLE_TAG}")
+  fi
   DOCKER_BUILDKIT=1 docker build . \
     --build-arg BUILDKIT_INLINE_CACHE=1 \
     --build-arg GIT_SHA="$GIT_SHA" \
     --cache-from "${ECR_URL}:${IMAGE_TAG}" \
     --file "$DOCKERFILE" \
-    --tag "${ECR_URL}:${IMAGE_TAG}"
+    "${BUILD_TAGS[@]}"
 
   echo "Pushing ${ECR_URL}:${IMAGE_TAG}"
   docker push "${ECR_URL}:${IMAGE_TAG}"
+  if [[ -n "$IMMUTABLE_TAG" ]]; then
+    echo "Pushing ${ECR_URL}:${IMMUTABLE_TAG}"
+    docker push "${ECR_URL}:${IMMUTABLE_TAG}"
+  fi
 
   echo ""
-  echo "Pushed ${ECR_URL}:${IMAGE_TAG}"
+  echo "Pushed ${ECR_URL}:${IMAGE_TAG}${IMMUTABLE_TAG:+ and ${ECR_URL}:${IMMUTABLE_TAG}}"
   echo "Next: run 'bash ci/scripts/ecs-deploy' to make ECS pull the new image."
 }
 
@@ -120,6 +132,7 @@ do
   -h|--help) HELP=true; shift ;;
   -s|--summary) SUMMARY=true; shift ;;
   -t|--tag) IMAGE_TAG=$2; shift 2 ;;
+  --immutable-tag) IMMUTABLE_TAG=$2; shift 2 ;;
   -a|--account) AWS_ACCOUNT_ID=$2; shift 2 ;;
   -r|--region) REGION=$2; shift 2 ;;
   -i|--image-name) IMAGE_NAME=$2; shift 2 ;;

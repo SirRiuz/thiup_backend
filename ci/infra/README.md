@@ -30,22 +30,27 @@ User is not authorized to access connection arn:aws:codeconnections:...:connecti
 
 (this fails **even as root**, which only happens with an SCP).
 
-Therefore the template intentionally **omits** `Source.Auth` and `Triggers`. After
-every stack creation you must do **two manual steps in the CodeBuild console**:
+Therefore the project is created with **`Source.Type: NO_SOURCE`** (no GitHub URL,
+no `Auth`, no `Triggers` — a placeholder buildspec). After every stack creation you
+bind the source **by hand in the CodeBuild console**:
 
-1. **Bind the GitHub connection** — Project `…-ci` → **Edit → Source** → Source
+1. **Bind the GitHub source** — Project `…-ci` → **Edit → Source** → Source
    provider **GitHub** → select the existing GitHub App connection
    (**“SirRiuz GH Conection”**, `connection/099f5062-…`, status *Available*) →
-   Repository `https://github.com/SirRiuz/thiup_backend` → **Update**.
-2. **Enable the webhook** — same screen, *Primary source webhook events* →
-   **“Rebuild every time a code change is pushed”** → **Update**.
+   Repository `https://github.com/SirRiuz/thiup_backend`.
+2. **Use the repo buildspec** — same screen, *Buildspec* → **“Use a buildspec
+   file”** (defaults to `buildspec.yml`).
+3. **Enable the webhook** — *Primary source webhook events* → **“Rebuild every
+   time a code change is pushed”** → **Update**.
 
 Connections console:
 <https://us-east-1.console.aws.amazon.com/codesuite/settings/connections?region=us-east-1>
 
-> **Drift caveat:** if you recreate the stack (new `…-vN`), the new `…-ci` project
-> is born WITHOUT a working source binding — **redo the two steps above**. The
-> CodeBuild **role already has** `codeconnections:UseConnection`/`GetConnectionToken`,
+> **No more reconnect on update:** because the template no longer owns a GitHub
+> source, a stack **Update** leaves your manual binding untouched (CFN only
+> re-applies a property when its template value changes — `NO_SOURCE` never does).
+> You only redo the steps above if you **recreate** the stack from scratch (new
+> `…-vN`). The role already has `codeconnections:UseConnection`/`GetConnectionToken`,
 > so once bound, builds clone fine.
 
 ### Want it fully turnkey (zero manual steps)?
@@ -77,7 +82,7 @@ project bound to the old connection (including older ones).
 1. **Create stack → With new resources** → upload `ci/infra/ecs.yml`.
 2. **Stack name**, e.g. `thiup-prod` (or `thiup-test-…`).
 3. Fill parameters (see below). Acknowledge **IAM capabilities**. **Submit**.
-4. On **CREATE_COMPLETE**, do the **two manual GitHub steps** above.
+4. On **CREATE_COMPLETE**, do the **manual GitHub steps** above (source, buildspec, webhook).
 5. Trigger a build in `…-ci` (or push). Pipeline: **build → collectstatic → deploy**.
 6. Open the app at the **`LoadBalancerURL`** output.
 
@@ -92,25 +97,53 @@ project bound to the old connection (including older ones).
 | `DatabaseHost/Name/User/Password/Port` | Your external Postgres. |
 | `ImageTag` | Mutable tag the service runs (default `test`). |
 | `MomentumScheduleExpression` | Default `rate(10 minutes)`. |
-| `GitHubRepoUrl` | Repo URL (the connection itself is bound by hand). |
 
 Static port is fixed at **8000** (not a parameter).
 
 ## CI pipeline (`buildspec.yml`)
 
 - **pre_build:** ECR login.
-- **build:** `ci/scripts/ecs-deploy build` → `docker build` (base image from **ECR
-  Public**, avoids Docker Hub 429) → push `:${IMAGE_TAG}`.
-- **post_build:** `ci/scripts/ecs-deploy collectstatic` (ephemeral run-task uploads
-  static to S3) → `ci/scripts/ecs-deploy deploy` (force-new-deployment + wait).
+- **build:** `ecs-deploy build` → `docker build` (base image from **ECR Public**,
+  avoids Docker Hub 429) → push **two** tags: `:${IMAGE_TAG}` (mutable, used for
+  cache + the momentum scheduler) and `:${CODEBUILD_RESOLVED_SOURCE_VERSION}`
+  (immutable per-commit).
+- **post_build (in order):**
+  1. `ecs-deploy register-task` — clone the service's task def, swap the image to
+     the immutable tag, register a new revision (ARN saved to a temp file). The
+     service keeps running the **old** image until step 5.
+  2. `ecs-deploy collectstatic` — run-task on the **new** revision → static to S3.
+  3. `ecs-deploy automigrate` — run-task on the **old** image: roll the DB back to
+     the migration common to the DB and this branch (see below).
+  4. `ecs-deploy migrate` — run-task on the **new** revision: apply this branch's
+     migrations forward.
+  5. `ecs-deploy deploy` — switch the service to the new revision, re-point the
+     momentum schedule at the same revision, and wait.
 
 `CLUSTER`/`SERVICE` are **auto-wired** to this stack via the project's env vars —
 they can never go stale. `AWS_ACCOUNT_ID`/`AWS_DEFAULT_REGION` come from CodeBuild.
 
+### Migrations & rollback
+Why two image tags? To **reverse** a migration Django needs that migration's file.
+The immutable per-commit tag keeps the previously deployed image addressable, so
+`automigrate` runs `migrate app <ancestor>` on the **old** image (which still has
+the files to reverse) while `migrate` runs forward on the **new** image.
+
+`automigrate` is **gated**: it is a no-op unless the CodeBuild project has env var
+**`AUTOMIGRATE_ROLLBACK=true`**. Set it **only on dev/test stacks** — rolling back
+a migration drops whatever it created. With it off, deploys only migrate *forward*.
+
+> **CFN drift:** a stack **Update** re-creates the task def pointing at the mutable
+> `:${ImageTag}` and resets the momentum schedule to it; the next CodeBuild run
+> re-registers an immutable revision and re-points the schedule. Between an update
+> and the next deploy the schedule runs `:${ImageTag}` (still the latest image).
+
 ### CodeBuild role permissions (all included)
-Logs · ECR auth + push/pull · `ecs:UpdateService/RunTask/DescribeServices/DescribeTasks/ListTasks`
-· `iam:PassRole` (exec+task roles) · `ec2:DescribeNetworkInterfaces`
-· `codeconnections:UseConnection/GetConnectionToken` (to clone once bound).
+Logs (write own + read `/ecs/<stack>-web`) · ECR auth + push/pull ·
+`ecs:UpdateService/RunTask/RegisterTaskDefinition/DescribeServices/DescribeTasks/DescribeTaskDefinition/ListTasks`
+· `scheduler:GetSchedule/UpdateSchedule` (re-point the momentum cron) ·
+`iam:PassRole` (exec+task roles to ECS, scheduler role to EventBridge) ·
+`ec2:DescribeNetworkInterfaces` ·
+`codeconnections:UseConnection/GetConnectionToken` (to clone once bound).
 
 ## Static & media (S3)
 
@@ -175,8 +208,10 @@ role lists the secret ARNs — add the new one, or scope it to `secret:/<stack>/
 ## Momentum (For You ranking)
 
 EventBridge Scheduler runs `python manage.py recompute_momentum` every 10 min as an
-ephemeral Fargate task (same task definition, command overridden). Mutable image tag
-+ Fargate fresh pull → each run uses the **latest** pushed image. No broker/worker.
+ephemeral Fargate task (same task definition, command overridden). The `deploy` step
+re-points the schedule at the **deployed immutable revision** (after `migrate`), so
+the cron runs exactly the deployed, already-migrated code — no pre-migration window.
+No broker/worker.
 
 ## Teardown
 

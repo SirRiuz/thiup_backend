@@ -50,9 +50,12 @@ summary() {
   echo "    Bridge command for the Thiup deploy cycle."
   echo ""
   echo "subcommands:"
-  echo "    build          Build ci/aws.Dockerfile and push the image to ECR."
-  echo "    collectstatic  Run-task that uploads static to S3 (uses the service's task def)."
-  echo "    deploy         Force a new ECS deployment, wait, and print the public URL."
+  echo "    build          Build ci/aws.Dockerfile and push the image to ECR (mutable + immutable tag)."
+  echo "    register-task  Clone the service's task def, swap the image to the immutable tag."
+  echo "    collectstatic  Run-task that uploads static to S3."
+  echo "    automigrate    Roll the DB back to the migration common to the DB and this branch."
+  echo "    migrate        Apply this branch's migrations forward."
+  echo "    deploy         Switch the service to the registered revision, wait, print the URL."
   echo ""
   echo "build and push an image (all values via flags):"
   echo "    bash ci/scripts/ecs-deploy build --account 123 --region us-east-1 \\"
@@ -79,6 +82,7 @@ help() {
    echo "-n, --service        ECS service name for 'deploy'."
    echo "-t, --timeout        Seconds to wait for the service to stabilize ('deploy')."
    echo "-p, --port           Container port for the printed URL ('deploy', optional)."
+   echo "    --schedule       EventBridge schedule name to re-point at the new revision ('deploy', optional)."
    echo "-r, --region         AWS region."
    echo ""
    echo "Requires AWS credentials configured locally (aws configure)."
@@ -102,67 +106,142 @@ require_vars() {
 # --- build (bridge to build-base-image.sh) ---
 build() {
   require_vars AWS_ACCOUNT_ID REGION IMAGE_NAME IMAGE_TAG DOCKERFILE
-  bash "$SCRIPT_DIR/build-base-image.sh" \
-    --account "$AWS_ACCOUNT_ID" \
+  local args=(--account "$AWS_ACCOUNT_ID" --region "$REGION" \
+    --image-name "$IMAGE_NAME" --tag "$IMAGE_TAG" --dockerfile "$DOCKERFILE")
+  [[ -n "$IMMUTABLE_TAG" ]] && args+=(--immutable-tag "$IMMUTABLE_TAG")
+  bash "$SCRIPT_DIR/build-base-image.sh" "${args[@]}"
+}
+
+TASKDEF_ARN_FILE="${TASKDEF_ARN_FILE:-/tmp/thiup_taskdef.arn}"
+
+# Task def to run one-off tasks against: explicit flag > file written by
+# register-task (the freshly built image) > the service's current revision.
+resolve_task_def() {
+  if [[ -n "$TASK_DEFINITION" ]]; then echo "$TASK_DEFINITION"
+  elif [[ -f "$TASKDEF_ARN_FILE" ]]; then cat "$TASKDEF_ARN_FILE"
+  else
+    aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region "$REGION" \
+      --query 'services[0].taskDefinition' --output text
+  fi
+}
+
+# --- shared: run an ephemeral one-off task and block on its exit code ---
+run_ephemeral() {
+  local task_def="$1" command_json="$2" label="$3"
+  echo "Running ${label} via run-task (task-def=${task_def})"
+
+  local network_configuration overrides task_arn exit_code
+  network_configuration=$(aws ecs describe-services \
+    --cluster "$CLUSTER" --services "$SERVICE" --region "$REGION" \
+    --query 'services[0].networkConfiguration' --output json | jq -c)
+  overrides=$(printf '{"containerOverrides":[{"name":"web","command":%s}]}' "$command_json")
+
+  task_arn=$(aws ecs run-task \
+    --cluster "$CLUSTER" \
+    --task-definition "$task_def" \
+    --launch-type FARGATE \
+    --network-configuration "$network_configuration" \
+    --overrides "$overrides" \
     --region "$REGION" \
-    --image-name "$IMAGE_NAME" \
-    --tag "$IMAGE_TAG" \
-    --dockerfile "$DOCKERFILE"
+    --query 'tasks[0].taskArn' --output text)
+
+  if [[ -z "$task_arn" || "$task_arn" == "None" ]]; then
+    echo "ERROR: could not start the ${label} task." >&2
+    exit 1
+  fi
+
+  echo "Waiting for ${label}: ${task_arn}"
+  aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn" --region "$REGION"
+
+  exit_code=$(aws ecs describe-tasks \
+    --cluster "$CLUSTER" --tasks "$task_arn" --region "$REGION" \
+    --query 'tasks[0].containers[?name==`web`].exitCode | [0]' --output text)
+
+  if [[ "$exit_code" != "0" ]]; then
+    echo "ERROR: ${label} exited with code ${exit_code}. Check CloudWatch logs." >&2
+    exit 1
+  fi
+  echo "${label} OK."
+}
+
+# --- register-task (clone current task def, swap image to the immutable tag) ---
+register_task() {
+  require_vars AWS_ACCOUNT_ID REGION IMAGE_NAME IMMUTABLE_TAG CLUSTER SERVICE
+  local image current new_def new_arn
+  image="${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${IMAGE_NAME}:${IMMUTABLE_TAG}"
+
+  current=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --region "$REGION" \
+    --query 'services[0].taskDefinition' --output text)
+  new_def=$(aws ecs describe-task-definition --task-definition "$current" --region "$REGION" \
+    --query 'taskDefinition' --output json \
+    | jq --arg IMG "$image" '
+        .containerDefinitions = (.containerDefinitions
+          | map(if .name=="web" then .image=$IMG else . end))
+        | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+              .compatibilities, .registeredAt, .registeredBy)')
+
+  new_arn=$(aws ecs register-task-definition --region "$REGION" \
+    --cli-input-json "$new_def" \
+    --query 'taskDefinition.taskDefinitionArn' --output text)
+
+  if [[ -z "$new_arn" || "$new_arn" == "None" ]]; then
+    echo "ERROR: failed to register a new task definition revision." >&2
+    exit 1
+  fi
+  echo "$new_arn" > "$TASKDEF_ARN_FILE"
+  echo "Registered task definition ${new_arn} (image tag ${IMMUTABLE_TAG})"
 }
 
 # --- collectstatic (ephemeral run-task that uploads static to S3) ---
 collectstatic() {
   require_vars CLUSTER SERVICE REGION
-  echo "Collecting static via run-task: cluster=${CLUSTER} service=${SERVICE}"
-
-  # Reuse the service's task definition + network config (subnets/SG/public IP).
-  TASK_DEF=$(aws ecs describe-services \
-    --cluster "$CLUSTER" --services "$SERVICE" --region "$REGION" \
-    --query 'services[0].taskDefinition' --output text)
-  NETWORK_CONFIGURATION=$(aws ecs describe-services \
-    --cluster "$CLUSTER" --services "$SERVICE" --region "$REGION" \
-    --query 'services[0].networkConfiguration' --output json | jq -c)
-
-  OVERRIDES='{"containerOverrides":[{"name":"web","command":["python","manage.py","collectstatic","--noinput"]}]}'
-
-  TASK_ARN=$(aws ecs run-task \
-    --cluster "$CLUSTER" \
-    --task-definition "$TASK_DEF" \
-    --launch-type FARGATE \
-    --network-configuration "$NETWORK_CONFIGURATION" \
-    --overrides "$OVERRIDES" \
-    --region "$REGION" \
-    --query 'tasks[0].taskArn' --output text)
-
-  if [[ -z "$TASK_ARN" || "$TASK_ARN" == "None" ]]; then
-    echo "ERROR: could not start the collectstatic task." >&2
-    exit 1
-  fi
-
-  echo "Waiting for collectstatic task to finish: ${TASK_ARN}"
-  aws ecs wait tasks-stopped \
-    --cluster "$CLUSTER" --tasks "$TASK_ARN" --region "$REGION"
-
-  EXIT_CODE=$(aws ecs describe-tasks \
-    --cluster "$CLUSTER" --tasks "$TASK_ARN" --region "$REGION" \
-    --query 'tasks[0].containers[?name==`web`].exitCode | [0]' --output text)
-
-  if [[ "$EXIT_CODE" != "0" ]]; then
-    echo "ERROR: collectstatic exited with code ${EXIT_CODE}. Check CloudWatch logs." >&2
-    exit 1
-  fi
-  echo "collectstatic OK — static synced to S3."
+  run_ephemeral "$(resolve_task_def)" \
+    '["python","manage.py","collectstatic","--noinput"]' "collectstatic"
 }
 
-# --- deploy ---
+# --- migrate (apply this branch's migrations forward) ---
+migrate() {
+  require_vars CLUSTER SERVICE REGION
+  run_ephemeral "$(resolve_task_def)" \
+    '["python","manage.py","migrate","--noinput"]' "migrate"
+}
+
+# --- automigrate (roll the DB back to the common ancestor; runs on the OLD image) ---
+automigrate() {
+  require_vars CLUSTER SERVICE REGION
+  python3 "$SCRIPT_DIR/automigrate.py" \
+    --cluster "$CLUSTER" --service "$SERVICE" --region "$REGION"
+}
+
+# --- re-point the momentum schedule at the just-deployed revision (post-migrate) ---
+update_momentum_schedule() {
+  local task_def="$1"
+  [[ -z "$MOMENTUM_SCHEDULE" ]] && return 0
+  echo "Re-pointing momentum schedule ${MOMENTUM_SCHEDULE} at ${task_def}"
+  local tmp
+  tmp=$(mktemp)
+  aws scheduler get-schedule --name "$MOMENTUM_SCHEDULE" --region "$REGION" --output json \
+    | jq --arg ARN "$task_def" '
+        .Target.EcsParameters.TaskDefinitionArn = $ARN
+        | del(.Arn, .CreationDate, .LastModificationDate)' > "$tmp"
+  aws scheduler update-schedule --region "$REGION" --cli-input-json "file://$tmp" > /dev/null
+  rm -f "$tmp"
+  echo "Momentum schedule now runs the deployed revision."
+}
+
+# --- deploy (switch the service to the freshly registered revision) ---
 deploy() {
   require_vars CLUSTER SERVICE REGION TIMEOUT
-  echo "Forcing new deployment: cluster=${CLUSTER} service=${SERVICE} region=${REGION}"
+  local task_def
+  task_def=$(resolve_task_def)
+  echo "Deploying ${task_def} to cluster=${CLUSTER} service=${SERVICE} region=${REGION}"
   aws ecs update-service \
     --cluster "$CLUSTER" \
     --service "$SERVICE" \
-    --force-new-deployment \
+    --task-definition "$task_def" \
     --region "$REGION" > /dev/null
+
+  update_momentum_schedule "$task_def"
 
   echo "Waiting for the service to become stable (timeout ~${TIMEOUT}s)..."
   # 'wait services-stable' polls every 15s up to 40 times (~600s). The --timeout
@@ -244,6 +323,9 @@ do
   -h|--help) HELP=true; shift ;;
   -s|--summary) SUMMARY=true; shift ;;
   --tag) IMAGE_TAG=$2; shift 2 ;;
+  --immutable-tag) IMMUTABLE_TAG=$2; shift 2 ;;
+  --task-definition) TASK_DEFINITION=$2; shift 2 ;;
+  --schedule) MOMENTUM_SCHEDULE=$2; shift 2 ;;
   -a|--account) AWS_ACCOUNT_ID=$2; shift 2 ;;
   -i|--image-name) IMAGE_NAME=$2; shift 2 ;;
   -f|--dockerfile) DOCKERFILE=$2; shift 2 ;;
@@ -263,7 +345,10 @@ elif [[ $SUMMARY == true ]]; then
 else
   case "$SUBCOMMAND" in
   build) build ;;
+  register-task) register_task ;;
   collectstatic) collectstatic ;;
+  automigrate) automigrate ;;
+  migrate) migrate ;;
   deploy) deploy ;;
   "") help ;;
   *) echo "Unknown subcommand: $SUBCOMMAND"; help; exit 1 ;;

@@ -22,23 +22,53 @@ phases:
 
   build:
     commands:
+      # Push a mutable tag (cache + momentum scheduler) and an immutable per-commit
+      # tag so the deploy can pin this exact image and the previous one stays
+      # runnable for automigrate's rollback.
       - >-
         bash ci/scripts/ecs-deploy build
         --account "$AWS_ACCOUNT_ID"
         --region "$AWS_DEFAULT_REGION"
         --image-name "$IMAGE_NAME"
         --tag "$IMAGE_TAG"
+        --immutable-tag "$CODEBUILD_RESOLVED_SOURCE_VERSION"
         --dockerfile "$DOCKERFILE"
 
   post_build:
     commands:
-      # Sync static (admin/swagger/DRF) to S3 with the freshly built image,
-      # then roll the service.
+      # Register a revision pinned to the new image (writes its ARN to a temp file
+      # that collectstatic/migrate/deploy pick up). The service still runs the OLD
+      # image until 'deploy'.
+      - >-
+        bash ci/scripts/ecs-deploy register-task
+        --account "$AWS_ACCOUNT_ID"
+        --region "$AWS_DEFAULT_REGION"
+        --image-name "$IMAGE_NAME"
+        --immutable-tag "$CODEBUILD_RESOLVED_SOURCE_VERSION"
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+      # New image: sync static to S3.
       - >-
         bash ci/scripts/ecs-deploy collectstatic
         --cluster "$CLUSTER"
         --service "$SERVICE"
         --region "$AWS_DEFAULT_REGION"
+      # OLD image (still deployed): roll the DB back to the migration common to the
+      # DB and this branch. No-op unless AUTOMIGRATE_ROLLBACK=true (set it as a
+      # CodeBuild env var on dev/test stacks only; never on prod).
+      - >-
+        bash ci/scripts/ecs-deploy automigrate
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+        --region "$AWS_DEFAULT_REGION"
+      # New image: apply this branch's migrations forward.
+      - >-
+        bash ci/scripts/ecs-deploy migrate
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+        --region "$AWS_DEFAULT_REGION"
+      # Switch the service to the new revision, re-point the momentum schedule at
+      # it (so the cron runs the deployed, already-migrated code), and wait.
       - >-
         bash ci/scripts/ecs-deploy deploy
         --cluster "$CLUSTER"
@@ -46,3 +76,4 @@ phases:
         --region "$AWS_DEFAULT_REGION"
         --timeout "$TIMEOUT"
         --port "$CONTAINER_PORT"
+        --schedule "$MOMENTUM_SCHEDULE"

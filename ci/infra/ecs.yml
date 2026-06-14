@@ -582,7 +582,27 @@ Resources:
                   - ecs:DescribeTasks
                   - ecs:ListTasks
                   - ecs:RunTask
+                  - ecs:RegisterTaskDefinition
+                  - ecs:DescribeTaskDefinition
                 Resource: "*"
+              # automigrate reads the run-task's CloudWatch logs to parse `showmigrations`.
+              - Sid: ReadTaskLogs
+                Effect: Allow
+                Action: [logs:GetLogEvents, logs:FilterLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AWS::StackName}-web:*"
+              # deploy re-points the momentum schedule at the freshly deployed revision.
+              - Sid: UpdateMomentumSchedule
+                Effect: Allow
+                Action: [scheduler:GetSchedule, scheduler:UpdateSchedule]
+                Resource: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${AWS::StackName}-momentum"
+              # update-schedule re-passes the scheduler's own role to EventBridge Scheduler.
+              - Sid: PassSchedulerRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt SchedulerRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: scheduler.amazonaws.com
               - Sid: PassEcsRoles
                 Effect: Allow
                 Action: iam:PassRole
@@ -608,8 +628,10 @@ Resources:
                   - codestar-connections:UseConnection
                 Resource: "*"
 
-  # GitHub source binding + webhook are done BY HAND in the console after create
-  # (the account's SCP blocks PassConnection/CreateWebhook). See ci/infra/README.md.
+  # The project is created WITHOUT a source. The GitHub source, buildspec and
+  # webhook are bound BY HAND in the console (the account's SCP blocks
+  # PassConnection/CreateWebhook). CFN owning a GitHub source would re-apply it on
+  # every stack update and wipe the manual binding. See ci/infra/README.md.
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -630,19 +652,20 @@ Resources:
           - { Name: IMAGE_NAME,     Value: !Ref ImageRepoName }
           - { Name: IMAGE_TAG,      Value: !Ref ImageTag }
           # Wired to this stack -> never stale.
-          - { Name: CLUSTER,        Value: !Ref Cluster }
-          - { Name: SERVICE,        Value: !GetAtt Service.Name }
+          - { Name: CLUSTER,           Value: !Ref Cluster }
+          - { Name: SERVICE,           Value: !GetAtt Service.Name }
+          - { Name: MOMENTUM_SCHEDULE, Value: !Sub "${AWS::StackName}-momentum" }
       Source:
-        Type: GITHUB
-        Location: "https://github.com/SirRiuz/thiup_backend.git"
-        GitCloneDepth: 1
-        BuildSpec: buildspec.yml
-        # No explicit Auth: CodeBuild uses the account-level GitHub credential
-        # (the "AWS managed GitHub App" already connected for this account).
-      # No Triggers/Webhook here: creating the webhook via CloudFormation needs
-      # API access to the GitHub connection, which is denied in this account
-      # (likely an SCP). Add the webhook ONCE from the CodeBuild console after
-      # the stack is created (the console handles the GitHub App auth).
+        Type: NO_SOURCE
+        # Placeholder only. After create, bind the source in the console:
+        # Edit -> Source -> GitHub -> connection + repo -> "Use a buildspec file
+        # (buildspec.yml)" -> webhook. See ci/infra/README.md.
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - echo "Bind the GitHub source and buildspec.yml in the CodeBuild console. See ci/infra/README.md."
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
