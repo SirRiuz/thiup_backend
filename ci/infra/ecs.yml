@@ -42,12 +42,12 @@ Parameters:
 
   TaskCpu:
     Type: String
-    Default: "256"
-    AllowedValues: ["256", "512", "1024"]
+    Default: "512"
+    AllowedValues: ["256", "512", "1024", "2048"]
 
   TaskMemory:
     Type: String
-    Default: "512"
+    Default: "1024"
 
   # ---- App config (required at Django boot) ----
   StageValue:
@@ -170,6 +170,21 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        # ECS uses the execution role to inject SSM params + Secrets Manager
+        # secrets into the container at task launch.
+        - PolicyName: read-config-and-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*"
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref SecretKeySecret
+                  - !Ref DatabasePasswordSecret
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -297,9 +312,71 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
 
+  # ---- Config in SSM Parameter Store (editable in the AWS console) ----
+  # Seeded from the stack parameters on create; afterwards edit the VALUES in
+  # the SSM console (an unrelated stack update won't overwrite them). To apply a
+  # change to the running app: force a new deployment (no build needed).
+  ParamStage:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/STAGE", Type: String, Value: !Ref StageValue }
+  ParamDebug:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DEBUG", Type: String, Value: !Ref DebugValue }
+  ParamAllowedHosts:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/ALLOWED_HOSTS", Type: String, Value: !Ref AllowedHosts }
+  ParamEncryptedResponse:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/ENCRYPTED_RESPONSE", Type: String, Value: !Ref EncryptedResponse }
+  ParamSingleRequestProtect:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/SINGLE_REQUEST_PROTECT", Type: String, Value: !Ref SingleRequestProtect }
+  ParamGatewaySeed:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/GATEWAY_SEED", Type: String, Value: !Ref GatewaySeed }
+  ParamInternalAdminUrl:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/INTERNAL_ADMIN_URL", Type: String, Value: !Ref InternalAdminUrl }
+  ParamDatabaseHost:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_HOST", Type: String, Value: !Ref DatabaseHost }
+  ParamDatabaseName:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_NAME", Type: String, Value: !Ref DatabaseName }
+  ParamDatabaseUser:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_USER", Type: String, Value: !Ref DatabaseUser }
+  ParamDatabasePort:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_PORT", Type: String, Value: !Ref DatabasePort }
+
+  # ---- Secrets in Secrets Manager (edit the value in the console) ----
+  SecretKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/SECRET_KEY"
+      SecretString: !Ref SecretKey
+  DatabasePasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/DATABASE_PASSWORD"
+      SecretString: !Ref DatabasePassword
+
   # ---- Task definition ----
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
+    DependsOn:
+      - ParamStage
+      - ParamDebug
+      - ParamAllowedHosts
+      - ParamEncryptedResponse
+      - ParamSingleRequestProtect
+      - ParamGatewaySeed
+      - ParamInternalAdminUrl
+      - ParamDatabaseHost
+      - ParamDatabaseName
+      - ParamDatabaseUser
+      - ParamDatabasePort
     Properties:
       Family: !Sub "${AWS::StackName}-web"
       RequiresCompatibilities: [FARGATE]
@@ -321,29 +398,36 @@ Resources:
               awslogs-group: !Ref LogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: web
+          # Computed by the stack (not user-managed) + values that may be empty
+          # (SSM String params can't be empty), so they stay inline.
           Environment:
-            - { Name: STAGE,                  Value: !Ref StageValue }
-            - { Name: DEBUG,                  Value: !Ref DebugValue }
             - { Name: SERVER_PORT,            Value: 8000 }
-            - { Name: ALLOWED_HOSTS,          Value: !Ref AllowedHosts }
-            - { Name: ENCRYPTED_RESPONSE,     Value: !Ref EncryptedResponse }
-            - { Name: SINGLE_REQUEST_PROTECT, Value: !Ref SingleRequestProtect }
-            - { Name: GATEWAY_SEED,           Value: !Ref GatewaySeed }
-            - { Name: INTERNAL_ADMIN_URL,     Value: !Ref InternalAdminUrl }
-            - { Name: MEDIA_BASE_URL,         Value: !Ref MediaBaseUrl }
-            - { Name: CORS_ALLOWED_ORIGINS,   Value: !Ref CorsAllowedOrigins }
-            - { Name: CSRF_TRUSTED_ORIGINS,   Value: !Ref CsrfTrustedOrigins }
+            # Neon requires SSL; libpq reads PGSSLMODE (Django leaves OPTIONS empty).
+            - { Name: PGSSLMODE,              Value: require }
             - { Name: USE_AWS_STORAGE,        Value: "True" }
             - { Name: AWS_STORAGE_BUCKET_NAME, Value: !Ref StaticBucket }
             - { Name: AWS_S3_CUSTOM_DOMAIN,   Value: !Sub "${StaticBucket}.s3.${AWS::Region}.amazonaws.com" }
             - { Name: AWS_S3_REGION_NAME,     Value: !Ref AWS::Region }
-            - { Name: SECRET_KEY,             Value: !Ref SecretKey }
             - { Name: DATABASE_ENGINE,        Value: !Ref DatabaseEngine }
-            - { Name: DATABASE_HOST,          Value: !Ref DatabaseHost }
-            - { Name: DATABASE_NAME,          Value: !Ref DatabaseName }
-            - { Name: DATABASE_USER,          Value: !Ref DatabaseUser }
-            - { Name: DATABASE_PASSWORD,      Value: !Ref DatabasePassword }
-            - { Name: DATABASE_PORT,          Value: !Ref DatabasePort }
+            - { Name: MEDIA_BASE_URL,         Value: !Ref MediaBaseUrl }
+            - { Name: CORS_ALLOWED_ORIGINS,   Value: !Ref CorsAllowedOrigins }
+            - { Name: CSRF_TRUSTED_ORIGINS,   Value: !Ref CsrfTrustedOrigins }
+          # User-managed in the AWS console: SSM Parameter Store (config) +
+          # Secrets Manager (secrets). Edit the value there, then redeploy.
+          Secrets:
+            - { Name: STAGE,                  ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/STAGE" }
+            - { Name: DEBUG,                  ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DEBUG" }
+            - { Name: ALLOWED_HOSTS,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ALLOWED_HOSTS" }
+            - { Name: ENCRYPTED_RESPONSE,     ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ENCRYPTED_RESPONSE" }
+            - { Name: SINGLE_REQUEST_PROTECT, ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/SINGLE_REQUEST_PROTECT" }
+            - { Name: GATEWAY_SEED,           ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/GATEWAY_SEED" }
+            - { Name: INTERNAL_ADMIN_URL,     ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/INTERNAL_ADMIN_URL" }
+            - { Name: DATABASE_HOST,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_HOST" }
+            - { Name: DATABASE_NAME,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_NAME" }
+            - { Name: DATABASE_USER,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_USER" }
+            - { Name: DATABASE_PORT,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_PORT" }
+            - { Name: SECRET_KEY,             ValueFrom: !Ref SecretKeySecret }
+            - { Name: DATABASE_PASSWORD,      ValueFrom: !Ref DatabasePasswordSecret }
 
   # ---- ECS service (fronted by the ALB) ----
   Service:
@@ -596,3 +680,15 @@ Outputs:
   CodeBuildProjectName:
     Description: CodeBuild project for this stack's CI.
     Value: !Ref CodeBuildProject
+
+  EnvConfigConsole:
+    Description: >
+      Edit/add/delete app CONFIG here (SSM Parameter Store). Filter by the stack
+      name. Change a value, then force a new deployment (no build needed).
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/parameters/?region=${AWS::Region}"
+
+  EnvSecretsConsole:
+    Description: >
+      Edit the SECRETS here (Secrets Manager): /${stack}/SECRET_KEY and
+      /${stack}/DATABASE_PASSWORD. Change a value, then force a new deployment.
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/secretsmanager/listsecrets?region=${AWS::Region}"

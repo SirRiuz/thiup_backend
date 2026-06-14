@@ -1,6 +1,7 @@
-# ECR Public mirror of the official image — avoids Docker Hub's anonymous pull
-# rate limit (429) that hits CodeBuild. Same image as docker.io/library/python.
-FROM public.ecr.aws/docker/library/python:3.12-slim-bullseye
+# ECR Public mirror of the official image — avoids Docker Hub's 429 pull limit.
+# bookworm (Debian 12) ships libpq 15 with SNI support, required to connect to
+# Neon (bullseye's libpq 13 lacks SNI -> "Endpoint ID is not specified").
+FROM public.ecr.aws/docker/library/python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

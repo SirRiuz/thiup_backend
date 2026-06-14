@@ -119,6 +119,59 @@ Logs · ECR auth + push/pull · `ecs:UpdateService/RunTask/DescribeServices/Desc
 so assets are served from S3 (`AWS_S3_CUSTOM_DOMAIN`), unsigned URLs. The app uses
 the **task role** for S3 (no AWS keys in the task def).
 
+## Environment variables & secrets
+
+App env vars are **not** in the image and **not** edited in `.env` (that's local
+only). They live in AWS and are injected into the task at launch:
+
+| Store | Holds | Examples |
+|---|---|---|
+| **SSM Parameter Store** (`/<stack>/<VAR>`) | non-secret config | `DEBUG`, `STAGE`, `ALLOWED_HOSTS`, `DATABASE_HOST/NAME/USER/PORT`, … |
+| **Secrets Manager** (`/<stack>/<VAR>`) | secrets | `SECRET_KEY`, `DATABASE_PASSWORD` |
+| **Task def `Environment`** (in `ecs.yml`) | stack-computed / may-be-empty | `SERVER_PORT`, `AWS_*`, `USE_AWS_STORAGE`, `MEDIA_BASE_URL`, `CORS/CSRF` |
+
+Console links are in the stack **Outputs**: `EnvConfigConsole` (SSM) and
+`EnvSecretsConsole` (Secrets Manager).
+
+**Golden rule:** changing env vars **never needs a build/recompile** — the image
+isn't touched. New tasks read the values **at launch**, so after any change you
+**force a new deployment** to apply it (ECS → Service → Update → ☑ *Force new
+deployment*, or `aws ecs update-service --force-new-deployment`, or
+`ci/scripts/ecs-deploy deploy`).
+
+### Edit the value of an existing var → console only, NO CloudFormation
+1. **Config** → Systems Manager → Parameter Store → `/<stack>/<VAR>` → Edit → Save.
+   **Secret** → Secrets Manager → the secret → Retrieve value → Edit → Save.
+2. **Force a new deployment.** Done. (No build, no stack update.)
+
+> Editing a value in the console is NOT overwritten by an unrelated stack update
+> (CFN only re-applies a parameter if its template value changed).
+
+### Add a BRAND-NEW variable → create in console + 1 line + Update Stack
+ECS injects only what the task def lists (no auto-discovery), so a new var must
+be mapped once:
+1. **Create** it in the console: secret → Secrets Manager; config → SSM, named
+   `/<stack>/<VAR>`.
+2. **Map it** in `ci/infra/ecs.yml`, one line under the container's `Secrets`:
+   ```yaml
+   - { Name: MY_NEW_VAR, ValueFrom: <secret-ARN or SSM-parameter-ARN> }
+   ```
+   (SSM ARN form: `arn:aws:ssm:<region>:<account>:parameter/<stack>/MY_NEW_VAR`.)
+3. **Update Stack** → rolling deploy. (Still NOT a build.)
+
+Permissions: the ExecutionRole already allows `ssm:GetParameters` on
+`parameter/<stack>/*`, so new SSM params are covered automatically. New Secrets
+Manager secrets need their ARN allowed for `secretsmanager:GetSecretValue` (the
+role lists the secret ARNs — add the new one, or scope it to `secret:/<stack>/*`).
+
+### Quick reference
+| Action | CloudFormation? | Build? |
+|---|---|---|
+| Edit an existing value (config or secret) | ❌ no | ❌ no — just force-new-deployment |
+| Just store a secret/param in the console | ❌ no | ❌ no |
+| Make a NEW var reach the app | ✅ 1 line in task def + Update | ❌ no |
+| Change app CODE | ✅/— deploy via CodeBuild | ✅ yes |
+
 ## Momentum (For You ranking)
 
 EventBridge Scheduler runs `python manage.py recompute_momentum` every 10 min as an
