@@ -12,10 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   build  needs: --account --region --image-name --tag --dockerfile
 #   deploy needs: --cluster --service --region --timeout [--port]
 
-################################################################################
-# Dependency Verification                                                      #
-################################################################################
-
+# --- Dependency Verification ---
 dependency_verification() {
   MISSING_DEPENDENCIES=false
   # If you have any dependencies for your script, add the checks for them here:
@@ -45,10 +42,7 @@ if [[ $MISSING_DEPENDENCIES -ne 0 ]]; then
   exit 1;
 fi
 
-################################################################################
-# Summary                                                                      #
-################################################################################
-
+# --- Summary ---
 summary() {
   # Display Summary
   # This string replacement is the name of the file/script
@@ -69,10 +63,7 @@ summary() {
   echo "      --region us-east-1 --timeout 600"
 }
 
-################################################################################
-# Help                                                                         #
-################################################################################
-
+# --- Help ---
 help() {
    # Display Help
    summary
@@ -93,10 +84,7 @@ help() {
    echo "Requires AWS credentials configured locally (aws configure)."
 }
 
-################################################################################
-# Configuration validation                                                     #
-################################################################################
-
+# --- Configuration validation ---
 require_vars() {
   local missing=false
   local var
@@ -111,10 +99,7 @@ require_vars() {
   fi
 }
 
-################################################################################
-# build (bridge to build-base-image.sh)                                        #
-################################################################################
-
+# --- build (bridge to build-base-image.sh) ---
 build() {
   require_vars AWS_ACCOUNT_ID REGION IMAGE_NAME IMAGE_TAG DOCKERFILE
   bash "$SCRIPT_DIR/build-base-image.sh" \
@@ -125,10 +110,7 @@ build() {
     --dockerfile "$DOCKERFILE"
 }
 
-################################################################################
-# collectstatic (ephemeral run-task that uploads static to S3)                 #
-################################################################################
-
+# --- collectstatic (ephemeral run-task that uploads static to S3) ---
 collectstatic() {
   require_vars CLUSTER SERVICE REGION
   echo "Collecting static via run-task: cluster=${CLUSTER} service=${SERVICE}"
@@ -172,10 +154,7 @@ collectstatic() {
   echo "collectstatic OK — static synced to S3."
 }
 
-################################################################################
-# deploy                                                                       #
-################################################################################
-
+# --- deploy ---
 deploy() {
   require_vars CLUSTER SERVICE REGION TIMEOUT
   echo "Forcing new deployment: cluster=${CLUSTER} service=${SERVICE} region=${REGION}"
@@ -246,9 +225,7 @@ deploy() {
   fi
 }
 
-################################################################################
-# Main program                                                                 #
-################################################################################
+# --- Main program ---
 # Place your arg/flag related variables here at the top
 HELP=false
 SUMMARY=false

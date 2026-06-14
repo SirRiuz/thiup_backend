@@ -83,10 +83,8 @@ services:
     restart: always
     build:
       context: .
-    # Dev: runserver (autoreload). Prod (Raspberry): set WEB_COMMAND in
-    # .env to serve with gunicorn (tuned config in gunicorn.conf.py):
-    #   WEB_COMMAND=gunicorn core.wsgi:application -c gunicorn.conf.py -b 0.0.0.0:${SERVER_PORT}
-    command: ${WEB_COMMAND:-python manage.py runserver 0.0.0.0:${SERVER_PORT:-}}
+    # Local dev server (autoreload). Prod runs gunicorn via ci/aws.Dockerfile.
+    command: python manage.py runserver 0.0.0.0:${SERVER_PORT:-}
     tty: true
     expose:
       - ${SERVER_PORT:-}

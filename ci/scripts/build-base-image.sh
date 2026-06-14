@@ -3,10 +3,7 @@
 # All configuration (account, region, image name, tag, Dockerfile) is supplied
 # as flags by ci/scripts/ecs-deploy; require_config below enforces that they are set.
 
-################################################################################
-# Dependency Verification                                                      #
-################################################################################
-
+# --- Dependency Verification ---
 dependency_verification() {
   MISSING_DEPENDENCIES=false
   # If you have any dependencies for your script, add the checks for them here:
@@ -35,10 +32,7 @@ if [[ $MISSING_DEPENDENCIES -ne 0 ]]; then
   exit 1;
 fi
 
-################################################################################
-# Summary                                                                      #
-################################################################################
-
+# --- Summary ---
 summary() {
   # Display Summary
   # This string replacement is the name of the file/script
@@ -54,10 +48,7 @@ summary() {
   echo "    bash ci/scripts/ecs-deploy build --tag my-tag"
 }
 
-################################################################################
-# Help                                                                         #
-################################################################################
-
+# --- Help ---
 help() {
    # Display Help
    summary
@@ -74,10 +65,7 @@ help() {
    echo "Requires AWS credentials configured locally (aws configure) and a running Docker daemon."
 }
 
-################################################################################
-# Configuration validation                                                     #
-################################################################################
-
+# --- Configuration validation ---
 require_config() {
   local missing=false
   local var
@@ -92,10 +80,7 @@ require_config() {
   fi
 }
 
-################################################################################
-# Build & push                                                                 #
-################################################################################
-
+# --- Build & push ---
 build_and_push() {
   require_config
 
@@ -123,9 +108,7 @@ build_and_push() {
   echo "Next: run 'bash ci/scripts/ecs-deploy' to make ECS pull the new image."
 }
 
-################################################################################
-# Main program                                                                 #
-################################################################################
+# --- Main program ---
 # Place your arg/flag related variables here at the top
 HELP=false
 SUMMARY=false

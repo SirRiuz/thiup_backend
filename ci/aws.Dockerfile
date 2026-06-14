@@ -39,12 +39,26 @@ ENV GIT_SHA=$GIT_SHA
 
 EXPOSE 8000
 
-# Shell form so SERVER_PORT (if ECS passes one) expands; defaults to 8000.
+# Shell form so SERVER_PORT / GUNICORN_* (if ECS passes them) expand.
+# Tuning for I/O-bound load (Postgres + encryption) on small instances:
+#  - gthread worker: few PROCESSES (RAM ~= one Django copy each) x several
+#    cheap THREADS (shared memory). 2 workers x 4 threads = 8 concurrent.
+#  - --preload: load the app once in the master then fork -> copy-on-write
+#    sharing roughly halves real memory (safe: Django connects lazily).
+#  - max-requests + jitter: recycle workers to contain memory leaks.
+#  - timeouts/keep-alive tuned; warning-level logs to reduce noise.
 CMD gunicorn \
+    --worker-class gthread \
+    --workers ${GUNICORN_WORKERS:-2} \
+    --threads ${GUNICORN_THREADS:-4} \
+    --preload \
     --max-requests 500 \
     --max-requests-jitter 50 \
-    --error-logfile=- \
+    --timeout 60 \
+    --graceful-timeout 30 \
+    --keep-alive 5 \
+    --log-level warning \
     --access-logfile=- \
+    --error-logfile=- \
     --bind=0.0.0.0:${SERVER_PORT:-8000} \
-    --workers=3 \
     core.wsgi

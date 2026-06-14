@@ -7,9 +7,7 @@ Description: >
   EXTERNAL PostgreSQL (no RDS created here). Only ONE backend secret (SecretKey);
   API_SECRET_KEY is derived from it at boot.
 
-################################################################################
-# Parameters                                                                   #
-################################################################################
+# --- Parameters ---
 Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
@@ -30,10 +28,6 @@ Parameters:
   ImageTag:
     Type: String
     Default: test
-
-  ContainerPort:
-    Type: Number
-    Default: 8000
 
   DesiredCount:
     Type: Number
@@ -94,18 +88,34 @@ Parameters:
     Type: String
     AllowedPattern: "^(?!admin/).+/$"
     ConstraintDescription: Must end with "/" and must not be "admin/".
+    Description: >
+      Obfuscated path for the real Django admin. Must end with "/" and must NOT
+      be "admin/" (that path is the honeypot). Use a non-predictable value, e.g.
+      admin-Hk9_x2lT/ (generate: python -c "import secrets;print(f'admin-{secrets.token_urlsafe(6)}/')").
 
   MediaBaseUrl:
     Type: String
     Default: ""
+    Description: >
+      Origin prefixed to LOCAL media URLs (scheme + host, no trailing slash).
+      IGNORED when assets are on S3 (USE_AWS_STORAGE=True, the default here), so
+      leave it empty. Example for local storage: https://api.thiup.com
 
   CorsAllowedOrigins:
     Type: String
     Default: ""
+    Description: >
+      Comma-separated origins allowed to call the API from a browser. FULL URLs
+      with scheme (and port if any), no trailing slash. Empty = none.
+      Example: https://thiup.com,https://www.thiup.com,http://localhost:3000
 
   CsrfTrustedOrigins:
     Type: String
     Default: ""
+    Description: >
+      Comma-separated origins trusted for cross-origin POSTs (e.g. admin login).
+      FULL URLs with scheme, Django 4 matches EXACTLY. Empty = none.
+      Example: https://thiup.com,https://api.thiup.com,http://localhost:8080
 
   # Only ONE backend secret: API_SECRET_KEY is derived from SECRET_KEY at boot.
   SecretKey:
@@ -134,9 +144,7 @@ Parameters:
     Type: String
     Default: "5432"
 
-################################################################################
-# Resources                                                                    #
-################################################################################
+# --- Resources ---
 Resources:
 
   Cluster:
@@ -241,8 +249,8 @@ Resources:
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: !Ref ContainerPort
-          ToPort: !Ref ContainerPort
+          FromPort: 8000
+          ToPort: 8000
           SourceSecurityGroupId: !Ref AlbSecurityGroup
           Description: From ALB to container
 
@@ -266,7 +274,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: HTTP
-      Port: !Ref ContainerPort
+      Port: 8000
       HealthCheckProtocol: HTTP
       HealthCheckPath: /health/
       HealthCheckIntervalSeconds: 15
@@ -305,7 +313,7 @@ Resources:
           Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}:${ImageTag}"
           Essential: true
           PortMappings:
-            - ContainerPort: !Ref ContainerPort
+            - ContainerPort: 8000
               Protocol: tcp
           LogConfiguration:
             LogDriver: awslogs
@@ -316,7 +324,7 @@ Resources:
           Environment:
             - { Name: STAGE,                  Value: !Ref StageValue }
             - { Name: DEBUG,                  Value: !Ref DebugValue }
-            - { Name: SERVER_PORT,            Value: !Ref ContainerPort }
+            - { Name: SERVER_PORT,            Value: 8000 }
             - { Name: ALLOWED_HOSTS,          Value: !Ref AllowedHosts }
             - { Name: ENCRYPTED_RESPONSE,     Value: !Ref EncryptedResponse }
             - { Name: SINGLE_REQUEST_PROTECT, Value: !Ref SingleRequestProtect }
@@ -367,7 +375,7 @@ Resources:
             - !Ref ServiceSecurityGroup
       LoadBalancers:
         - ContainerName: web
-          ContainerPort: !Ref ContainerPort
+          ContainerPort: 8000
           TargetGroupArn: !Ref TargetGroup
 
   # ---- Momentum recompute: EventBridge Scheduler -> ephemeral Fargate task ----
@@ -444,9 +452,118 @@ Resources:
         Input: !Sub |
           {"containerOverrides":[{"name":"web","command":["python","manage.py","recompute_momentum"]}]}
 
-################################################################################
-# Outputs                                                                      #
-################################################################################
+  # ---- CI: CodeBuild project (build image -> collectstatic -> deploy) ----
+  # CLUSTER/SERVICE are wired to THIS stack's resources, so they can never go
+  # stale. The role carries every permission the buildspec needs (ECR, ECS
+  # deploy + run-task, PassRole, logs, GitHub connection).
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-codebuild-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codebuild.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: codebuild-ci
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-ci*"
+              - Sid: EcrAuthToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPushPull
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ImageRepoName}"
+              - Sid: EcsDeployAndRunTask
+                Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                  - ecs:DescribeTasks
+                  - ecs:ListTasks
+                  - ecs:RunTask
+                Resource: "*"
+              - Sid: PassEcsRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !GetAtt ExecutionRole.Arn
+                  - !GetAtt TaskRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+              - Sid: Ec2DescribeForPublicIp
+                Effect: Allow
+                Action: ec2:DescribeNetworkInterfaces
+                Resource: "*"
+              # Needed at DOWNLOAD_SOURCE: CodeBuild gets a token from the GitHub
+              # App connection to clone the repo. Resource "*" mirrors the
+              # working manual role's `codebuild-github-connection` policy.
+              - Sid: UseGitHubConnection
+                Effect: Allow
+                Action:
+                  - codeconnections:GetConnectionToken
+                  - codeconnections:UseConnection
+                  - codestar-connections:GetConnectionToken
+                  - codestar-connections:UseConnection
+                Resource: "*"
+
+  # GitHub source binding + webhook are done BY HAND in the console after create
+  # (the account's SCP blocks PassConnection/CreateWebhook). See ci/infra/README.md.
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-ci"
+      Description: Build the image, sync static to S3, and deploy to ECS.
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-x86_64-standard:6.0
+        ImagePullCredentialsType: CODEBUILD
+        # Required to run `docker build` inside the build.
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - { Name: AWS_ACCOUNT_ID, Value: !Ref AWS::AccountId }
+          - { Name: IMAGE_NAME,     Value: !Ref ImageRepoName }
+          - { Name: IMAGE_TAG,      Value: !Ref ImageTag }
+          # Wired to this stack -> never stale.
+          - { Name: CLUSTER,        Value: !Ref Cluster }
+          - { Name: SERVICE,        Value: !GetAtt Service.Name }
+      Source:
+        Type: GITHUB
+        Location: "https://github.com/SirRiuz/thiup_backend.git"
+        GitCloneDepth: 1
+        BuildSpec: buildspec.yml
+        # No explicit Auth: CodeBuild uses the account-level GitHub credential
+        # (the "AWS managed GitHub App" already connected for this account).
+      # No Triggers/Webhook here: creating the webhook via CloudFormation needs
+      # API access to the GitHub connection, which is denied in this account
+      # (likely an SCP). Add the webhook ONCE from the CodeBuild console after
+      # the stack is created (the console handles the GitHub App auth).
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+
+# --- Outputs ---
 Outputs:
   ClusterName:
     Description: Set this as CLUSTER in the CodeBuild project env.
@@ -475,3 +592,7 @@ Outputs:
   StaticBaseUrl:
     Description: Public base URL for assets (AWS_S3_CUSTOM_DOMAIN).
     Value: !Sub "https://${StaticBucket}.s3.${AWS::Region}.amazonaws.com/"
+
+  CodeBuildProjectName:
+    Description: CodeBuild project for this stack's CI.
+    Value: !Ref CodeBuildProject
