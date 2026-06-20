@@ -21,7 +21,7 @@ on a **Raspberry Pi** — every design decision trades features for privacy and 
 
 | Package | Purpose |
 |---|---|
-| `core/` | Settings, root URLconf, WSGI/ASGI, Celery app |
+| `core/` | Settings, root URLconf, WSGI/ASGI |
 | `app/` | Everything domain: models, REST views (`app/rest/`), serializers, middlewares, crypto, management commands, tasks, tests |
 | `honeypot/` | Decoy `/admin/` login that logs attackers and blacklists IPs |
 
@@ -37,8 +37,7 @@ All models inherit `BaseModel` (`app/models/base_model.py`): UUID `id` (internal
 | `Tag` | `tag.py` | FK to Thread; `name` + `name_norm` (GIN pg_trgm indexed for infix/prefix search) |
 | `Reaction` | `reaction.py` | Catalog: unique `name` + `emoji` (seeded from `app/fixtures/reactions.json`) |
 | `ReactionRelation` | `reaction_relation.py` | (thread, mask, reaction) — a user's reaction to a thread |
-| `Mask` | `mask.py` | `hash` (SHA-256 of IP, unique; first 6 hex chars are the public `@id`), `country_code` (GeoIP), FK to `Miniature` (avatar) |
-| `Miniature` | `miniature.py` | Avatar catalog (name + icon image) |
+| `Mask` | `mask.py` | `hash` (SHA-256 of IP, unique; first 6 hex chars are the public `@id`), `country_code` (GeoIP) |
 | `ThreadFile` | `media.py` | Media attached to a thread (file, width/height, `is_video`, `target_color`). Formats: mp4/png/jpg/jpeg |
 | `MomentumLog` | `momentum_log.py` | Audit row per momentum recompute run (counts, duration, errors) |
 | `TrendingTag` | `trending_tag.py` | Precomputed trending tags (name, score = Σ momentum of carrying threads). Fully rewritten on each momentum run; `/search/suggest/` only reads it |
@@ -79,35 +78,31 @@ is a no-op.
 
 **Mask identity** — `MaskMiddleware` (`app/middlewares/mask.py`) sets `request.mask` on every
 request: SHA-256(client IP) → get-or-create `Mask`, country resolved via the local
-`geolite2-country.mmdb` GeoIP DB, random `Miniature` assigned on first sight. `/health/` is
-exempt so it can answer when the DB is down.
+`geolite2-country.mmdb` GeoIP DB. `/health/` is exempt so it can answer when the DB is down.
 
 **Momentum (For You ranking)** — precomputed, never per-request:
 - Formula (`app/management/commands/recompute_momentum.py`):
   `points = unique_reactors + unique_commenters×3 + commenters_replied_by_author×5`;
   `momentum_score = points / (age_hours + 2)^1.5`.
   Golden rule: every signal counts **distinct masks** and **excludes the author**.
-- Trigger today (verified): a **Celery beat task every 10 min** — `app/tasks/momentum.py` is a
-  thin `@shared_task` that just `call_command("recompute_momentum")`; the schedule is
-  `CELERY_BEAT_SCHEDULE` in `core/settings.py`; beat runs **embedded** in the worker
-  (`celery -A core worker -B`, see `docker-compose.yml`). There is **no OS cron and no embedded
-  in-process scheduler** (no APScheduler/threading). Manually: `make recompute_momentum`.
+- Trigger: an **external scheduler runs the management command every 10 min** — there is **no
+  Celery, no RabbitMQ, no in-process scheduler** (no APScheduler/threading). Locally it's the
+  `momentum` service in `docker-compose.yml` (a tiny `while true; recompute_momentum; sleep 600`
+  loop); in prod it's **AWS EventBridge Scheduler → an ephemeral Fargate task** running
+  `python manage.py recompute_momentum`, which starts, computes, exits. Manually:
+  `make recompute_momentum`.
 - The logic is a standalone management command: bulk reads + batched `bulk_update`, skips
   unchanged rows, configurable window (default 30 days). Each run also rewrites the `TrendingTag`
-  table (top tags by momentum sum) and logs a `MomentumLog` row. The command runs fine on its own
-  — Celery only schedules it, it carries no logic.
+  table (top tags by momentum sum) and logs a `MomentumLog` row. It carries all the logic and
+  needs nothing else to run.
 
-**Async stack reality check (cost-relevant)**: there is **no Redis**. Celery IS wired — broker is
-RabbitMQ (`pyamqp://`), no result backend, one `worker` container running worker+beat (`-B`),
-whose **only** job is this 10-min recompute. Measured idle RAM: **Celery worker+beat ≈ 540–580 MB**
-and **RabbitMQ ≈ 184 MB** — i.e. ~750 MB of *always-on* memory to run a job that takes seconds
-every 10 min, vs ~50 MB (PSS) for the whole web app. On metered cloud (App Runner) this is the
-single largest avoidable cost. **Prod caveat**: the prod compose profile is `web + nginx` only and
-App Runner deploys a single container, so the worker/RabbitMQ are NOT on the web instance —
-confirm where (or whether) momentum actually recomputes in prod. **Preferred pattern**: an
-*ephemeral* trigger (OS/EventBridge cron → a short-lived task running
-`python manage.py recompute_momentum`, which starts, computes, exits) — no permanent worker, no
-broker, no Redis. Don't add new always-on async machinery.
+**Async stack reality check (cost-relevant)**: there is **no Redis, no Celery and no RabbitMQ** —
+they were removed. Momentum is the only background job, and it runs as an *ephemeral* scheduled
+task (see above), not on a permanent worker. This deliberately avoids the ~750 MB of always-on
+memory (Celery worker+beat ≈ 540–580 MB + RabbitMQ ≈ 184 MB) that a broker/worker would cost to
+run a job that takes seconds every 10 min, vs ~50 MB (PSS) for the whole web app. **Don't
+reintroduce always-on async machinery** (broker/worker/Redis); if a new background job appears,
+make it another ephemeral scheduled command.
 
 **Honeypot** — the literal `/admin/` path is a fake login (`honeypot/`) that records credentials,
 IP and user-agent; ≥5 attempts from one IP → `BlackList` → `HoneyPotMiddleware` returns 403 for
@@ -195,8 +190,9 @@ request path; expose it as a precomputed indexed column like `momentum_score`.
 - Files: `app/tests/test_foryou.py` (momentum, For You/Close You, search, request crypto),
   `test_gateway.py` (rotation, HMAC validation, anti-SSRF, toggles), `test_thread_view.py`
   (CRUD/replies/search, uses `TransactionTestCase`), `test_reaction_view.py`.
-- Run inside Docker: `make test` (coverage term + HTML), `make test-fast` (`-x`),
-  `make test-coverage` (CI gate: **≥70%**). Or `docker compose exec web pytest`.
+- Run inside Docker: `make test` — a one-off container running pytest with coverage
+  (term + HTML) and the **≥70%** gate (`--cov-fail-under=70`); no running stack required
+  (the local image bakes in the dev deps). Or `docker compose exec web pytest`.
 - Tests are **sensitive to `ENCRYPTED_RESPONSE` / `SINGLE_REQUEST_PROTECT`**: crypto/gateway
   tests pin the flags with `@override_settings`. When writing tests that hit the API, either
   pin the flags or use the existing helpers (`encrypted_post`, `gateway_post`, `decode_body`,
@@ -208,18 +204,21 @@ request path; expose it as a precomputed indexed column like `momentum_score`.
 
 ```bash
 cp .env.template .env   # fill in: SECRET_KEY, API_SECRET_KEY, INTERNAL_ADMIN_URL, DB creds...
-make build && make up-d
-make migrate && make seed          # seed = miniatures + reaction media (idempotent)
-make load_fixtures                 # reaction catalog
+make build
+make up                            # the `migration` compose service applies migrations on start
+make load_fixtures                 # reaction catalog (separate shell; `make up` runs in foreground)
 make test
 ```
 
 - `STAGE` in `.env` picks the compose profile: **dev** = postgres:15 (host port **5433**),
-  `runserver` with autoreload, nginx; **prod** = gunicorn + worker (Celery) + rabbitmq + nginx,
-  external DB. Entry point: nginx on `SERVER_PORT` (default 8080).
+  `runserver` with autoreload, nginx; **prod** = gunicorn + nginx, external DB (momentum runs as
+  an ephemeral EventBridge-scheduled task, not a compose service). Entry point: nginx on
+  `SERVER_PORT` (default 8080).
 - Useful targets (see `make help`): `make shell`, `make shell-db` (psql), `make logs-web`,
   `make add_dummy_threads`, `make recompute_momentum`, `make validate-config`,
-  `make dependencies` (pip-tools: edit `requirements.in`, never `requirements.txt` directly).
+  `make dependencies` (rebuild the web image to pick up requirements changes; the local
+  image installs prod + `requirements.dev`). Edit `requirements.in`, never `requirements.txt`
+  directly; regenerate the lock with `pip-compile` (`requirements.dev` adds the test tooling).
 - Admin: `http://localhost:8080/{INTERNAL_ADMIN_URL}` (from your `.env`). `/admin/` is the
   honeypot — don't "fix" it.
 - Python 3.12 (Docker image). `app/` directory does all the work; `media/` and `staticfiles/`
@@ -228,8 +227,8 @@ make test
 ## Constraints
 
 - **Raspberry Pi**: ~2 gunicorn gthread workers × 4 threads, `max_requests` recycling,
-  `CONN_MAX_AGE=60`, sparse logging (SD card). No Redis; RabbitMQ only as Celery broker with no
-  result backend. Expensive computation goes into the 10-min cron, never the request path.
+  `CONN_MAX_AGE=60`, sparse logging (SD card). No Redis, no Celery, no RabbitMQ. Expensive
+  computation goes into the 10-min ephemeral scheduled command, never the request path.
 - **Privacy**: search queries, feed personalization inputs and geolocation are ephemeral — never
   log or persist them, never echo them in error messages. Only **public** identifiers (`uid`,
   mask `hash` prefix) leave the API; internal UUIDs stay internal. No raw coordinates, no
@@ -242,10 +241,11 @@ make test
 ## RULES for AI models / contributors
 
 1. **ENGLISH ONLY** — all code, comments, docstrings, identifiers, docs and commit messages in
-   English. **Single exception**: Spanish i18n translation strings and Spanish user content are
-   *data*, not code — never "translate" or rewrite them. (`scripts/check_comment_language.py`
-   flags Spanish comments; a few legacy Spanish comments remain in `core/settings.py` — migrate
-   them to English when you touch those lines, don't mass-rewrite.)
+   English. **Every NEW or edited comment/docstring MUST be written in English, no exceptions** —
+   do not add Spanish comments. **Single exception**: Spanish i18n translation strings and Spanish
+   user content are *data*, not code — never "translate" or rewrite them.
+   (`ci/scripts/check_comment_language.py` flags Spanish comments; legacy Spanish comments still
+   remain in some files — migrate them to English when you touch those lines, don't mass-rewrite.)
 2. **Measure before optimizing.** No blind optimization — use `EXPLAIN ANALYZE`, the existing
    `MomentumLog` timings, or a reproducible benchmark first.
 3. **Never touch the E2E crypto** (encoder, KDF, request-decrypt middleware, gateway token
@@ -255,8 +255,8 @@ make test
    cron or a management command.
 5. **Privacy**: never log/persist queries, feed inputs or histories; only public identifiers are
    searchable; never leak data through logs, error messages, OG tags or titles.
-6. **Write/update tests** for every added or changed behavior; keep `make test-coverage` ≥70%
-   green; pin `ENCRYPTED_RESPONSE`/`SINGLE_REQUEST_PROTECT` in API tests.
+6. **Write/update tests** for every added or changed behavior; keep `make test` (≥70%
+   gate) green; pin `ENCRYPTED_RESPONSE`/`SINGLE_REQUEST_PROTECT` in API tests.
 7. **Clean migrations** for any model/index change — including backfills for derived `*_norm`
    columns and index additions/removals (see migration `0012` as the model to follow).
 8. **Don't break API contracts**: response shapes, headers, pagination and status codes are

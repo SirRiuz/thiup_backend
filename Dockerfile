@@ -21,9 +21,11 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt /app/
+# Local image installs prod + dev deps (pytest, etc.) so tests run without
+# extra setup. The prod image (ci/aws.Dockerfile) installs requirements.txt only.
+COPY requirements.txt requirements.in requirements.dev /app/
 RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && pip install -r requirements.txt -r requirements.dev
 
 # No EXPOSE: the port comes from .env via SERVER_PORT.
 # No CMD: defined in docker-compose.yml (command:).

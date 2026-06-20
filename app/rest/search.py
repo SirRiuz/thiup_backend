@@ -279,7 +279,6 @@ class SearchViewSet(GenericViewSet):
         """Masks whose hash contains the query, with their root post count."""
         return (
             Mask.objects.filter(is_active=True, hash__unaccent__icontains=query)
-            .select_related("miniature")
             .annotate(
                 posts_count=Count(
                     "thread",

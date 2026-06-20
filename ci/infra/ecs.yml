@@ -1,0 +1,717 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Thiup backend infrastructure: a public Application Load Balancer in front of a
+  Fargate ECS service. Internet -> ALB (stable DNS) -> Fargate task. Gives a
+  fixed public URL (http://<alb-dns>) that does NOT change between deploys, so
+  you can CNAME a Cloudflare subdomain to it. Uses the default VPC and an
+  EXTERNAL PostgreSQL (no RDS created here). Only ONE backend secret (SecretKey);
+  API_SECRET_KEY is derived from it at boot.
+
+# Console display order/grouping for the create/update-stack form (without this,
+# the console lists parameters alphabetically).
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Network" }
+        Parameters: [VpcId, PublicSubnet1, PublicSubnet2]
+      - Label: { default: "Image & scaling" }
+        Parameters: [ImageRepoName, ImageTag, DesiredCount, TaskCpu, TaskMemory, MomentumScheduleExpression]
+      - Label: { default: "Application config" }
+        Parameters: [StageValue, DebugValue, AllowedHosts, EncryptedResponse, SingleRequestProtect, GatewaySeed, InternalAdminUrl, CorsAllowedOrigins, CsrfTrustedOrigins, SecretKey]
+      - Label: { default: "Object storage (S3 / Cloudflare R2)" }
+        Parameters: [StorageBucketName, StoragePublicDomain, StorageEndpointUrl, StorageAccessKeyId, StorageSecretAccessKey]
+      - Label: { default: "Database (external PostgreSQL)" }
+        Parameters: [DatabaseHost, DatabaseName, DatabaseUser, DatabasePort, DatabasePassword]
+
+# --- Parameters ---
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Default VPC id (e.g. vpc-xxxx).
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: First public subnet of the default VPC. MUST be a different subnet (different AZ) than PublicSubnet2.
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second public subnet, in a DIFFERENT Availability Zone than PublicSubnet1. The ALB requires two AZs.
+
+  ImageRepoName:
+    Type: String
+    Default: thiup-backend
+
+  ImageTag:
+    Type: String
+    Default: test
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+
+  MomentumScheduleExpression:
+    Type: String
+    Default: "rate(10 minutes)"
+    Description: >
+      How often the momentum recompute runs (EventBridge Scheduler). Default is
+      every 10 minutes; FlexibleTimeWindow is OFF so it fires on time.
+
+  TaskCpu:
+    Type: String
+    Default: "512"
+    AllowedValues: ["256", "512", "1024", "2048"]
+
+  TaskMemory:
+    Type: String
+    Default: "1024"
+
+  # ---- App config (required at Django boot) ----
+  StageValue:
+    Type: String
+    Default: prod
+
+  DebugValue:
+    Type: String
+    Default: "False"
+    AllowedValues: ["True", "False"]
+
+  AllowedHosts:
+    Type: String
+    Default: "*"
+    Description: >
+      Django ALLOWED_HOSTS. Keep "*" initially (ALB health checks send the task's
+      private IP as Host; a narrow list 400s them). Later add your Cloudflare
+      subdomain, e.g. api.tudominio.com.
+
+  EncryptedResponse:
+    Type: String
+    Default: "True"
+    AllowedValues: ["True", "False"]
+
+  SingleRequestProtect:
+    Type: String
+    Default: "False"
+    AllowedValues: ["True", "False"]
+
+  GatewaySeed:
+    Type: String
+    Description: >
+      REQUIRED. Gateway rotating-path seed; must match the frontend's
+      REACT_APP_GATEWAY_SEED. PUBLIC obfuscation, not a secret — independent
+      from SecretKey.
+
+  InternalAdminUrl:
+    Type: String
+    AllowedPattern: "^(?!admin/).+/$"
+    ConstraintDescription: Must end with "/" and must not be "admin/".
+    Description: >
+      Obfuscated path for the real Django admin. Must end with "/" and must NOT
+      be "admin/" (that path is the honeypot). Use a non-predictable value, e.g.
+      admin-Hk9_x2lT/ (generate: python -c "import secrets;print(f'admin-{secrets.token_urlsafe(6)}/')").
+
+  CorsAllowedOrigins:
+    Type: String
+    Default: ""
+    Description: >
+      Comma-separated origins allowed to call the API from a browser. FULL URLs
+      with scheme (and port if any), no trailing slash. Empty = none.
+      Example: https://thiup.com,https://www.thiup.com,http://localhost:3000
+
+  CsrfTrustedOrigins:
+    Type: String
+    Default: ""
+    Description: >
+      Comma-separated origins trusted for cross-origin POSTs (e.g. admin login).
+      FULL URLs with scheme, Django 4 matches EXACTLY. Empty = none.
+      Example: https://thiup.com,https://api.thiup.com,http://localhost:8080
+
+  # ---- Object storage (S3-compatible: AWS S3 or Cloudflare R2) ----
+  StorageBucketName:
+    Type: String
+    Description: Bucket/container name for static + media assets.
+  StoragePublicDomain:
+    Type: String
+    Description: >
+      Public domain serving the bucket (AWS_S3_CUSTOM_DOMAIN), no scheme. For R2,
+      the r2.dev domain or a custom domain, e.g. assets.thiup.com
+  StorageEndpointUrl:
+    Type: String
+    Description: >
+      S3-compatible endpoint. For Cloudflare R2:
+      https://<ACCOUNT_ID>.r2.cloudflarestorage.com (region is "auto").
+  StorageAccessKeyId:
+    Type: String
+    NoEcho: true
+    Description: Access key id for the storage provider (R2 API token).
+  StorageSecretAccessKey:
+    Type: String
+    NoEcho: true
+    Description: Secret access key for the storage provider (R2 API token).
+
+  # Only ONE backend secret: API_SECRET_KEY is derived from SECRET_KEY at boot.
+  SecretKey:
+    Type: String
+    NoEcho: true
+
+  # ---- External database ---- (engine is hardcoded in the task def: always postgresql)
+  DatabaseHost:
+    Type: String
+
+  DatabaseName:
+    Type: String
+
+  DatabaseUser:
+    Type: String
+
+  DatabasePassword:
+    Type: String
+    NoEcho: true
+
+  DatabasePort:
+    Type: String
+    Default: "5432"
+
+# --- Resources ---
+Resources:
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${AWS::StackName}-cluster"
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${AWS::StackName}-web"
+      RetentionInDays: 14
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-exec-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        # ECS uses the execution role to inject SSM params + Secrets Manager
+        # secrets into the container at task launch.
+        - PolicyName: read-config-and-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/*"
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref SecretKeySecret
+                  - !Ref DatabasePasswordSecret
+                  - !Ref StorageAccessKeyIdSecret
+                  - !Ref StorageSecretAccessKeySecret
+
+  # Assets live in an external S3-compatible bucket (Cloudflare R2) reached with
+  # access keys, so the task role needs no storage permissions.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+
+  # ---- Security groups ----
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} ALB - public HTTP"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Public HTTP
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} service - traffic from ALB only"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: From ALB to container
+
+  # ---- Application Load Balancer ----
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${AWS::StackName}-alb"
+      Type: application
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-tg"
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8000
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health/
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ---- Config in SSM Parameter Store (editable in the AWS console) ----
+  # Seeded from the stack parameters on create; afterwards edit the VALUES in
+  # the SSM console (an unrelated stack update won't overwrite them). To apply a
+  # change to the running app: force a new deployment (no build needed).
+  ParamStage:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/STAGE", Type: String, Value: !Ref StageValue }
+  ParamDebug:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DEBUG", Type: String, Value: !Ref DebugValue }
+  ParamAllowedHosts:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/ALLOWED_HOSTS", Type: String, Value: !Ref AllowedHosts }
+  ParamEncryptedResponse:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/ENCRYPTED_RESPONSE", Type: String, Value: !Ref EncryptedResponse }
+  ParamSingleRequestProtect:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/SINGLE_REQUEST_PROTECT", Type: String, Value: !Ref SingleRequestProtect }
+  ParamGatewaySeed:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/GATEWAY_SEED", Type: String, Value: !Ref GatewaySeed }
+  ParamInternalAdminUrl:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/INTERNAL_ADMIN_URL", Type: String, Value: !Ref InternalAdminUrl }
+  ParamDatabaseHost:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_HOST", Type: String, Value: !Ref DatabaseHost }
+  ParamDatabaseName:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_NAME", Type: String, Value: !Ref DatabaseName }
+  ParamDatabaseUser:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_USER", Type: String, Value: !Ref DatabaseUser }
+  ParamDatabasePort:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_PORT", Type: String, Value: !Ref DatabasePort }
+  # SSM forbids parameter names starting with "aws"/"ssm"; the SSM name drops the
+  # AWS_ prefix but the injected env var (in the task def) keeps it.
+  ParamStorageBucketName:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/STORAGE_BUCKET_NAME", Type: String, Value: !Ref StorageBucketName }
+  ParamStoragePublicDomain:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/STORAGE_CUSTOM_DOMAIN", Type: String, Value: !Ref StoragePublicDomain }
+  ParamStorageEndpointUrl:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/STORAGE_ENDPOINT_URL", Type: String, Value: !Ref StorageEndpointUrl }
+
+  # ---- Secrets in Secrets Manager (edit the value in the console) ----
+  SecretKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/SECRET_KEY"
+      SecretString: !Ref SecretKey
+  DatabasePasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/DATABASE_PASSWORD"
+      SecretString: !Ref DatabasePassword
+  StorageAccessKeyIdSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/AWS_ACCESS_KEY_ID"
+      SecretString: !Ref StorageAccessKeyId
+  StorageSecretAccessKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/AWS_SECRET_ACCESS_KEY"
+      SecretString: !Ref StorageSecretAccessKey
+
+  # ---- Task definition ----
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn:
+      - ParamStage
+      - ParamDebug
+      - ParamAllowedHosts
+      - ParamEncryptedResponse
+      - ParamSingleRequestProtect
+      - ParamGatewaySeed
+      - ParamInternalAdminUrl
+      - ParamDatabaseHost
+      - ParamDatabaseName
+      - ParamDatabaseUser
+      - ParamDatabasePort
+      - ParamStorageBucketName
+      - ParamStoragePublicDomain
+      - ParamStorageEndpointUrl
+    Properties:
+      Family: !Sub "${AWS::StackName}-web"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: web
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}:${ImageTag}"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: web
+          # Computed by the stack (not user-managed) + values that may be empty
+          # (SSM String params can't be empty), so they stay inline.
+          Environment:
+            - { Name: SERVER_PORT,            Value: 8000 }
+            # Neon requires SSL; libpq reads PGSSLMODE (Django leaves OPTIONS empty).
+            - { Name: PGSSLMODE,              Value: require }
+            - { Name: USE_AWS_STORAGE,        Value: "True" }
+            # AWS_S3_REGION_NAME defaults to "auto" (R2) in settings; bucket /
+            # domain / endpoint / keys come from SSM + Secrets Manager below.
+            - { Name: DATABASE_ENGINE,        Value: django.db.backends.postgresql }
+            - { Name: CORS_ALLOWED_ORIGINS,   Value: !Ref CorsAllowedOrigins }
+            - { Name: CSRF_TRUSTED_ORIGINS,   Value: !Ref CsrfTrustedOrigins }
+          # User-managed in the AWS console: SSM Parameter Store (config) +
+          # Secrets Manager (secrets). Edit the value there, then redeploy.
+          Secrets:
+            - { Name: STAGE,                  ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/STAGE" }
+            - { Name: DEBUG,                  ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DEBUG" }
+            - { Name: ALLOWED_HOSTS,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ALLOWED_HOSTS" }
+            - { Name: ENCRYPTED_RESPONSE,     ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ENCRYPTED_RESPONSE" }
+            - { Name: SINGLE_REQUEST_PROTECT, ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/SINGLE_REQUEST_PROTECT" }
+            - { Name: GATEWAY_SEED,           ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/GATEWAY_SEED" }
+            - { Name: INTERNAL_ADMIN_URL,     ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/INTERNAL_ADMIN_URL" }
+            - { Name: DATABASE_HOST,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_HOST" }
+            - { Name: DATABASE_NAME,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_NAME" }
+            - { Name: DATABASE_USER,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_USER" }
+            - { Name: DATABASE_PORT,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_PORT" }
+            - { Name: AWS_STORAGE_BUCKET_NAME, ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/STORAGE_BUCKET_NAME" }
+            - { Name: AWS_S3_CUSTOM_DOMAIN,   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/STORAGE_CUSTOM_DOMAIN" }
+            - { Name: AWS_S3_ENDPOINT_URL,    ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/STORAGE_ENDPOINT_URL" }
+            - { Name: SECRET_KEY,             ValueFrom: !Ref SecretKeySecret }
+            - { Name: DATABASE_PASSWORD,      ValueFrom: !Ref DatabasePasswordSecret }
+            - { Name: AWS_ACCESS_KEY_ID,      ValueFrom: !Ref StorageAccessKeyIdSecret }
+            - { Name: AWS_SECRET_ACCESS_KEY,  ValueFrom: !Ref StorageSecretAccessKeySecret }
+
+  # ---- ECS service (fronted by the ALB) ----
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      ServiceName: !Sub "${AWS::StackName}-svc"
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      # Give Django time to boot before unhealthy checks count against the task.
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        # Auto-roll back a deploy that never becomes healthy.
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # Public subnets + public IP so the task can pull from ECR without a NAT.
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnet1
+            - !Ref PublicSubnet2
+          SecurityGroups:
+            - !Ref ServiceSecurityGroup
+      LoadBalancers:
+        - ContainerName: web
+          ContainerPort: 8000
+          TargetGroupArn: !Ref TargetGroup
+
+  # ---- Momentum recompute: EventBridge Scheduler -> ephemeral Fargate task ----
+  # Replaces the old Celery beat + RabbitMQ. Every 10 min the scheduler launches
+  # a ONE-OFF task from the SAME task definition as the web service, overriding
+  # the command to run `python manage.py recompute_momentum`. Because the image
+  # tag is mutable (e.g. :test) and Fargate pulls the image fresh on every task
+  # launch, each run uses the LATEST image pushed by CodeBuild — no extra wiring
+  # needed for "always up to date". The task starts, computes, and exits.
+
+  # Role EventBridge Scheduler assumes to run the task on the cluster.
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-scheduler-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: run-momentum-task
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # RunTask on any revision of this stack's web task-definition
+              # family, scoped to this cluster.
+              - Effect: Allow
+                Action: ecs:RunTask
+                Resource: !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${AWS::StackName}-web:*"
+                Condition:
+                  ArnLike:
+                    ecs:cluster: !GetAtt Cluster.Arn
+              # The scheduler must pass the task's execution + task roles to ECS.
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !GetAtt ExecutionRole.Arn
+                  - !GetAtt TaskRole.Arn
+
+  MomentumSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-momentum"
+      Description: Recompute For You momentum every 10 min (ephemeral Fargate task).
+      ScheduleExpression: !Ref MomentumScheduleExpression
+      ScheduleExpressionTimezone: UTC
+      State: ENABLED
+      # OFF = fire exactly on schedule (no jitter window) — punctual every 10 min.
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt Cluster.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        # Idempotent command: a missed/failed tick is recovered by the next one,
+        # so don't pile up retries.
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+        EcsParameters:
+          TaskDefinitionArn: !Ref TaskDefinition
+          LaunchType: FARGATE
+          TaskCount: 1
+          NetworkConfiguration:
+            AwsvpcConfiguration:
+              # Public IP so the task can pull from ECR and reach the DB.
+              AssignPublicIp: ENABLED
+              Subnets:
+                - !Ref PublicSubnet1
+                - !Ref PublicSubnet2
+              SecurityGroups:
+                - !Ref ServiceSecurityGroup
+        # Override gunicorn with the management command for this run only.
+        Input: !Sub |
+          {"containerOverrides":[{"name":"web","command":["python","manage.py","recompute_momentum"]}]}
+
+  # ---- CI: CodeBuild project (build image -> collectstatic -> deploy) ----
+  # CLUSTER/SERVICE are wired to THIS stack's resources, so they can never go
+  # stale. The role carries every permission the buildspec needs (ECR, ECS
+  # deploy + run-task, PassRole, logs, GitHub connection).
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-codebuild-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codebuild.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: codebuild-ci
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-ci*"
+              - Sid: EcrAuthToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPushPull
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ImageRepoName}"
+              - Sid: EcsDeployAndRunTask
+                Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                  - ecs:DescribeTasks
+                  - ecs:ListTasks
+                  - ecs:RunTask
+                  - ecs:RegisterTaskDefinition
+                  - ecs:DescribeTaskDefinition
+                Resource: "*"
+              # automigrate reads the run-task's CloudWatch logs to parse `showmigrations`.
+              - Sid: ReadTaskLogs
+                Effect: Allow
+                Action: [logs:GetLogEvents, logs:FilterLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AWS::StackName}-web:*"
+              # deploy re-points the momentum schedule at the freshly deployed revision.
+              - Sid: UpdateMomentumSchedule
+                Effect: Allow
+                Action: [scheduler:GetSchedule, scheduler:UpdateSchedule]
+                Resource: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${AWS::StackName}-momentum"
+              # update-schedule re-passes the scheduler's own role to EventBridge Scheduler.
+              - Sid: PassSchedulerRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt SchedulerRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: scheduler.amazonaws.com
+              - Sid: PassEcsRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !GetAtt ExecutionRole.Arn
+                  - !GetAtt TaskRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+              - Sid: Ec2DescribeForPublicIp
+                Effect: Allow
+                Action: ec2:DescribeNetworkInterfaces
+                Resource: "*"
+              # Needed at DOWNLOAD_SOURCE: CodeBuild gets a token from the GitHub
+              # App connection to clone the repo. Resource "*" mirrors the
+              # working manual role's `codebuild-github-connection` policy.
+              - Sid: UseGitHubConnection
+                Effect: Allow
+                Action:
+                  - codeconnections:GetConnectionToken
+                  - codeconnections:UseConnection
+                  - codestar-connections:GetConnectionToken
+                  - codestar-connections:UseConnection
+                Resource: "*"
+
+  # The GitHub App credential + webhook are bound BY HAND in the console (the
+  # account's SCP blocks PassConnection/CreateWebhook). The template only declares
+  # the repo Location + buildspec.yml. See ci/infra/README.md.
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-ci"
+      Description: Build the image, sync static to S3, and deploy to ECS.
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-x86_64-standard:6.0
+        ImagePullCredentialsType: CODEBUILD
+        # Required to run `docker build` inside the build.
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - { Name: AWS_ACCOUNT_ID, Value: !Ref AWS::AccountId }
+          - { Name: IMAGE_NAME,     Value: !Ref ImageRepoName }
+          - { Name: IMAGE_TAG,      Value: !Ref ImageTag }
+          # Wired to this stack -> never stale.
+          - { Name: CLUSTER,           Value: !Ref Cluster }
+          - { Name: SERVICE,           Value: !GetAtt Service.Name }
+          - { Name: MOMENTUM_SCHEDULE, Value: !Sub "${AWS::StackName}-momentum" }
+      Source:
+        # GITHUB + BuildSpec: buildspec.yml so the build runs the repo's buildspec.
+        # Location is required by CloudFormation for a GitHub source. The GitHub
+        # App credential and the webhook are bound BY HAND in the console (the
+        # account's SCP blocks PassConnection/CreateWebhook). See ci/infra/README.md.
+        Type: GITHUB
+        Location: "https://github.com/SirRiuz/thiup_backend.git"
+        GitCloneDepth: 1
+        BuildSpec: buildspec.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+
+# --- Outputs ---
+Outputs:
+  ClusterName:
+    Description: Set this as CLUSTER in the CodeBuild project env.
+    Value: !Ref Cluster
+
+  ServiceName:
+    Description: Set this as SERVICE in the CodeBuild project env.
+    Value: !GetAtt Service.Name
+
+  LoadBalancerDNS:
+    Description: ALB DNS name. CNAME your Cloudflare subdomain to THIS value.
+    Value: !GetAtt LoadBalancer.DNSName
+
+  LoadBalancerURL:
+    Description: Stable public URL of the app (does not change between deploys).
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+
+  MomentumScheduleName:
+    Description: EventBridge schedule that runs recompute_momentum.
+    Value: !Ref MomentumSchedule
+
+  CodeBuildProjectName:
+    Description: CodeBuild project for this stack's CI.
+    Value: !Ref CodeBuildProject
+
+  EnvConfigConsole:
+    Description: >
+      Edit/add/delete app CONFIG here (SSM Parameter Store). Filter by the stack
+      name. Change a value, then force a new deployment (no build needed).
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/systems-manager/parameters/?region=${AWS::Region}"
+
+  EnvSecretsConsole:
+    Description: >
+      Edit the SECRETS here (Secrets Manager): /${stack}/SECRET_KEY and
+      /${stack}/DATABASE_PASSWORD. Change a value, then force a new deployment.
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/secretsmanager/listsecrets?region=${AWS::Region}"

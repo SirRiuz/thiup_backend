@@ -12,4 +12,4 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 0
 fi
 
-python scripts/check_comment_language.py "${files[@]}"
+python ci/scripts/check_comment_language.py "${files[@]}"
