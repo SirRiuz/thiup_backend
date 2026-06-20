@@ -5,9 +5,9 @@ CodeBuild CI:
 
 ```
 Internet → ALB (stable DNS) → Fargate ECS service (gunicorn)
-                                   ├─ static/media served from S3 (public bucket)
+                                   ├─ static/media served from an external S3-compatible bucket (Cloudflare R2)
                                    └─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 10 min)
-CI: CodeBuild project (build image → collectstatic to S3 → deploy) — role fully permissioned
+CI: CodeBuild project (build image → collectstatic to the bucket → deploy) — role fully permissioned
 ```
 
 - Uses the account's **default VPC** + **2 public subnets** (no VPC/RDS created).
@@ -30,28 +30,26 @@ User is not authorized to access connection arn:aws:codeconnections:...:connecti
 
 (this fails **even as root**, which only happens with an SCP).
 
-Therefore the project is created with **`Source.Type: NO_SOURCE`** (no GitHub URL,
-no `Auth`, no `Triggers` — a placeholder buildspec). After every stack creation you
-bind the source **by hand in the CodeBuild console**:
+Therefore the template declares the GitHub source (`Type: GITHUB`, the repo
+`Location`, and **`BuildSpec: buildspec.yml`** so builds run the repo's buildspec),
+but **omits `Auth` and `Triggers`**. After every stack creation, wire the two
+SCP-blocked pieces **by hand in the CodeBuild console**:
 
-1. **Bind the GitHub source** — Project `…-ci` → **Edit → Source** → Source
-   provider **GitHub** → select the existing GitHub App connection
-   (**“SirRiuz GH Conection”**, `connection/099f5062-…`, status *Available*) →
-   Repository `https://github.com/SirRiuz/thiup_backend`.
-2. **Use the repo buildspec** — same screen, *Buildspec* → **“Use a buildspec
-   file”** (defaults to `buildspec.yml`).
-3. **Enable the webhook** — *Primary source webhook events* → **“Rebuild every
-   time a code change is pushed”** → **Update**.
+1. **Connect GitHub** — Project `…-ci` → **Edit → Source** → provider **GitHub** →
+   the account's **AWS managed GitHub App** credential (account-level; reused by
+   every project). Repository: `https://github.com/SirRiuz/thiup_backend`.
+2. **Enable the webhook** — same screen, *Primary source webhook events* →
+   **“Rebuild every time a code change is pushed”** → **Update**.
 
 Connections console:
 <https://us-east-1.console.aws.amazon.com/codesuite/settings/connections?region=us-east-1>
 
-> **No more reconnect on update:** because the template no longer owns a GitHub
-> source, a stack **Update** leaves your manual binding untouched (CFN only
-> re-applies a property when its template value changes — `NO_SOURCE` never does).
-> You only redo the steps above if you **recreate** the stack from scratch (new
-> `…-vN`). The role already has `codeconnections:UseConnection`/`GetConnectionToken`,
-> so once bound, builds clone fine.
+> **Do NOT set `Source.Type: NO_SOURCE`** to "remove the URL": that forces an inline
+> buildspec, so builds ignore `buildspec.yml` and run only the placeholder (a 14s
+> "Succeeded" that deploys nothing). `GITHUB` + `BuildSpec: buildspec.yml` is what
+> makes builds use the repo. The GitHub App credential is **account-level**, so a
+> stack **Update** re-applying the GitHub source does not drop it — no reconnect.
+> The webhook is the only piece to redo when you recreate the stack.
 
 ### Want it fully turnkey (zero manual steps)?
 The only way is to have an Org admin **allow** `codeconnections:PassConnection`
@@ -82,7 +80,7 @@ project bound to the old connection (including older ones).
 1. **Create stack → With new resources** → upload `ci/infra/ecs.yml`.
 2. **Stack name**, e.g. `thiup-prod` (or `thiup-test-…`).
 3. Fill parameters (see below). Acknowledge **IAM capabilities**. **Submit**.
-4. On **CREATE_COMPLETE**, do the **manual GitHub steps** above (source, buildspec, webhook).
+4. On **CREATE_COMPLETE**, do the **manual GitHub steps** above (connect GitHub + webhook).
 5. Trigger a build in `…-ci` (or push). Pipeline: **build → collectstatic → deploy**.
 6. Open the app at the **`LoadBalancerURL`** output.
 
@@ -95,6 +93,9 @@ project bound to the old connection (including older ones).
 | `GatewaySeed` | **Required.** Public obfuscation; must match the frontend's `REACT_APP_GATEWAY_SEED`. |
 | `InternalAdminUrl` | Obfuscated admin path, ends with `/`, not `admin/`. |
 | `DatabaseHost/Name/User/Password/Port` | Your external Postgres. |
+| `StorageBucketName` / `StoragePublicDomain` | Bucket name + its public domain (R2). |
+| `StorageEndpointUrl` | R2: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. |
+| `StorageAccessKeyId` / `StorageSecretAccessKey` | R2 API token keys. NoEcho. |
 | `ImageTag` | Mutable tag the service runs (default `test`). |
 | `MomentumScheduleExpression` | Default `rate(10 minutes)`. |
 
@@ -111,7 +112,7 @@ Static port is fixed at **8000** (not a parameter).
   1. `ecs-deploy register-task` — clone the service's task def, swap the image to
      the immutable tag, register a new revision (ARN saved to a temp file). The
      service keeps running the **old** image until step 5.
-  2. `ecs-deploy collectstatic` — run-task on the **new** revision → static to S3.
+  2. `ecs-deploy collectstatic` — run-task on the **new** revision → static to the bucket.
   3. `ecs-deploy automigrate` — run-task on the **old** image: roll the DB back to
      the migration common to the DB and this branch (see below).
   4. `ecs-deploy migrate` — run-task on the **new** revision: apply this branch's
@@ -145,12 +146,28 @@ Logs (write own + read `/ecs/<stack>-web`) · ECR auth + push/pull ·
 `ec2:DescribeNetworkInterfaces` ·
 `codeconnections:UseConnection/GetConnectionToken` (to clone once bound).
 
-## Static & media (S3)
+## Static & media (S3-compatible: AWS S3 or Cloudflare R2)
 
-`USE_AWS_STORAGE=True` routes **static and media** to the **public-read** bucket
-`…-assets-<account>`. The runtime container is gunicorn-only (no nginx/whitenoise),
-so assets are served from S3 (`AWS_S3_CUSTOM_DOMAIN`), unsigned URLs. The app uses
-the **task role** for S3 (no AWS keys in the task def).
+`USE_AWS_STORAGE=True` routes **static and media** to an external S3-compatible
+bucket via `django-storages`/`S3Boto3Storage`. The runtime container is
+gunicorn-only (no nginx/whitenoise), so assets are served from the bucket's public
+domain (`AWS_S3_CUSTOM_DOMAIN`), unsigned URLs.
+
+**The stack does NOT create the bucket** — you provide one. Provider is chosen by
+config, no code change:
+
+| Var | AWS S3 | Cloudflare R2 |
+|---|---|---|
+| `AWS_S3_ENDPOINT_URL` | *(empty)* | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `AWS_S3_REGION_NAME` | bucket region | `auto` (the settings default) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | optional (task role) | **required** (R2 has no IAM) |
+| `AWS_STORAGE_BUCKET_NAME` / `AWS_S3_CUSTOM_DOMAIN` | bucket + its domain | R2 bucket + its public/r2.dev domain |
+
+`settings.py` sends boto3 checksums only `when_required` (R2 rejects the defaults)
+and never sets ACLs (`AWS_DEFAULT_ACL=None`) — R2 doesn't support them. The bucket
+must be **publicly readable** on `AWS_S3_CUSTOM_DOMAIN` (unsigned URLs). These
+values come from SSM (config) + Secrets Manager (the two keys), seeded by the
+stack parameters — edit them in the console like any other var.
 
 ## Environment variables & secrets
 
@@ -159,9 +176,9 @@ only). They live in AWS and are injected into the task at launch:
 
 | Store | Holds | Examples |
 |---|---|---|
-| **SSM Parameter Store** (`/<stack>/<VAR>`) | non-secret config | `DEBUG`, `STAGE`, `ALLOWED_HOSTS`, `DATABASE_HOST/NAME/USER/PORT`, … |
-| **Secrets Manager** (`/<stack>/<VAR>`) | secrets | `SECRET_KEY`, `DATABASE_PASSWORD` |
-| **Task def `Environment`** (in `ecs.yml`) | stack-computed / may-be-empty | `SERVER_PORT`, `AWS_*`, `USE_AWS_STORAGE`, `MEDIA_BASE_URL`, `CORS/CSRF` |
+| **SSM Parameter Store** (`/<stack>/<VAR>`) | non-secret config | `DEBUG`, `STAGE`, `ALLOWED_HOSTS`, `DATABASE_HOST/NAME/USER/PORT`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_CUSTOM_DOMAIN`, `AWS_S3_ENDPOINT_URL`, … |
+| **Secrets Manager** (`/<stack>/<VAR>`) | secrets | `SECRET_KEY`, `DATABASE_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| **Task def `Environment`** (in `ecs.yml`) | stack-computed / may-be-empty | `SERVER_PORT`, `PGSSLMODE`, `USE_AWS_STORAGE`, `MEDIA_BASE_URL`, `CORS/CSRF` |
 
 Console links are in the stack **Outputs**: `EnvConfigConsole` (SSM) and
 `EnvSecretsConsole` (Secrets Manager).
@@ -215,14 +232,12 @@ No broker/worker.
 
 ## Teardown
 
-⚠️ **Empty the S3 bucket first.** S3 won't delete a non-empty bucket and
-CloudFormation won't empty it, so a stack delete **fails** on the bucket otherwise:
+CloudFormation → **Delete stack**. The stack no longer owns an S3 bucket, so the
+delete is clean.
 
-1. S3 → `…-assets-<account>` → **Empty**.
-2. CloudFormation → **Delete stack**.
-
-The **GitHub connection is NOT deleted** (account-level, reused). The ECR repo and
-the external DB are untouched.
+The **storage bucket (R2/S3) is external** — the stack never created it, so its
+assets are untouched. The **GitHub connection is NOT deleted** (account-level,
+reused). The ECR repo and the external DB are untouched too.
 
 ## Troubleshooting
 

@@ -142,7 +142,7 @@ Static assets (Django admin CSS/JS, DRF, drf-yasg, anything in app `static/` dir
 ### How it works
 
 1. `STATIC_URL = "/static/"`, `STATIC_ROOT = "/app/staticfiles/"` in `core/settings.py`.
-2. With `STAGE=dev`, an ephemeral `collectstatic` service runs `python manage.py collectstatic --noinput --clear` before `web` starts.
+2. With `STAGE=dev`, an ephemeral `collectstatic` service runs `python manage.py collectstatic --noinput` before `web` starts.
 3. The output goes into the `static_volume`, which nginx mounts read-only.
 4. Browser requests `/static/admin/css/base.css` → nginx serves it directly from `/app/staticfiles/admin/css/base.css`.
 

@@ -19,7 +19,7 @@ export COMPOSE_PROFILES
 .PHONY: help build up down restart logs logs-web logs-db logs-nginx \
         logs-momentum \
         shell shell-db makemigrations makemigrations-check sqlmigrate \
-        collectstatic createsuperuser \
+        createsuperuser \
         load_fixtures add_dummy_threads recompute_momentum \
         validate-config \
         test clean clean-volumes \
@@ -45,7 +45,6 @@ help:
 	@echo '  Django:'
 	@echo '    make shell             Django shell'
 	@echo '    make shell-db          psql against the DB'
-	@echo '    make collectstatic     Collect static files'
 	@echo '    make createsuperuser   Create a superuser'
 	@echo '    make load_fixtures     Load predefined fixtures (reactions, …)'
 	@echo '    make add_dummy_threads [N]  Create N dummy threads (default 10). E.g. make add_dummy_threads 50'
@@ -121,11 +120,6 @@ sqlmigrate:
 		exit 1; \
 	fi
 	docker compose run --rm web python manage.py sqlmigrate $(APP) $(MIGRATION)
-
-collectstatic:
-	docker compose run --rm web python manage.py collectstatic --noinput --clear
-	@echo ''
-	@echo 'Static files written to /app/staticfiles/. nginx will serve them at /static/*.'
 
 createsuperuser:
 	docker compose exec web python manage.py createsuperuser

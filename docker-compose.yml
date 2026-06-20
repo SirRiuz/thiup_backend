@@ -53,31 +53,6 @@ services:
     networks:
       - internal
 
-  collectstatic:
-    container_name: "${APP_NAME}_collectstatic"
-    build:
-      context: .
-    profiles: ["dev"]
-    command: python manage.py collectstatic --noinput --clear
-    environment:
-      # Minimal env — collectstatic does not need DB connectivity.
-      - SECRET_KEY=${SECRET_KEY:-}
-      - GATEWAY_SEED=${GATEWAY_SEED:-}
-      - DEBUG=${DEBUG:-True}
-      - STAGE=${STAGE:-}
-      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-}
-      - INTERNAL_ADMIN_URL=${INTERNAL_ADMIN_URL:-}
-      - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
-      - SINGLE_REQUEST_PROTECT=${SINGLE_REQUEST_PROTECT:-}
-      - USE_AWS_STORAGE_SYSTEM=${USE_AWS_STORAGE_SYSTEM:-false}
-      - USE_AWS_STORAGE=${USE_AWS_STORAGE_SYSTEM:-false}
-      - MEDIA_BASE_URL=${MEDIA_BASE_URL:-}
-    volumes:
-      - .:/app:Z
-      - static_volume:/app/staticfiles
-    networks:
-      - internal
-
   web:
     container_name: "${APP_NAME}_django"
     restart: always
@@ -127,9 +102,6 @@ services:
         condition: service_healthy
         required: false
       migration:
-        condition: service_completed_successfully
-        required: false
-      collectstatic:
         condition: service_completed_successfully
         required: false
     networks:

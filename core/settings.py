@@ -327,21 +327,31 @@ USE_AWS_STORAGE = config("USE_AWS_STORAGE", cast=bool)
 print("Use S3 storage system :", "YES" if USE_AWS_STORAGE else "NO")
 
 if USE_AWS_STORAGE:
-    # Optional: empty -> None so boto3/django-storages fall back to the AWS
-    # credential chain (the ECS task role on Fargate). No static keys needed.
+    from botocore.config import Config
+
+    # Empty -> None. On AWS S3 the keys can be omitted to use the ECS task role;
+    # S3-compatible providers (Cloudflare R2) have no IAM, so keys are required.
     AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="") or None
     AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="") or None
     AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME")
     AWS_S3_CUSTOM_DOMAIN = config("AWS_S3_CUSTOM_DOMAIN")
-    AWS_S3_REGION_NAME = config("AWS_S3_REGION_NAME")
+    # R2 uses the literal region "auto"; AWS S3 set it to your bucket region.
+    AWS_S3_REGION_NAME = config("AWS_S3_REGION_NAME", default="auto")
+    # Custom endpoint -> S3-compatible provider (e.g. R2). Empty -> native AWS S3.
+    AWS_S3_ENDPOINT_URL = config("AWS_S3_ENDPOINT_URL", default="") or None
 
     AWS_S3_USE_SSL = True
     AWS_S3_VERIFY = True
     # Public, non-expiring URLs for assets (admin/swagger/DRF static + media):
-    # no per-object ACLs (bucket uses BucketOwnerEnforced + a public-read
-    # policy) and no querystring signing.
+    # no per-object ACLs and no querystring signing.
     AWS_DEFAULT_ACL = None
     AWS_QUERYSTRING_AUTH = False
+    # R2 rejects boto3's default integrity checksums; only send them when the
+    # operation requires it. Harmless against native S3.
+    AWS_S3_CLIENT_CONFIG = Config(
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+    )
 
     STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'

@@ -98,8 +98,8 @@ Parameters:
     Default: ""
     Description: >
       Origin prefixed to LOCAL media URLs (scheme + host, no trailing slash).
-      IGNORED when assets are on S3 (USE_AWS_STORAGE=True, the default here), so
-      leave it empty. Example for local storage: https://api.thiup.com
+      IGNORED when assets are on object storage (USE_AWS_STORAGE=True, the default
+      here), so leave it empty. Example for local storage: https://api.thiup.com
 
   CorsAllowedOrigins:
     Type: String
@@ -116,6 +116,29 @@ Parameters:
       Comma-separated origins trusted for cross-origin POSTs (e.g. admin login).
       FULL URLs with scheme, Django 4 matches EXACTLY. Empty = none.
       Example: https://thiup.com,https://api.thiup.com,http://localhost:8080
+
+  # ---- Object storage (S3-compatible: AWS S3 or Cloudflare R2) ----
+  StorageBucketName:
+    Type: String
+    Description: Bucket/container name for static + media assets.
+  StoragePublicDomain:
+    Type: String
+    Description: >
+      Public domain serving the bucket (AWS_S3_CUSTOM_DOMAIN), no scheme. For R2,
+      the r2.dev domain or a custom domain, e.g. assets.thiup.com
+  StorageEndpointUrl:
+    Type: String
+    Description: >
+      S3-compatible endpoint. For Cloudflare R2:
+      https://<ACCOUNT_ID>.r2.cloudflarestorage.com (region is "auto").
+  StorageAccessKeyId:
+    Type: String
+    NoEcho: true
+    Description: Access key id for the storage provider (R2 API token).
+  StorageSecretAccessKey:
+    Type: String
+    NoEcho: true
+    Description: Secret access key for the storage provider (R2 API token).
 
   # Only ONE backend secret: API_SECRET_KEY is derived from SECRET_KEY at boot.
   SecretKey:
@@ -185,7 +208,11 @@ Resources:
                 Resource:
                   - !Ref SecretKeySecret
                   - !Ref DatabasePasswordSecret
+                  - !Ref StorageAccessKeyIdSecret
+                  - !Ref StorageSecretAccessKeySecret
 
+  # Assets live in an external S3-compatible bucket (Cloudflare R2) reached with
+  # access keys, so the task role needs no storage permissions.
   TaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -196,53 +223,6 @@ Resources:
           - Effect: Allow
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
-      Policies:
-        # The app + the deploy-time collectstatic task write/read assets in S3
-        # (django-storages uses this role via the AWS credential chain).
-        - PolicyName: s3-assets
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
-                Resource: !Sub "${StaticBucket.Arn}/*"
-              - Effect: Allow
-                Action: s3:ListBucket
-                Resource: !GetAtt StaticBucket.Arn
-
-  # ---- S3 bucket for static (admin/swagger/DRF) + media assets ----
-  # Public-read: the runtime container is gunicorn-only, so assets are served
-  # from S3, not the app. (Thiup posts/media are public anyway.)
-  StaticBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "${AWS::StackName}-assets-${AWS::AccountId}"
-      OwnershipControls:
-        Rules:
-          - ObjectOwnership: BucketOwnerEnforced
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        IgnorePublicAcls: true
-        BlockPublicPolicy: false
-        RestrictPublicBuckets: false
-      CorsConfiguration:
-        CorsRules:
-          - AllowedMethods: [GET, HEAD]
-            AllowedOrigins: ["*"]
-            AllowedHeaders: ["*"]
-
-  StaticBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref StaticBucket
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: PublicReadAssets
-            Effect: Allow
-            Principal: "*"
-            Action: s3:GetObject
-            Resource: !Sub "${StaticBucket.Arn}/*"
 
   # ---- Security groups ----
   AlbSecurityGroup:
@@ -349,6 +329,15 @@ Resources:
   ParamDatabasePort:
     Type: AWS::SSM::Parameter
     Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_PORT", Type: String, Value: !Ref DatabasePort }
+  ParamStorageBucketName:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/AWS_STORAGE_BUCKET_NAME", Type: String, Value: !Ref StorageBucketName }
+  ParamStoragePublicDomain:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/AWS_S3_CUSTOM_DOMAIN", Type: String, Value: !Ref StoragePublicDomain }
+  ParamStorageEndpointUrl:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/AWS_S3_ENDPOINT_URL", Type: String, Value: !Ref StorageEndpointUrl }
 
   # ---- Secrets in Secrets Manager (edit the value in the console) ----
   SecretKeySecret:
@@ -361,6 +350,16 @@ Resources:
     Properties:
       Name: !Sub "/${AWS::StackName}/DATABASE_PASSWORD"
       SecretString: !Ref DatabasePassword
+  StorageAccessKeyIdSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/AWS_ACCESS_KEY_ID"
+      SecretString: !Ref StorageAccessKeyId
+  StorageSecretAccessKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/AWS_SECRET_ACCESS_KEY"
+      SecretString: !Ref StorageSecretAccessKey
 
   # ---- Task definition ----
   TaskDefinition:
@@ -377,6 +376,9 @@ Resources:
       - ParamDatabaseName
       - ParamDatabaseUser
       - ParamDatabasePort
+      - ParamStorageBucketName
+      - ParamStoragePublicDomain
+      - ParamStorageEndpointUrl
     Properties:
       Family: !Sub "${AWS::StackName}-web"
       RequiresCompatibilities: [FARGATE]
@@ -405,9 +407,8 @@ Resources:
             # Neon requires SSL; libpq reads PGSSLMODE (Django leaves OPTIONS empty).
             - { Name: PGSSLMODE,              Value: require }
             - { Name: USE_AWS_STORAGE,        Value: "True" }
-            - { Name: AWS_STORAGE_BUCKET_NAME, Value: !Ref StaticBucket }
-            - { Name: AWS_S3_CUSTOM_DOMAIN,   Value: !Sub "${StaticBucket}.s3.${AWS::Region}.amazonaws.com" }
-            - { Name: AWS_S3_REGION_NAME,     Value: !Ref AWS::Region }
+            # AWS_S3_REGION_NAME defaults to "auto" (R2) in settings; bucket /
+            # domain / endpoint / keys come from SSM + Secrets Manager below.
             - { Name: DATABASE_ENGINE,        Value: !Ref DatabaseEngine }
             - { Name: MEDIA_BASE_URL,         Value: !Ref MediaBaseUrl }
             - { Name: CORS_ALLOWED_ORIGINS,   Value: !Ref CorsAllowedOrigins }
@@ -426,8 +427,13 @@ Resources:
             - { Name: DATABASE_NAME,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_NAME" }
             - { Name: DATABASE_USER,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_USER" }
             - { Name: DATABASE_PORT,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_PORT" }
+            - { Name: AWS_STORAGE_BUCKET_NAME, ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/AWS_STORAGE_BUCKET_NAME" }
+            - { Name: AWS_S3_CUSTOM_DOMAIN,   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/AWS_S3_CUSTOM_DOMAIN" }
+            - { Name: AWS_S3_ENDPOINT_URL,    ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/AWS_S3_ENDPOINT_URL" }
             - { Name: SECRET_KEY,             ValueFrom: !Ref SecretKeySecret }
             - { Name: DATABASE_PASSWORD,      ValueFrom: !Ref DatabasePasswordSecret }
+            - { Name: AWS_ACCESS_KEY_ID,      ValueFrom: !Ref StorageAccessKeyIdSecret }
+            - { Name: AWS_SECRET_ACCESS_KEY,  ValueFrom: !Ref StorageSecretAccessKeySecret }
 
   # ---- ECS service (fronted by the ALB) ----
   Service:
@@ -628,10 +634,9 @@ Resources:
                   - codestar-connections:UseConnection
                 Resource: "*"
 
-  # The project is created WITHOUT a source. The GitHub source, buildspec and
-  # webhook are bound BY HAND in the console (the account's SCP blocks
-  # PassConnection/CreateWebhook). CFN owning a GitHub source would re-apply it on
-  # every stack update and wipe the manual binding. See ci/infra/README.md.
+  # The GitHub App credential + webhook are bound BY HAND in the console (the
+  # account's SCP blocks PassConnection/CreateWebhook). The template only declares
+  # the repo Location + buildspec.yml. See ci/infra/README.md.
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -656,16 +661,14 @@ Resources:
           - { Name: SERVICE,           Value: !GetAtt Service.Name }
           - { Name: MOMENTUM_SCHEDULE, Value: !Sub "${AWS::StackName}-momentum" }
       Source:
-        Type: NO_SOURCE
-        # Placeholder only. After create, bind the source in the console:
-        # Edit -> Source -> GitHub -> connection + repo -> "Use a buildspec file
-        # (buildspec.yml)" -> webhook. See ci/infra/README.md.
-        BuildSpec: |
-          version: 0.2
-          phases:
-            build:
-              commands:
-                - echo "Bind the GitHub source and buildspec.yml in the CodeBuild console. See ci/infra/README.md."
+        # GITHUB + BuildSpec: buildspec.yml so the build runs the repo's buildspec.
+        # Location is required by CloudFormation for a GitHub source. The GitHub
+        # App credential and the webhook are bound BY HAND in the console (the
+        # account's SCP blocks PassConnection/CreateWebhook). See ci/infra/README.md.
+        Type: GITHUB
+        Location: "https://github.com/SirRiuz/thiup_backend.git"
+        GitCloneDepth: 1
+        BuildSpec: buildspec.yml
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
@@ -691,14 +694,6 @@ Outputs:
   MomentumScheduleName:
     Description: EventBridge schedule that runs recompute_momentum.
     Value: !Ref MomentumSchedule
-
-  StaticBucketName:
-    Description: S3 bucket holding collected static + media assets.
-    Value: !Ref StaticBucket
-
-  StaticBaseUrl:
-    Description: Public base URL for assets (AWS_S3_CUSTOM_DOMAIN).
-    Value: !Sub "https://${StaticBucket}.s3.${AWS::Region}.amazonaws.com/"
 
   CodeBuildProjectName:
     Description: CodeBuild project for this stack's CI.
