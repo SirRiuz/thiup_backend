@@ -17,7 +17,7 @@ Metadata:
       - Label: { default: "Image & scaling" }
         Parameters: [ImageRepoName, ImageTag, DesiredCount, TaskCpu, TaskMemory, MomentumScheduleExpression]
       - Label: { default: "Application config" }
-        Parameters: [StageValue, DebugValue, AllowedHosts, EncryptedResponse, SingleRequestProtect, GatewaySeed, InternalAdminUrl, CorsAllowedOrigins, CsrfTrustedOrigins, SecretKey]
+        Parameters: [DebugValue, AllowedHosts, EncryptedResponse, SingleRequestProtect, GatewaySeed, InternalAdminUrl, CorsAllowedOrigins, CsrfTrustedOrigins, SecretKey]
       - Label: { default: "Object storage (S3 / Cloudflare R2)" }
         Parameters: [StorageBucketName, StoragePublicDomain, StorageEndpointUrl, StorageAccessKeyId, StorageSecretAccessKey]
       - Label: { default: "Database (external PostgreSQL)" }
@@ -66,10 +66,6 @@ Parameters:
     Default: "1024"
 
   # ---- App config (required at Django boot) ----
-  StageValue:
-    Type: String
-    Default: prod
-
   DebugValue:
     Type: String
     Default: "False"
@@ -300,9 +296,6 @@ Resources:
   # Seeded from the stack parameters on create; afterwards edit the VALUES in
   # the SSM console (an unrelated stack update won't overwrite them). To apply a
   # change to the running app: force a new deployment (no build needed).
-  ParamStage:
-    Type: AWS::SSM::Parameter
-    Properties: { Name: !Sub "/${AWS::StackName}/STAGE", Type: String, Value: !Ref StageValue }
   ParamDebug:
     Type: AWS::SSM::Parameter
     Properties: { Name: !Sub "/${AWS::StackName}/DEBUG", Type: String, Value: !Ref DebugValue }
@@ -371,7 +364,6 @@ Resources:
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     DependsOn:
-      - ParamStage
       - ParamDebug
       - ParamAllowedHosts
       - ParamEncryptedResponse
@@ -421,7 +413,6 @@ Resources:
           # User-managed in the AWS console: SSM Parameter Store (config) +
           # Secrets Manager (secrets). Edit the value there, then redeploy.
           Secrets:
-            - { Name: STAGE,                  ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/STAGE" }
             - { Name: DEBUG,                  ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DEBUG" }
             - { Name: ALLOWED_HOSTS,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ALLOWED_HOSTS" }
             - { Name: ENCRYPTED_RESPONSE,     ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ENCRYPTED_RESPONSE" }

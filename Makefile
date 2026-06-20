@@ -2,20 +2,6 @@
 # Makefile — thiup_backend
 # ============================================================
 
-# ─── Stage detection ────────────────────────────────────────
-# Reads STAGE from .env and translates it to COMPOSE_PROFILES.
-#   dev  → COMPOSE_PROFILES=dev   (postgres + web + nginx)
-#   prod → COMPOSE_PROFILES=      (web + nginx only)
-# Every docker compose call below inherits this exported value.
-# ────────────────────────────────────────────────────────────
-STAGE := $(shell grep -E '^STAGE=' .env 2>/dev/null | cut -d= -f2)
-ifeq ($(STAGE),dev)
-    COMPOSE_PROFILES := dev
-else
-    COMPOSE_PROFILES :=
-endif
-export COMPOSE_PROFILES
-
 .PHONY: help build up down restart logs logs-web logs-db logs-nginx \
         logs-momentum \
         shell shell-db makemigrations makemigrations-check sqlmigrate \
@@ -151,7 +137,7 @@ recompute_momentum:
 
 validate-config:
 	docker compose run --rm web python manage.py check
-	@docker compose run --rm web python manage.py shell -c "from django.conf import settings; print(f'STAGE              = {settings.STAGE}'); print(f'INTERNAL_ADMIN_URL = {settings.INTERNAL_ADMIN_URL}')"
+	@docker compose run --rm web python manage.py shell -c "from django.conf import settings; print(f'INTERNAL_ADMIN_URL = {settings.INTERNAL_ADMIN_URL}')"
 
 # ─── Testing ────────────────────────────────────────────────
 

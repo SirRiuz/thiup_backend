@@ -15,56 +15,17 @@ Thiup is an open-source project aimed at creating a free social network that pro
 1. `docker-compose build`: builds docker containers
 2. `docker-compose up`: starts dev server
 
-## Environments (STAGE)
+## Local services
 
-The project supports two environments via the `STAGE` variable in `.env`:
+`make up` (or `docker compose up`) runs the full local stack: **postgres +
+migration + web + momentum + nginx**. Production does **not** use docker-compose —
+it runs on AWS ECS/Fargate (see [Deployment (AWS)](#deployment-aws)).
 
-| STAGE | Services launched | Use case |
-|---|---|---|
-| `dev` | postgres + web + nginx | Local development |
-| `prod` | web + nginx (no postgres) | Production (postgres external, e.g. RDS) |
-
-### Switching environments
+Validate the config without bringing the stack up:
 
 ```bash
-# Edit .env
-sed -i 's/^STAGE=.*/STAGE=prod/' .env   # Linux
-# or:
-sed -i '' 's/^STAGE=.*/STAGE=prod/' .env   # macOS
-
-# Re-create the stack
-make restart
-
-# Confirm
 make validate-config
 ```
-
-### Important when STAGE=prod
-
-Switching to `prod` also requires pointing `DATABASE_HOST` at your external server:
-
-```bash
-DATABASE_HOST=tudb.cluster-xxx.us-east-1.rds.amazonaws.com
-DATABASE_PORT=5432
-```
-
-The local `postgres` service is intentionally skipped in this mode — that's a feature, not a bug.
-
-### Verifying
-
-```bash
-make validate-config   # prints the detected STAGE
-docker compose ps      # lists the containers actually running
-```
-
-### Under the hood
-
-The Makefile reads `STAGE` from `.env` and exports `COMPOSE_PROFILES`:
-
-- `STAGE=dev` → `COMPOSE_PROFILES=dev` → services with `profiles: [dev]` activate (postgres).
-- `STAGE=prod` → `COMPOSE_PROFILES=` (empty) → only services without any profile run (web, nginx).
-
-This uses [Docker Compose profiles](https://docs.docker.com/compose/profiles/) natively — no override files, no hacks. `required: false` on the `web → postgres` dependency lets the web service start without the local DB when `prod` is active.
 
 ## Django admin (custom URL + honeypot)
 
@@ -246,7 +207,7 @@ on every deploy (with optional rollback-to-common-ancestor — see
 
 ### Automatic in dev
 
-With `STAGE=dev`, `make up` chains startup like this:
+Locally, `make up` chains startup like this:
 
 ```
 postgres (healthy)
@@ -265,7 +226,8 @@ Outcome: every dev startup arrives at a schema that matches the model code. If a
 
 ### NOT in production
 
-With `STAGE=prod`, the `migration` service is skipped (it carries `profiles: [dev]`), and `web`'s dependency on it is gated by `required: false`. This is deliberate:
+Production doesn't use the local `migration` compose service. Applying migrations
+inline at boot is avoided on purpose:
 
 - Multi-instance deploys would race two `migrate` runs against the same DB.
 - A long migration would block the rollout.

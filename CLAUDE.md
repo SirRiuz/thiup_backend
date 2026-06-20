@@ -210,10 +210,10 @@ make load_fixtures                 # reaction catalog (separate shell; `make up`
 make test
 ```
 
-- `STAGE` in `.env` picks the compose profile: **dev** = postgres:15 (host port **5433**),
-  `runserver` with autoreload, nginx; **prod** = gunicorn + nginx, external DB (momentum runs as
-  an ephemeral EventBridge-scheduled task, not a compose service). Entry point: nginx on
-  `SERVER_PORT` (default 8080).
+- Local stack (`make up`): postgres:15 (host port **5433**), `runserver` with autoreload,
+  migration, momentum loop, nginx. Production is AWS ECS/Fargate (gunicorn, external DB,
+  momentum via EventBridge) — not docker-compose. Entry point: nginx on `SERVER_PORT`
+  (default 8080).
 - Useful targets (see `make help`): `make shell`, `make shell-db` (psql), `make logs-web`,
   `make add_dummy_threads`, `make recompute_momentum`, `make validate-config`,
   `make dependencies` (rebuild the web image to pick up requirements changes; the local
