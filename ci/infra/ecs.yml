@@ -7,6 +7,22 @@ Description: >
   EXTERNAL PostgreSQL (no RDS created here). Only ONE backend secret (SecretKey);
   API_SECRET_KEY is derived from it at boot.
 
+# Console display order/grouping for the create/update-stack form (without this,
+# the console lists parameters alphabetically).
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Network" }
+        Parameters: [VpcId, PublicSubnet1, PublicSubnet2]
+      - Label: { default: "Image & scaling" }
+        Parameters: [ImageRepoName, ImageTag, DesiredCount, TaskCpu, TaskMemory, MomentumScheduleExpression]
+      - Label: { default: "Application config" }
+        Parameters: [StageValue, DebugValue, AllowedHosts, EncryptedResponse, SingleRequestProtect, GatewaySeed, InternalAdminUrl, CorsAllowedOrigins, CsrfTrustedOrigins, SecretKey]
+      - Label: { default: "Object storage (S3 / Cloudflare R2)" }
+        Parameters: [StorageBucketName, StoragePublicDomain, StorageEndpointUrl, StorageAccessKeyId, StorageSecretAccessKey]
+      - Label: { default: "Database (external PostgreSQL)" }
+        Parameters: [DatabaseHost, DatabaseName, DatabaseUser, DatabasePort, DatabasePassword]
+
 # --- Parameters ---
 Parameters:
   VpcId:
@@ -93,14 +109,6 @@ Parameters:
       be "admin/" (that path is the honeypot). Use a non-predictable value, e.g.
       admin-Hk9_x2lT/ (generate: python -c "import secrets;print(f'admin-{secrets.token_urlsafe(6)}/')").
 
-  MediaBaseUrl:
-    Type: String
-    Default: ""
-    Description: >
-      Origin prefixed to LOCAL media URLs (scheme + host, no trailing slash).
-      IGNORED when assets are on object storage (USE_AWS_STORAGE=True, the default
-      here), so leave it empty. Example for local storage: https://api.thiup.com
-
   CorsAllowedOrigins:
     Type: String
     Default: ""
@@ -145,11 +153,7 @@ Parameters:
     Type: String
     NoEcho: true
 
-  # ---- External database ----
-  DatabaseEngine:
-    Type: String
-    Default: django.db.backends.postgresql
-
+  # ---- External database ---- (engine is hardcoded in the task def: always postgresql)
   DatabaseHost:
     Type: String
 
@@ -329,15 +333,17 @@ Resources:
   ParamDatabasePort:
     Type: AWS::SSM::Parameter
     Properties: { Name: !Sub "/${AWS::StackName}/DATABASE_PORT", Type: String, Value: !Ref DatabasePort }
+  # SSM forbids parameter names starting with "aws"/"ssm"; the SSM name drops the
+  # AWS_ prefix but the injected env var (in the task def) keeps it.
   ParamStorageBucketName:
     Type: AWS::SSM::Parameter
-    Properties: { Name: !Sub "/${AWS::StackName}/AWS_STORAGE_BUCKET_NAME", Type: String, Value: !Ref StorageBucketName }
+    Properties: { Name: !Sub "/${AWS::StackName}/STORAGE_BUCKET_NAME", Type: String, Value: !Ref StorageBucketName }
   ParamStoragePublicDomain:
     Type: AWS::SSM::Parameter
-    Properties: { Name: !Sub "/${AWS::StackName}/AWS_S3_CUSTOM_DOMAIN", Type: String, Value: !Ref StoragePublicDomain }
+    Properties: { Name: !Sub "/${AWS::StackName}/STORAGE_CUSTOM_DOMAIN", Type: String, Value: !Ref StoragePublicDomain }
   ParamStorageEndpointUrl:
     Type: AWS::SSM::Parameter
-    Properties: { Name: !Sub "/${AWS::StackName}/AWS_S3_ENDPOINT_URL", Type: String, Value: !Ref StorageEndpointUrl }
+    Properties: { Name: !Sub "/${AWS::StackName}/STORAGE_ENDPOINT_URL", Type: String, Value: !Ref StorageEndpointUrl }
 
   # ---- Secrets in Secrets Manager (edit the value in the console) ----
   SecretKeySecret:
@@ -409,8 +415,7 @@ Resources:
             - { Name: USE_AWS_STORAGE,        Value: "True" }
             # AWS_S3_REGION_NAME defaults to "auto" (R2) in settings; bucket /
             # domain / endpoint / keys come from SSM + Secrets Manager below.
-            - { Name: DATABASE_ENGINE,        Value: !Ref DatabaseEngine }
-            - { Name: MEDIA_BASE_URL,         Value: !Ref MediaBaseUrl }
+            - { Name: DATABASE_ENGINE,        Value: django.db.backends.postgresql }
             - { Name: CORS_ALLOWED_ORIGINS,   Value: !Ref CorsAllowedOrigins }
             - { Name: CSRF_TRUSTED_ORIGINS,   Value: !Ref CsrfTrustedOrigins }
           # User-managed in the AWS console: SSM Parameter Store (config) +
@@ -427,9 +432,9 @@ Resources:
             - { Name: DATABASE_NAME,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_NAME" }
             - { Name: DATABASE_USER,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_USER" }
             - { Name: DATABASE_PORT,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DATABASE_PORT" }
-            - { Name: AWS_STORAGE_BUCKET_NAME, ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/AWS_STORAGE_BUCKET_NAME" }
-            - { Name: AWS_S3_CUSTOM_DOMAIN,   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/AWS_S3_CUSTOM_DOMAIN" }
-            - { Name: AWS_S3_ENDPOINT_URL,    ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/AWS_S3_ENDPOINT_URL" }
+            - { Name: AWS_STORAGE_BUCKET_NAME, ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/STORAGE_BUCKET_NAME" }
+            - { Name: AWS_S3_CUSTOM_DOMAIN,   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/STORAGE_CUSTOM_DOMAIN" }
+            - { Name: AWS_S3_ENDPOINT_URL,    ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/STORAGE_ENDPOINT_URL" }
             - { Name: SECRET_KEY,             ValueFrom: !Ref SecretKeySecret }
             - { Name: DATABASE_PASSWORD,      ValueFrom: !Ref DatabasePasswordSecret }
             - { Name: AWS_ACCESS_KEY_ID,      ValueFrom: !Ref StorageAccessKeyIdSecret }
