@@ -96,18 +96,19 @@ project bound to the old connection (including older ones).
 | `StorageBucketName` / `StoragePublicDomain` | Bucket name + its public domain (R2). |
 | `StorageEndpointUrl` | R2: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. |
 | `StorageAccessKeyId` / `StorageSecretAccessKey` | R2 API token keys. NoEcho. |
-| `ImageTag` | Mutable tag the service runs (default `test`). |
 | `MomentumScheduleExpression` | Default `rate(10 minutes)`. |
 
-Static port is fixed at **8000** (not a parameter).
+Static port is fixed at **8000** (not a parameter). The image tag is fixed too: the
+service boots from `:latest` and the deploy pins it to an immutable `:SHA` (no
+`ImageTag` param — see below).
 
 ## CI pipeline (`buildspec.yml`)
 
 - **pre_build:** ECR login.
 - **build:** `ecs-deploy build` → `docker build` (base image from **ECR Public**,
-  avoids Docker Hub 429) → push **two** tags: `:${IMAGE_TAG}` (mutable, used for
-  cache + the momentum scheduler) and `:${CODEBUILD_RESOLVED_SOURCE_VERSION}`
-  (immutable per-commit).
+  avoids Docker Hub 429) → push **two** tags: **`:latest`** (mutable bootstrap tag,
+  always present so any new stack can pull on create) and
+  `:${CODEBUILD_RESOLVED_SOURCE_VERSION}` (immutable per-commit).
 - **post_build (in order):**
   1. `ecs-deploy register-task` — clone the service's task def, swap the image to
      the immutable tag, register a new revision (ARN saved to a temp file). The
@@ -133,10 +134,19 @@ the files to reverse) while `migrate` runs forward on the **new** image.
 **`AUTOMIGRATE_ROLLBACK=true`**. Set it **only on dev/test stacks** — rolling back
 a migration drops whatever it created. With it off, deploys only migrate *forward*.
 
-> **CFN drift:** a stack **Update** re-creates the task def pointing at the mutable
-> `:${ImageTag}` and resets the momentum schedule to it; the next CodeBuild run
-> re-registers an immutable revision and re-points the schedule. Between an update
-> and the next deploy the schedule runs `:${ImageTag}` (still the latest image).
+> **CFN drift:** a stack **Update** re-creates the task def pointing at `:latest`
+> and resets the momentum schedule to it; the next CodeBuild run re-registers an
+> immutable revision and re-points the schedule. Between an update and the next
+> deploy the schedule runs `:latest` (still the latest pushed image).
+
+### Image tag / bootstrapping new environments
+There's **no `ImageTag` parameter**. The task def boots from `:latest` and every
+build pushes `:latest` + an immutable `:SHA`; the deploy pins the service and the
+momentum schedule to the `:SHA`. Because the image is **environment-agnostic** (all
+config comes from SSM/Secrets), the same `:latest` serves every env. So creating a
+new env (e.g. `thiup-qa`) just works: it pulls `:latest` on create, then its first
+build deploys its own `:SHA`. The only prerequisite is that `:latest` exists in ECR
+once (seed it from any existing image the first time); after that it's self-maintaining.
 
 ### CodeBuild role permissions (all included)
 Logs (write own + read `/ecs/<stack>-web`) · ECR auth + push/pull ·
@@ -176,7 +186,7 @@ only). They live in AWS and are injected into the task at launch:
 
 | Store | Holds | Examples |
 |---|---|---|
-| **SSM Parameter Store** (`/<stack>/<VAR>`) | non-secret config | `DEBUG`, `STAGE`, `ALLOWED_HOSTS`, `DATABASE_HOST/NAME/USER/PORT`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_CUSTOM_DOMAIN`, `AWS_S3_ENDPOINT_URL`, … |
+| **SSM Parameter Store** (`/<stack>/<VAR>`) | non-secret config | `DEBUG`, `ALLOWED_HOSTS`, `DATABASE_HOST/NAME/USER/PORT`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_CUSTOM_DOMAIN`, `AWS_S3_ENDPOINT_URL`, … |
 | **Secrets Manager** (`/<stack>/<VAR>`) | secrets | `SECRET_KEY`, `DATABASE_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
 | **Task def `Environment`** (in `ecs.yml`) | stack-computed / may-be-empty | `SERVER_PORT`, `PGSSLMODE`, `USE_AWS_STORAGE`, `MEDIA_BASE_URL`, `CORS/CSRF` |
 

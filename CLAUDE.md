@@ -125,7 +125,7 @@ Legend — **Enc**: response encrypted when `ENCRYPTED_RESPONSE=True` (global re
 |---|---|---|---|---|---|---|
 | GET | `/config/` | `ConfigView` (`config.py`) | Transport flags: `{encrypted_response, single_request_protect}` | yes | no (AllowAny) | no (bootstrap) |
 | GET | `/ticket/` | `TicketView` (`ticket.py`) | Issues client-assertion JWT (anon throttle 120/min) | yes | no (AllowAny) | no (bootstrap) |
-| GET | `/health/` | `HealthView` (`health.py`) | DB `SELECT 1` health check | yes | yes | yes |
+| GET | `/health/` | `HealthCheckView` (`health.py`) | Liveness probe → 200 `{"status":"ok"}` (no DB) | yes | no (AllowAny — the ALB checker can't send a ticket) | yes |
 | GET | `/me/` | `CurrentMaskView` (`masks.py`) | Current mask: `{mask_id, country_code}` | yes | yes | yes |
 | GET/POST | `/threads/` | `ThreadsViewSet` (`threads.py`) | List (`?q=`, `?tag=`) / create thread | yes | yes | yes |
 | GET | `/threads/<uid>/` | 〃 | Thread detail | yes | yes | yes |
@@ -210,10 +210,10 @@ make load_fixtures                 # reaction catalog (separate shell; `make up`
 make test
 ```
 
-- `STAGE` in `.env` picks the compose profile: **dev** = postgres:15 (host port **5433**),
-  `runserver` with autoreload, nginx; **prod** = gunicorn + nginx, external DB (momentum runs as
-  an ephemeral EventBridge-scheduled task, not a compose service). Entry point: nginx on
-  `SERVER_PORT` (default 8080).
+- Local stack (`make up`): postgres:15 (host port **5433**), `runserver` with autoreload,
+  migration, momentum loop, nginx. Production is AWS ECS/Fargate (gunicorn, external DB,
+  momentum via EventBridge) — not docker-compose. Entry point: nginx on `SERVER_PORT`
+  (default 8080).
 - Useful targets (see `make help`): `make shell`, `make shell-db` (psql), `make logs-web`,
   `make add_dummy_threads`, `make recompute_momentum`, `make validate-config`,
   `make dependencies` (rebuild the web image to pick up requirements changes; the local
