@@ -125,7 +125,7 @@ Legend — **Enc**: response encrypted when `ENCRYPTED_RESPONSE=True` (global re
 |---|---|---|---|---|---|---|
 | GET | `/config/` | `ConfigView` (`config.py`) | Transport flags: `{encrypted_response, single_request_protect}` | yes | no (AllowAny) | no (bootstrap) |
 | GET | `/ticket/` | `TicketView` (`ticket.py`) | Issues client-assertion JWT (anon throttle 120/min) | yes | no (AllowAny) | no (bootstrap) |
-| GET | `/health/` | `HealthView` (`health.py`) | DB `SELECT 1` health check | yes | yes | yes |
+| GET | `/health/` | `HealthCheckView` (`health.py`) | Liveness probe → 200 `{"status":"ok"}` (no DB) | yes | no (AllowAny — the ALB checker can't send a ticket) | yes |
 | GET | `/me/` | `CurrentMaskView` (`masks.py`) | Current mask: `{mask_id, country_code}` | yes | yes | yes |
 | GET/POST | `/threads/` | `ThreadsViewSet` (`threads.py`) | List (`?q=`, `?tag=`) / create thread | yes | yes | yes |
 | GET | `/threads/<uid>/` | 〃 | Thread detail | yes | yes | yes |

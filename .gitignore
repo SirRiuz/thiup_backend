@@ -16,3 +16,4 @@ staticfiles/
 *.log
 .claude
 .vscode
+.env.prod
