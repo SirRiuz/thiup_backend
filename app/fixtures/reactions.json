@@ -1,62 +1,74 @@
 [
   {
     "model": "app.reaction",
-    "pk": "0a9c4f6e-2b1d-4c3a-9e8f-1a2b3c4d5e6f",
+    "pk": "a1b2c3d4-0001-4a01-9001-000000000001",
     "fields": {
-      "uid": "fireReaction",
+      "uid": "loveRxn",
       "is_active": true,
       "create_at": "2024-01-01T00:00:00Z",
       "update_at": "2024-01-01T00:00:00Z",
-      "name": "fire",
-      "emoji": "🔥"
+      "name": "love",
+      "emoji": "❤️"
     }
   },
   {
     "model": "app.reaction",
-    "pk": "1b8d5e7f-3c2e-4d4b-8f9a-2b3c4d5e6f70",
+    "pk": "a1b2c3d4-0002-4a02-9002-000000000002",
     "fields": {
-      "uid": "seenReaction",
+      "uid": "laughRxn",
       "is_active": true,
       "create_at": "2024-01-01T00:00:00Z",
       "update_at": "2024-01-01T00:00:00Z",
-      "name": "seen",
-      "emoji": "👁"
+      "name": "laugh",
+      "emoji": "😂"
     }
   },
   {
     "model": "app.reaction",
-    "pk": "2c7e6f80-4d3f-4e5c-9a0b-3c4d5e6f7081",
+    "pk": "a1b2c3d4-0003-4a03-9003-000000000003",
     "fields": {
-      "uid": "solidarityRx",
+      "uid": "wowRxn",
       "is_active": true,
       "create_at": "2024-01-01T00:00:00Z",
       "update_at": "2024-01-01T00:00:00Z",
-      "name": "solidarity",
-      "emoji": "✊"
+      "name": "wow",
+      "emoji": "😮"
     }
   },
   {
     "model": "app.reaction",
-    "pk": "3d8f7091-5e40-4f6d-8b1c-4d5e6f708192",
+    "pk": "a1b2c3d4-0004-4a04-9004-000000000004",
     "fields": {
-      "uid": "skepticalRxn",
+      "uid": "sadRxn",
       "is_active": true,
       "create_at": "2024-01-01T00:00:00Z",
       "update_at": "2024-01-01T00:00:00Z",
-      "name": "skeptical",
-      "emoji": "🤔"
+      "name": "sad",
+      "emoji": "😢"
     }
   },
   {
     "model": "app.reaction",
-    "pk": "4e90819a-6f51-4078-9c2d-5e6f708192a3",
+    "pk": "a1b2c3d4-0005-4a05-9005-000000000005",
     "fields": {
-      "uid": "heartbreakRx",
+      "uid": "angryRxn",
       "is_active": true,
       "create_at": "2024-01-01T00:00:00Z",
       "update_at": "2024-01-01T00:00:00Z",
-      "name": "heartbreak",
-      "emoji": "💔"
+      "name": "angry",
+      "emoji": "😡"
+    }
+  },
+  {
+    "model": "app.reaction",
+    "pk": "a1b2c3d4-0006-4a06-9006-000000000006",
+    "fields": {
+      "uid": "applauseRx",
+      "is_active": true,
+      "create_at": "2024-01-01T00:00:00Z",
+      "update_at": "2024-01-01T00:00:00Z",
+      "name": "applause",
+      "emoji": "👏"
     }
   }
 ]

@@ -186,9 +186,13 @@ only). They live in AWS and are injected into the task at launch:
 
 | Store | Holds | Examples |
 |---|---|---|
-| **SSM Parameter Store** (`/<stack>/<VAR>`) | non-secret config | `DEBUG`, `ALLOWED_HOSTS`, `DATABASE_HOST/NAME/USER/PORT`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_CUSTOM_DOMAIN`, `AWS_S3_ENDPOINT_URL`, … |
+| **SSM Parameter Store** (`/<stack>/<VAR>`) | non-secret config (console-editable) | `DEBUG`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `DATABASE_HOST/NAME/USER/PORT`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_CUSTOM_DOMAIN`, `AWS_S3_ENDPOINT_URL`, … |
 | **Secrets Manager** (`/<stack>/<VAR>`) | secrets | `SECRET_KEY`, `DATABASE_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
-| **Task def `Environment`** (in `ecs.yml`) | stack-computed / may-be-empty | `SERVER_PORT`, `PGSSLMODE`, `USE_AWS_STORAGE`, `MEDIA_BASE_URL`, `CORS/CSRF` |
+| **Task def `Environment`** (in `ecs.yml`) | stack-computed, fixed | `SERVER_PORT`, `PGSSLMODE`, `USE_AWS_STORAGE`, `DATABASE_ENGINE` |
+
+> SSM params can't be empty, so anything stored there must be non-empty
+> (`CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` are now required — set at least
+> one origin).
 
 Console links are in the stack **Outputs**: `EnvConfigConsole` (SSM) and
 `EnvSecretsConsole` (Secrets Manager).

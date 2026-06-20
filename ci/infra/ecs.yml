@@ -103,19 +103,21 @@ Parameters:
 
   CorsAllowedOrigins:
     Type: String
-    Default: ""
+    AllowedPattern: ".+"
+    ConstraintDescription: Required (stored in SSM, which rejects empty values).
     Description: >
       Comma-separated origins allowed to call the API from a browser. FULL URLs
-      with scheme (and port if any), no trailing slash. Empty = none.
-      Example: https://thiup.com,https://www.thiup.com,http://localhost:3000
+      with scheme (and port if any), no trailing slash. Stored in SSM → must be
+      non-empty. Example: https://thiup.com,https://www.thiup.com,http://localhost:3000
 
   CsrfTrustedOrigins:
     Type: String
-    Default: ""
+    AllowedPattern: ".+"
+    ConstraintDescription: Required (stored in SSM, which rejects empty values).
     Description: >
       Comma-separated origins trusted for cross-origin POSTs (e.g. admin login).
-      FULL URLs with scheme, Django 4 matches EXACTLY. Empty = none.
-      Example: https://thiup.com,https://api.thiup.com,http://localhost:8080
+      FULL URLs with scheme, Django 4 matches EXACTLY. Stored in SSM → must be
+      non-empty. Example: https://thiup.com,https://api.thiup.com,http://localhost:8080
 
   # ---- Object storage (S3-compatible: AWS S3 or Cloudflare R2) ----
   StorageBucketName:
@@ -333,6 +335,14 @@ Resources:
   ParamStorageEndpointUrl:
     Type: AWS::SSM::Parameter
     Properties: { Name: !Sub "/${AWS::StackName}/STORAGE_ENDPOINT_URL", Type: String, Value: !Ref StorageEndpointUrl }
+  # CORS/CSRF live in SSM too (console-editable). They must be NON-EMPTY (SSM
+  # rejects empty strings) — set at least one origin.
+  ParamCorsAllowedOrigins:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/CORS_ALLOWED_ORIGINS", Type: String, Value: !Ref CorsAllowedOrigins }
+  ParamCsrfTrustedOrigins:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/CSRF_TRUSTED_ORIGINS", Type: String, Value: !Ref CsrfTrustedOrigins }
 
   # ---- Secrets in Secrets Manager (edit the value in the console) ----
   SecretKeySecret:
@@ -373,6 +383,8 @@ Resources:
       - ParamStorageBucketName
       - ParamStoragePublicDomain
       - ParamStorageEndpointUrl
+      - ParamCorsAllowedOrigins
+      - ParamCsrfTrustedOrigins
     Properties:
       Family: !Sub "${AWS::StackName}-web"
       RequiresCompatibilities: [FARGATE]
@@ -406,13 +418,13 @@ Resources:
             # AWS_S3_REGION_NAME defaults to "auto" (R2) in settings; bucket /
             # domain / endpoint / keys come from SSM + Secrets Manager below.
             - { Name: DATABASE_ENGINE,        Value: django.db.backends.postgresql }
-            - { Name: CORS_ALLOWED_ORIGINS,   Value: !Ref CorsAllowedOrigins }
-            - { Name: CSRF_TRUSTED_ORIGINS,   Value: !Ref CsrfTrustedOrigins }
           # User-managed in the AWS console: SSM Parameter Store (config) +
           # Secrets Manager (secrets). Edit the value there, then redeploy.
           Secrets:
             - { Name: DEBUG,                  ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/DEBUG" }
             - { Name: ALLOWED_HOSTS,          ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ALLOWED_HOSTS" }
+            - { Name: CORS_ALLOWED_ORIGINS,   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/CORS_ALLOWED_ORIGINS" }
+            - { Name: CSRF_TRUSTED_ORIGINS,   ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/CSRF_TRUSTED_ORIGINS" }
             - { Name: ENCRYPTED_RESPONSE,     ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/ENCRYPTED_RESPONSE" }
             - { Name: SINGLE_REQUEST_PROTECT, ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/SINGLE_REQUEST_PROTECT" }
             - { Name: GATEWAY_SEED,           ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/GATEWAY_SEED" }

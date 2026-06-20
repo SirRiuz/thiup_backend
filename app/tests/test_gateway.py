@@ -69,7 +69,7 @@ class GatewayDispatchTest(TestCase):
 
     def setUp(self):
         self.author = Mask.objects.create(hash="gw-author", country_code="CO")
-        Reaction.objects.create(name="fire", emoji="🔥")
+        Reaction.objects.create(name="love", emoji="❤️")
 
     # ── Dispatch interno entrega la respuesta del destino real ───────────
     def test_dispatch_to_foryou_returns_real_response(self):
