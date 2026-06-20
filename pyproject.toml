@@ -1,0 +1,37 @@
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "core.settings"
+python_files = ["test_*.py", "*_test.py", "tests.py"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--tb=short",
+]
+testpaths = ["app"]
+
+[tool.coverage.run]
+source = ["app", "core"]
+omit = [
+    "*/migrations/*",
+    "*/tests/*",
+    "*/test_*.py",
+    "*_test.py",
+    "*/__init__.py",
+    "manage.py",
+    "core/wsgi.py",
+    "core/asgi.py",
+]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "def __str__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class Meta:",
+]
+show_missing = true
+skip_covered = false
+precision = 1

@@ -1,0 +1,34 @@
+# ============================================================
+# Development dependencies
+# ============================================================
+# Inherits all production deps + adds test/dev tooling.
+#
+# Install locally or in the running container:
+#     pip install -r requirements.dev
+#     make dependencies-dev    # installs inside the web container
+#
+# The Docker image does NOT install this file — it stays out
+# of production builds.
+# ============================================================
+
+# Inherit production deps.
+-r requirements.in
+
+# ─── Testing ────────────────────────────────────────────────
+pytest>=8.0,<9.0
+pytest-django>=4.8,<5.0
+pytest-cov>=4.1,<6.0
+factory-boy>=3.3,<4.0
+
+# ─── Code quality (uncomment to enable) ─────────────────────
+# black>=24.0,<26.0
+# ruff>=0.4,<1.0
+# mypy>=1.10,<2.0
+
+# ─── Django dev tools (uncomment to enable) ─────────────────
+# django-debug-toolbar>=4.3,<6.0
+# django-extensions>=3.2,<4.0
+
+# ─── Debugging (uncomment to enable) ────────────────────────
+# ipython>=8.0,<10.0
+# ipdb>=0.13,<1.0

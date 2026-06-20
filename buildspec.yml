@@ -1,0 +1,79 @@
+version: 0.2
+
+env:
+  variables:
+    # ecs-deploy keeps its own defaults for manual/local runs; the values below
+    # (and the ones from CodeBuild) override them via flags in CI.
+    #
+    # Provided by the CodeBuild project environment (not declared here):
+    #   AWS_ACCOUNT_ID, AWS_DEFAULT_REGION  -> account + region
+    #   IMAGE_NAME, IMAGE_TAG               -> image to build/push
+    #   CLUSTER, SERVICE                    -> ECS service to deploy
+    DOCKERFILE: "ci/aws.Dockerfile"
+    DOCKER_BUILDKIT: "1"
+    TIMEOUT: "600"
+    CONTAINER_PORT: "8000"
+
+phases:
+  pre_build:
+    commands:
+      # Log in to ECR
+      - aws ecr get-login-password | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+
+  build:
+    commands:
+      # Push a mutable tag (cache + momentum scheduler) and an immutable per-commit
+      # tag so the deploy can pin this exact image and the previous one stays
+      # runnable for automigrate's rollback.
+      - >-
+        bash ci/scripts/ecs-deploy build
+        --account "$AWS_ACCOUNT_ID"
+        --region "$AWS_DEFAULT_REGION"
+        --image-name "$IMAGE_NAME"
+        --tag "$IMAGE_TAG"
+        --immutable-tag "$CODEBUILD_RESOLVED_SOURCE_VERSION"
+        --dockerfile "$DOCKERFILE"
+
+  post_build:
+    commands:
+      # Register a revision pinned to the new image (writes its ARN to a temp file
+      # that collectstatic/migrate/deploy pick up). The service still runs the OLD
+      # image until 'deploy'.
+      - >-
+        bash ci/scripts/ecs-deploy register-task
+        --account "$AWS_ACCOUNT_ID"
+        --region "$AWS_DEFAULT_REGION"
+        --image-name "$IMAGE_NAME"
+        --immutable-tag "$CODEBUILD_RESOLVED_SOURCE_VERSION"
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+      # New image: sync static to S3.
+      - >-
+        bash ci/scripts/ecs-deploy collectstatic
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+        --region "$AWS_DEFAULT_REGION"
+      # OLD image (still deployed): roll the DB back to the migration common to the
+      # DB and this branch. No-op unless AUTOMIGRATE_ROLLBACK=true (set it as a
+      # CodeBuild env var on dev/test stacks only; never on prod).
+      - >-
+        bash ci/scripts/ecs-deploy automigrate
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+        --region "$AWS_DEFAULT_REGION"
+      # New image: apply this branch's migrations forward.
+      - >-
+        bash ci/scripts/ecs-deploy migrate
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+        --region "$AWS_DEFAULT_REGION"
+      # Switch the service to the new revision, re-point the momentum schedule at
+      # it (so the cron runs the deployed, already-migrated code), and wait.
+      - >-
+        bash ci/scripts/ecs-deploy deploy
+        --cluster "$CLUSTER"
+        --service "$SERVICE"
+        --region "$AWS_DEFAULT_REGION"
+        --timeout "$TIMEOUT"
+        --port "$CONTAINER_PORT"
+        --schedule "$MOMENTUM_SCHEDULE"

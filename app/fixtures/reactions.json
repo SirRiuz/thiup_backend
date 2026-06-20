@@ -1,0 +1,62 @@
+[
+  {
+    "model": "app.reaction",
+    "pk": "0a9c4f6e-2b1d-4c3a-9e8f-1a2b3c4d5e6f",
+    "fields": {
+      "uid": "fireReaction",
+      "is_active": true,
+      "create_at": "2024-01-01T00:00:00Z",
+      "update_at": "2024-01-01T00:00:00Z",
+      "name": "fire",
+      "emoji": "🔥"
+    }
+  },
+  {
+    "model": "app.reaction",
+    "pk": "1b8d5e7f-3c2e-4d4b-8f9a-2b3c4d5e6f70",
+    "fields": {
+      "uid": "seenReaction",
+      "is_active": true,
+      "create_at": "2024-01-01T00:00:00Z",
+      "update_at": "2024-01-01T00:00:00Z",
+      "name": "seen",
+      "emoji": "👁"
+    }
+  },
+  {
+    "model": "app.reaction",
+    "pk": "2c7e6f80-4d3f-4e5c-9a0b-3c4d5e6f7081",
+    "fields": {
+      "uid": "solidarityRx",
+      "is_active": true,
+      "create_at": "2024-01-01T00:00:00Z",
+      "update_at": "2024-01-01T00:00:00Z",
+      "name": "solidarity",
+      "emoji": "✊"
+    }
+  },
+  {
+    "model": "app.reaction",
+    "pk": "3d8f7091-5e40-4f6d-8b1c-4d5e6f708192",
+    "fields": {
+      "uid": "skepticalRxn",
+      "is_active": true,
+      "create_at": "2024-01-01T00:00:00Z",
+      "update_at": "2024-01-01T00:00:00Z",
+      "name": "skeptical",
+      "emoji": "🤔"
+    }
+  },
+  {
+    "model": "app.reaction",
+    "pk": "4e90819a-6f51-4078-9c2d-5e6f708192a3",
+    "fields": {
+      "uid": "heartbreakRx",
+      "is_active": true,
+      "create_at": "2024-01-01T00:00:00Z",
+      "update_at": "2024-01-01T00:00:00Z",
+      "name": "heartbreak",
+      "emoji": "💔"
+    }
+  }
+]

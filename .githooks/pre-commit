@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Pre-commit hook: enforce the "comments must be in English" convention.
+# Heuristic guard — see CONTRIBUTING.md. Enable once per clone with:
+#     git config core.hooksPath .githooks
+set -euo pipefail
+
+# Only check staged Python files.
+mapfile -t files < <(git diff --cached --name-only --diff-filter=ACM \
+  | grep -E '\.py$' || true)
+
+if [ "${#files[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+python ci/scripts/check_comment_language.py "${files[@]}"

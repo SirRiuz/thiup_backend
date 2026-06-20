@@ -11,11 +11,41 @@ https://docs.djangoproject.com/en/4.1/ref/settings/
 """
 # Python
 import os
+import sys
+import hmac
+import hashlib
 from pathlib import Path
 
 # Libs
 from decouple import config
 from corsheaders.defaults import default_headers
+from django.core.exceptions import ImproperlyConfigured
+
+
+def env_list(name: str, default: str = "") -> list[str]:
+    """Read a comma-separated env var into a clean list.
+
+    Strips whitespace and drops empty entries (tolerant of trailing commas).
+    Example: ALLOWED_HOSTS="localhost, 127.0.0.1" -> ["localhost", "127.0.0.1"].
+    """
+    raw = os.environ.get(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def env_required(name: str, description: str = "") -> str:
+    """Read a required env var. Raise ImproperlyConfigured if missing/empty.
+
+    Fail-fast at settings import time — the app never starts listening if a
+    critical config value is absent.
+    """
+    value = os.environ.get(name, "").strip()
+    if not value:
+        hint = f" ({description})" if description else ""
+        raise ImproperlyConfigured(
+            f"Environment variable '{name}'{hint} is required but is not set "
+            f"or is empty. Edit .env and provide a valid value."
+        )
+    return value
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -25,60 +55,127 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.1/howto/deployment/checklist/
 
+# Runtime stage — "dev" or "prod" (controls Docker Compose profiles via the Makefile).
+STAGE = config("STAGE", default="dev")
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config("SECRET_KEY")
-API_SECRET_KEY = config("API_SECRET_KEY")
+
+# API_SECRET_KEY is DERIVED from SECRET_KEY — it is NOT read from the env.
+# Both are backend-only secrets at the same trust level, so a single source of
+# truth is safe and simpler to manage: configure only SECRET_KEY. Deterministic
+# one-way derivation (HMAC-SHA256 with a fixed context label), so the same
+# SECRET_KEY always yields the same signing key and already-issued
+# client-assertion tickets stay valid across restarts.
+# It signs the /ticket/ JWT (see app/methods/tokens.py).
+# DO NOT derive GATEWAY_SEED this way: that value is PUBLIC obfuscation (it
+# ships in the frontend bundle); binding it to SECRET_KEY would leak the secret.
+API_SECRET_KEY = hmac.new(
+    SECRET_KEY.encode(),
+    b"thiup-api-secret",
+    hashlib.sha256,
+).hexdigest()
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", cast=bool)
 
-ALLOWED_HOSTS = (
-    "thiup.com",
-    "www.thiup.com",
-    "dev-api.thiup.com", 
-    "localhost",
-    "api.thiup.com",
-    "localhost:3000"
+LOG_LEVEL = "DEBUG" if STAGE == "dev" else "INFO"
+
+# Hostnames the server responds to (Host-header attack defense).
+# Format: hostnames only — NO scheme, NO port. Wildcards (*.thiup.com) allowed.
+ALLOWED_HOSTS = env_list(
+    "ALLOWED_HOSTS",
+    default="localhost,127.0.0.1",
 )
 
-CSRF_TRUSTED_ORIGINS =  (
-    "http://localhost",
-    "https://thiup.com",
-    "https://www.thiup.com",
-    "https://dev-api.thiup.com",
-    "https://api.thiup.com",
-    "http://localhost:3000"
+# Origins trusted for CSRF on cross-origin POSTs (e.g. admin login through nginx).
+# Format: full URLs — scheme AND port required (Django 4+ matches exactly).
+CSRF_TRUSTED_ORIGINS = env_list(
+    "CSRF_TRUSTED_ORIGINS",
+    default="http://localhost:8000,http://localhost:3000",
 )
 
-CORS_ORIGIN_WHITELIST = (
-    "http://localhost",
-    "https://thiup.com",
-    "https://www.thiup.com",
-    "https://dev-api.thiup.com",
-    "https://api.thiup.com",
-    "http://localhost:3000"
+# Origins allowed to make cross-origin browser requests to this backend.
+# Note: CORS_ALLOWED_ORIGINS replaces the deprecated CORS_ORIGIN_WHITELIST.
+CORS_ALLOWED_ORIGINS = env_list(
+    "CORS_ALLOWED_ORIGINS",
+    default="http://localhost:3000,http://localhost:8000",
 )
 
 CORS_EXPOSE_HEADERS = ("x-response-payload",)
-CORS_ALLOW_HEADERS = default_headers + ('client-assertion',)
+CORS_ALLOW_HEADERS = default_headers + (
+    'client-assertion',
+    'x-request-payload',  # sobre del body cifrado del request
+)
+
+# Real path of the Django admin — REQUIRED. The literal /admin/ is reserved
+# as a honeypot decoy; the real admin must live at a non-predictable path.
+# Set INTERNAL_ADMIN_URL in .env. App refuses to boot if it's missing or empty.
+INTERNAL_ADMIN_URL = env_required(
+    "INTERNAL_ADMIN_URL",
+    description="Django admin path",
+)
+# Normalize to Django's path() expectations: no leading slash, trailing slash.
+INTERNAL_ADMIN_URL = INTERNAL_ADMIN_URL.lstrip("/")
+if not INTERNAL_ADMIN_URL.endswith("/"):
+    INTERNAL_ADMIN_URL += "/"
+if INTERNAL_ADMIN_URL == "admin/":
+    raise ImproperlyConfigured(
+        "INTERNAL_ADMIN_URL must not be 'admin/' — that path is reserved for "
+        "the honeypot. Set a non-predictable value in .env, e.g. "
+        "python -c \"import secrets; print(f'admin-{secrets.token_urlsafe(6)}/')\""
+    )
 
 # Security config
 ENCRYPTED_RESPONSE = config("ENCRYPTED_RESPONSE", cast=bool)
 SINGLE_REQUEST_PROTECT = config("SINGLE_REQUEST_PROTECT", cast=bool)
 
+# Seed for the gateway's ROTATING PATH (/{hash}/). Dedicated to deriving the
+# path — it does NOT sign anything critical (that is API_SECRET_KEY). It also
+# ships in the frontend bundle → it is PUBLIC obfuscation, NOT a secret, and is
+# kept strictly independent from SECRET_KEY. Must match the frontend's
+# REACT_APP_GATEWAY_SEED. Required: no default, so it is always set explicitly
+# and stays in sync with the frontend on purpose.
+GATEWAY_SEED = env_required(
+    "GATEWAY_SEED",
+    description="gateway rotating-path seed; must match the frontend bundle",
+)
+
+# Backend logging: the "app" namespace goes to the console with timestamp and
+# level (visible in `make logs-web`).
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] {levelname} {name} — {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        "app": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+
 # Application definition
 PROJECT_APPS = [
-    "apps.threads",
-    "apps.default",
-    "apps.reactions",
-    "apps.tags",
-    "apps.masks"
+    "app",
+    "honeypot",
 ]
 
 EXTERNAL_APPS = [
     "corsheaders",
     "drf_yasg",
-    "rest_framework_swagger",
     "storages"
 ]
 
@@ -89,6 +186,9 @@ DJANGO_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    # Required for the __unaccent lookup and the UnaccentExtension migration
+    # (accent-insensitive search on PostgreSQL).
+    "django.contrib.postgres",
     "rest_framework"
 ]
 
@@ -103,11 +203,32 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "django.middleware.common.CommonMiddleware",
-    "apps.masks.middlewares.mask.MaskMiddleware",
+    # Descifra el body cifrado del request (espejo del EncodeRenderer) y
+    # entrega JSON plano a las vistas — gobernado por ENCRYPTED_RESPONSE.
+    "app.middlewares.request_crypto.RequestDecryptMiddleware",
+    # (CommonMiddleware was DUPLICATED here — it already runs above; each
+    # extra middleware is overhead per request.)
+    "app.middlewares.mask.MaskMiddleware",
+    "honeypot.middleware.HoneyPotMiddleware",
 ]
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# ── Anti-fingerprinting (defense-in-depth — does NOT replace real
+# security: E2E, auth and the obfuscated admin remain the foundation) ───
+# Generically named cookies: 'csrftoken'/'sessionid' give Django away to
+# Wappalyzer. The FE does not read these cookies (the API uses the
+# client-assertion header + E2E), so renaming them is transparent; the admin
+# keeps working because Django uses these settings consistently.
+CSRF_COOKIE_NAME = config("CSRF_COOKIE_NAME", default="x_t")
+SESSION_COOKIE_NAME = config("SESSION_COOKIE_NAME", default="x_s")
+
+# Legitimate security headers (KEPT; they don't reveal the technology).
+# Note: the E2E encryption and its X-Response-Payload header are NOT touched.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "same-origin"
+X_FRAME_OPTIONS = "DENY"
+
 ROOT_URLCONF = "core.urls"
 
 TEMPLATES = [
@@ -140,15 +261,28 @@ DATABASES = {
         "USER": config("DATABASE_USER"),
         "HOST": config("DATABASE_HOST"),
         "PORT": config("DATABASE_PORT"),
-        "PASSWORD": config("DATABASE_PASSWORD")
+        "PASSWORD": config("DATABASE_PASSWORD"),
+        # Persistent connections: avoids the overhead of opening a Postgres
+        # connection on EVERY request (noticeable on limited CPU / Raspberry).
+        "CONN_MAX_AGE": 60,
     }
 }
 
 REST_FRAMEWORK = {
-    'PAGE_SIZE': 15,
+    'PAGE_SIZE': 25,
+    # Rate limit for the ticket issuer (/ticket/, AnonRateThrottle):
+    # server-side defense against bootstrap abuse, since it is AllowAny.
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '120/min',
+        # Búsqueda y autocomplete (ScopedRateThrottle, anónimo por IP).
+        # suggest más alto: se dispara al tipear (con debounce en el FE).
+        # Ajustables sin tocar código.
+        'search': config('THROTTLE_SEARCH', default='60/min'),
+        'search_suggest': config('THROTTLE_SUGGEST', default='240/min'),
+    },
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'DEFAULT_RENDERER_CLASSES': [
-        'apps.default.renders.encoder.EncodeRenderer' if ENCRYPTED_RESPONSE \
+        'app.renders.encoder.EncodeRenderer' if ENCRYPTED_RESPONSE \
             else 'rest_framework.renderers.JSONRenderer',
     ],
 }
@@ -184,29 +318,56 @@ USE_TZ = True
 
 # Media
 MEDIA_ROOT = os.path.join(BASE_DIR, "media/")
-REACTIONS_MEDIA_DIR = os.path.join(BASE_DIR, "media/reactions")
-MASKS_MEDIA_DIR = os.path.join(BASE_DIR, "media/masks")
 MEDIA_URL = "/media/"
 
-#STATIC_ROOT = os.path.join(BASE_DIR, 'static')
-#STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 
 USE_AWS_STORAGE = config("USE_AWS_STORAGE", cast=bool)
 
 print("Use S3 storage system :", "YES" if USE_AWS_STORAGE else "NO")
 
 if USE_AWS_STORAGE:
-    AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY")
+    from botocore.config import Config
+
+    # Empty -> None. On AWS S3 the keys can be omitted to use the ECS task role;
+    # S3-compatible providers (Cloudflare R2) have no IAM, so keys are required.
+    AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="") or None
+    AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="") or None
     AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME")
     AWS_S3_CUSTOM_DOMAIN = config("AWS_S3_CUSTOM_DOMAIN")
-    AWS_S3_REGION_NAME = config("AWS_S3_REGION_NAME")
+    # R2 uses the literal region "auto"; AWS S3 set it to your bucket region.
+    AWS_S3_REGION_NAME = config("AWS_S3_REGION_NAME", default="auto")
+    # Custom endpoint -> S3-compatible provider (e.g. R2). Empty -> native AWS S3.
+    AWS_S3_ENDPOINT_URL = config("AWS_S3_ENDPOINT_URL", default="") or None
 
     AWS_S3_USE_SSL = True
     AWS_S3_VERIFY = True
+    # Public, non-expiring URLs for assets (admin/swagger/DRF static + media):
+    # no per-object ACLs and no querystring signing.
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = False
+    # R2 rejects boto3's default integrity checksums; only send them when the
+    # operation requires it. Harmless against native S3.
+    AWS_S3_CLIENT_CONFIG = Config(
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+    )
 
     STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+else:
+    # Local media: emit absolute URLs so consumers (frontend, emails, admin)
+    # see the same shape they get from S3/R2. Origin comes from MEDIA_BASE_URL.
+    DEFAULT_FILE_STORAGE = "app.storages.AbsoluteUrlFileSystemStorage"
+    MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "http://localhost:8000")
+
+# Under pytest, never touch real object storage: media goes to an in-memory
+# backend so a connected bucket (R2/S3) is never written to, and static resolves
+# locally. Overrides whatever the storage block set above.
+if "pytest" in sys.modules:
+    DEFAULT_FILE_STORAGE = "django.core.files.storage.InMemoryStorage"
+    STATICFILES_STORAGE = "django.contrib.staticfiles.storage.StaticFilesStorage"
 
 GEOLITE_DIR = "geolite2-country.mmdb"
 

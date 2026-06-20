@@ -1,0 +1,68 @@
+# ============================================================
+# Production dependencies — top-level only
+# ============================================================
+# This file declares the project's DIRECT dependencies.
+# Versions use ranges (>=X.Y,<MAJOR+1) so patch/minor updates
+# flow through without breaking the API contract.
+#
+# `requirements.txt` is regenerated from this file via:
+#     make dependencies
+# Do not edit `requirements.txt` by hand.
+# ============================================================
+
+# ─── Framework ──────────────────────────────────────────────
+# Pinned to 4.x — project currently runs on Django 4.2 LTS.
+# Bumping to 5.x is a deliberate migration, not an auto-upgrade.
+Django>=4.2,<5.0
+
+# ─── REST API ───────────────────────────────────────────────
+djangorestframework>=3.14,<4.0
+django-cors-headers>=4.3,<5.0
+
+# OpenAPI / Swagger schema generation.
+drf-yasg>=1.21,<2.0
+
+# ─── Database ───────────────────────────────────────────────
+psycopg2>=2.9,<3.0
+
+# ─── Storage (S3) ───────────────────────────────────────────
+django-storages>=1.14,<2.0
+boto3>=1.34
+
+# ─── Media / image processing ───────────────────────────────
+# Required by models.ImageField at runtime.
+# >=12.2 patches several Pillow CVEs (Dependabot #80/#81/#94/#95/#96/#97:
+# FITS/PSD/font/PDF decompression & overflow issues).
+Pillow>=12.2,<13.0
+
+# ─── Security / auth ────────────────────────────────────────
+PyJWT>=2.8,<3.0
+pycryptodome>=3.20,<4.0
+
+# ─── Geolocation ────────────────────────────────────────────
+geoip2>=4.8,<5.0
+# Transitive via geoip2, pinned here for security: >=3.14 patches the
+# cross-origin redirect cookie leak and untrusted-data deserialization
+# (Dependabot #98/#99).
+aiohttp>=3.14.0
+
+# ─── Utilities ──────────────────────────────────────────────
+emoji-country-flag>=1.3,<2.0
+humanize>=4.9,<5.0
+
+# ─── Config ─────────────────────────────────────────────────
+python-decouple>=3.8,<4.0
+
+# ─── Production server ──────────────────────────────────────
+# Kept for STAGE=production deployments (compose dev uses runserver).
+gunicorn>=21.0,<24.0
+
+# ─── Dev / fixtures generation ──────────────────────────────
+# OFFLINE world cities (name, country, lat/lng, population) for the
+# geolocated seeding of add_dummy_threads. No network at runtime.
+geonamescache>=2.0,<3.0
+
+# Used by management commands that generate dummy data
+# (app/management/commands/add_dummy_threads.py).
+Faker>=25.0,<40.0
+shortuuid>=1.0,<2.0

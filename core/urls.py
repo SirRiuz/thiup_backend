@@ -3,12 +3,14 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
-from rest_framework_swagger.views import get_swagger_view
 from rest_framework import permissions
 
 # Libs
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
+
+# Views
+from app.rest.health import HealthCheckView
 
 
 schema_view = get_schema_view(
@@ -26,8 +28,13 @@ schema_view = get_schema_view(
 
 urlpatterns = [
     path('admin/swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
-    path("admin/", admin.site.urls),
-    path("", include("apps.threads.urls")),
-    path("", include("apps.reactions.urls")),
-    path("", include("apps.tags.urls")),
+    # Decoy /admin/ — django-honeypot logs scanners and serves a fake login.
+    path("admin/", include("honeypot.urls")),
+    # Real admin lives at INTERNAL_ADMIN_URL (set in .env).
+    path(settings.INTERNAL_ADMIN_URL, admin.site.urls),
+    # PRIVATE healthcheck + E2E (same rules as the other endpoints).
+    path("health/", HealthCheckView.as_view()),
+    # REST API (threads, reactions, tags, search, users/me).
+    # GraphQL (future) will be mounted separately without touching this.
+    path("", include("app.rest.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
