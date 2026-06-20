@@ -2,7 +2,6 @@
 # Centralized imports: enable `from app.models import Thread` and
 # ensure Django registers all of the app's models.
 from app.models.base_model import BaseModel
-from app.models.miniature import Miniature
 from app.models.mask import Mask
 from app.models.thread import Thread
 from app.models.media import ThreadFile

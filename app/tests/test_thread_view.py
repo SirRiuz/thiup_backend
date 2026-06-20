@@ -2,8 +2,7 @@
 from datetime import datetime
 
 # Django
-from django.test import Client, TransactionTestCase
-from django.conf import settings
+from django.test import Client, TransactionTestCase, override_settings
 from rest_framework import status
 
 # Libs
@@ -13,6 +12,11 @@ from app.methods.tokens import encode_token
 client = Client()
 
 
+# These CRUD/search tests use plain JSON bodies, so the transport layers are
+# pinned off: ENCRYPTED_RESPONSE=False (no encrypted-body enforcement) and
+# SINGLE_REQUEST_PROTECT=False (no Client-assertion ticket required). The
+# encrypted/ticket paths are covered in test_foryou.py.
+@override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False)
 class ThreadsViewTest(TransactionTestCase):
 
     reset_sequences = True

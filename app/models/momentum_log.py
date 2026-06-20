@@ -9,10 +9,10 @@ class MomentumLog(BaseModel):
     """
     Log of each run of the momentum recount (For You).
 
-    Written only by the worker (management command `recompute_momentum`,
-    triggered by Celery beat) — the admin exposes it read-only, with no
-    creation or editing (see MomentumLogAdmin). Used to audit that the
-    job runs every 10 min, how long it takes and whether it failed.
+    Written only by the management command `recompute_momentum` (run by the
+    external scheduler) — the admin exposes it read-only, with no creation or
+    editing (see MomentumLogAdmin). Used to audit that the job runs every
+    10 min, how long it takes and whether it failed.
     """
 
     window_days = models.PositiveIntegerField(

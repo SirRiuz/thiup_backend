@@ -15,4 +15,4 @@ staticfiles/
 *.pyc
 *.log
 .claude
-celerybeat-schedule
+.vscode
