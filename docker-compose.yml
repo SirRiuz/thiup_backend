@@ -3,7 +3,6 @@ services:
     image: postgres:15
     restart: unless-stopped
     container_name: "${APP_NAME}_postgres"
-    profiles: ["dev"]
     environment:
       - POSTGRES_USER=${DATABASE_USER:-}
       - POSTGRES_PASSWORD=${DATABASE_PASSWORD:-}
@@ -25,7 +24,6 @@ services:
     container_name: "${APP_NAME}_migration"
     build:
       context: .
-    profiles: ["dev"]
     command: python manage.py migrate --noinput
     environment:
       - DATABASE_ENGINE=${DATABASE_ENGINE:-}
@@ -36,7 +34,6 @@ services:
       - DATABASE_PORT=${DATABASE_PORT:-}
       - SECRET_KEY=${SECRET_KEY:-}
       - GATEWAY_SEED=${GATEWAY_SEED:-}
-      - STAGE=${STAGE:-}
       - DEBUG=${DEBUG:-}
       - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
       - SINGLE_REQUEST_PROTECT=${SINGLE_REQUEST_PROTECT:-}
@@ -79,7 +76,6 @@ services:
       - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS:-}
       - INTERNAL_ADMIN_URL=${INTERNAL_ADMIN_URL:-}
       - INTERNAL_GRAPHQL_URL=${INTERNAL_GRAPHQL_URL:-}
-      - STAGE=${STAGE:-}
       - DEBUG=${DEBUG:-}
       - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
       - SINGLE_REQUEST_PROTECT=${SINGLE_REQUEST_PROTECT:-}
@@ -131,7 +127,6 @@ services:
       - DATABASE_PORT=${DATABASE_PORT:-}
       - SECRET_KEY=${SECRET_KEY:-}
       - GATEWAY_SEED=${GATEWAY_SEED:-}
-      - STAGE=${STAGE:-}
       - DEBUG=${DEBUG:-}
       - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
       - SINGLE_REQUEST_PROTECT=${SINGLE_REQUEST_PROTECT:-}

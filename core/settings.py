@@ -55,9 +55,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.1/howto/deployment/checklist/
 
-# Runtime stage — "dev" or "prod" (controls Docker Compose profiles via the Makefile).
-STAGE = config("STAGE", default="dev")
-
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config("SECRET_KEY")
 
@@ -79,7 +76,7 @@ API_SECRET_KEY = hmac.new(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", cast=bool)
 
-LOG_LEVEL = "DEBUG" if STAGE == "dev" else "INFO"
+LOG_LEVEL = "DEBUG" if DEBUG else "INFO"
 
 # Hostnames the server responds to (Host-header attack defense).
 # Format: hostnames only — NO scheme, NO port. Wildcards (*.thiup.com) allowed.

@@ -54,7 +54,7 @@ humanize>=4.9,<5.0
 python-decouple>=3.8,<4.0
 
 # ─── Production server ──────────────────────────────────────
-# Kept for STAGE=production deployments (compose dev uses runserver).
+# Used by the prod image (ci/aws.Dockerfile); local dev uses runserver.
 gunicorn>=21.0,<24.0
 
 # ─── Dev / fixtures generation ──────────────────────────────
