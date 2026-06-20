@@ -15,7 +15,7 @@ Metadata:
       - Label: { default: "Network" }
         Parameters: [VpcId, PublicSubnet1, PublicSubnet2]
       - Label: { default: "Image & scaling" }
-        Parameters: [ImageRepoName, ImageTag, DesiredCount, TaskCpu, TaskMemory, MomentumScheduleExpression]
+        Parameters: [ImageRepoName, DesiredCount, TaskCpu, TaskMemory, MomentumScheduleExpression]
       - Label: { default: "Application config" }
         Parameters: [DebugValue, AllowedHosts, EncryptedResponse, SingleRequestProtect, GatewaySeed, InternalAdminUrl, CorsAllowedOrigins, CsrfTrustedOrigins, SecretKey]
       - Label: { default: "Object storage (S3 / Cloudflare R2)" }
@@ -40,10 +40,6 @@ Parameters:
   ImageRepoName:
     Type: String
     Default: thiup-backend
-
-  ImageTag:
-    Type: String
-    Default: test
 
   DesiredCount:
     Type: Number
@@ -387,7 +383,9 @@ Resources:
       TaskRoleArn: !GetAtt TaskRole.Arn
       ContainerDefinitions:
         - Name: web
-          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}:${ImageTag}"
+          # Bootstrap tag: the service starts on :latest (always present), then the
+          # deploy pins it to an immutable :SHA revision. ImageTag is not a param.
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ImageRepoName}:latest"
           Essential: true
           PortMappings:
             - ContainerPort: 8000
@@ -651,7 +649,7 @@ Resources:
         EnvironmentVariables:
           - { Name: AWS_ACCOUNT_ID, Value: !Ref AWS::AccountId }
           - { Name: IMAGE_NAME,     Value: !Ref ImageRepoName }
-          - { Name: IMAGE_TAG,      Value: !Ref ImageTag }
+          - { Name: IMAGE_TAG,      Value: latest }
           # Wired to this stack -> never stale.
           - { Name: CLUSTER,           Value: !Ref Cluster }
           - { Name: SERVICE,           Value: !GetAtt Service.Name }
