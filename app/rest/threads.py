@@ -295,8 +295,7 @@ class ThreadsViewSet(GenericViewSet):
                             "sub": null,
                             "mask": {
                                 "id": "...",
-                                "hash": "...",
-                                "miniature": "..."
+                                "hash": "..."
                             },
                             "parent": null,
                             "responses_count": 3,
@@ -390,8 +389,7 @@ class ThreadsViewSet(GenericViewSet):
                     "sub": null,
                     "mask": {
                         "id": "...",
-                        "hash": "...",
-                        "miniature": "..."
+                        "hash": "..."
                     },
                     "parent": null,
                     "responses_count": 3,
@@ -825,8 +823,7 @@ class ThreadsViewSet(GenericViewSet):
                             "id": "...",
                             "is_active": true,
                             "hash": "...",
-                            "country_code": "Unknow",
-                            "miniature": null
+                            "country_code": "Unknow"
                         },
                         "parent": null,
                         "responses_count": 13,
@@ -853,8 +850,7 @@ class ThreadsViewSet(GenericViewSet):
                                 "id": "...",
                                 "is_active": true,
                                 "hash": "...",
-                                "country_code": "Unknow",
-                                "miniature": null
+                                "country_code": "Unknow"
                             },
                             "parent": "...",
                             "responses_count": 0,

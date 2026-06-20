@@ -3,10 +3,8 @@ import hashlib
 
 # Models
 from app.models.mask import Mask
-from app.models.miniature import Miniature
 
 # Libs
-import ipaddress
 from app.methods.location import get_country
 
 
@@ -39,23 +37,13 @@ class MaskMiddleware:
         country = get_country(address)
         request.mask = None
 
-        if True:
-        # if not request.user.is_superuser:
-            miniature = Miniature.objects.filter(
-                is_active=True).order_by("?")
+        obj, _ = Mask.objects.get_or_create(hash=hash)
 
-            obj, is_created = Mask.objects.get_or_create(hash=hash)
+        if obj.country_code != country:
+            obj.country_code = country
+            obj.save()
 
-            if obj.country_code != country:
-                obj.country_code = country
-                obj.save()
-
-            if (is_created and miniature) or (not obj.miniature and miniature):
-                miniature = miniature[0]
-                obj.miniature = miniature
-                obj.save()
-
-            request.mask = obj
+        request.mask = obj
 
         response = self.get_response(request)
         return response

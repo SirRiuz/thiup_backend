@@ -31,7 +31,9 @@ boto3>=1.34
 
 # ─── Media / image processing ───────────────────────────────
 # Required by models.ImageField at runtime.
-Pillow>=10.0,<12.0
+# >=12.2 patches several Pillow CVEs (Dependabot #80/#81/#94/#95/#96/#97:
+# FITS/PSD/font/PDF decompression & overflow issues).
+Pillow>=12.2,<13.0
 
 # ─── Security / auth ────────────────────────────────────────
 PyJWT>=2.8,<3.0
@@ -39,16 +41,14 @@ pycryptodome>=3.20,<4.0
 
 # ─── Geolocation ────────────────────────────────────────────
 geoip2>=4.8,<5.0
+# Transitive via geoip2, pinned here for security: >=3.14 patches the
+# cross-origin redirect cookie leak and untrusted-data deserialization
+# (Dependabot #98/#99).
+aiohttp>=3.14.0
 
 # ─── Utilities ──────────────────────────────────────────────
 emoji-country-flag>=1.3,<2.0
 humanize>=4.9,<5.0
-
-# ─── Async tasks (Celery + RabbitMQ) ────────────────────────
-# Worker + beat embedded (celery -A core worker -B). The broker is the
-# rabbitmq service in docker-compose. No Redis: the results of the periodic
-# tasks are not queried, so no result backend is needed.
-celery>=5.3,<6.0
 
 # ─── Config ─────────────────────────────────────────────────
 python-decouple>=3.8,<4.0

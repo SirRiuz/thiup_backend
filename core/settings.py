@@ -11,11 +11,12 @@ https://docs.djangoproject.com/en/4.1/ref/settings/
 """
 # Python
 import os
+import hmac
+import hashlib
 from pathlib import Path
 
 # Libs
 from decouple import config
-from celery.schedules import crontab
 from corsheaders.defaults import default_headers
 from django.core.exceptions import ImproperlyConfigured
 
@@ -58,7 +59,21 @@ STAGE = config("STAGE", default="dev")
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config("SECRET_KEY")
-API_SECRET_KEY = config("API_SECRET_KEY")
+
+# API_SECRET_KEY is DERIVED from SECRET_KEY — it is NOT read from the env.
+# Both are backend-only secrets at the same trust level, so a single source of
+# truth is safe and simpler to manage: configure only SECRET_KEY. Deterministic
+# one-way derivation (HMAC-SHA256 with a fixed context label), so the same
+# SECRET_KEY always yields the same signing key and already-issued
+# client-assertion tickets stay valid across restarts.
+# It signs the /ticket/ JWT (see app/methods/tokens.py).
+# DO NOT derive GATEWAY_SEED this way: that value is PUBLIC obfuscation (it
+# ships in the frontend bundle); binding it to SECRET_KEY would leak the secret.
+API_SECRET_KEY = hmac.new(
+    SECRET_KEY.encode(),
+    b"thiup-api-secret",
+    hashlib.sha256,
+).hexdigest()
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DEBUG", cast=bool)
@@ -114,35 +129,19 @@ if INTERNAL_ADMIN_URL == "admin/":
 ENCRYPTED_RESPONSE = config("ENCRYPTED_RESPONSE", cast=bool)
 SINGLE_REQUEST_PROTECT = config("SINGLE_REQUEST_PROTECT", cast=bool)
 
-# Semilla del PATH ROTATIVO del gateway (/{hash}/). DEDICADA a derivar el
-# path — NO firma nada crítico (eso es API_SECRET_KEY). Vive también en el
-# bundle del FE → es OFUSCACIÓN ROTATIVA, no un secreto. Debe coincidir con
-# REACT_APP_GATEWAY_SEED del frontend.
-GATEWAY_SEED = config("GATEWAY_SEED", default="thiup-rotating-gateway-seed")
-
-# Celery configuration (broker: RabbitMQ).
-# The worker runs with beat embedded (celery -A core worker -B) — see the
-# `worker` service in docker-compose.yml. It starts automatically with `make up`.
-CELERY_BROKER_URL = config(
-    "CELERY_BROKER_URL",
-    default="pyamqp://guest:guest@rabbitmq:5672",
+# Seed for the gateway's ROTATING PATH (/{hash}/). Dedicated to deriving the
+# path — it does NOT sign anything critical (that is API_SECRET_KEY). It also
+# ships in the frontend bundle → it is PUBLIC obfuscation, NOT a secret, and is
+# kept strictly independent from SECRET_KEY. Must match the frontend's
+# REACT_APP_GATEWAY_SEED. Required: no default, so it is always set explicitly
+# and stays in sync with the frontend on purpose.
+GATEWAY_SEED = env_required(
+    "GATEWAY_SEED",
+    description="gateway rotating-path seed; must match the frontend bundle",
 )
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TASK_SERIALIZER = "json"
 
-CELERY_BEAT_SCHEDULE = {
-    # For You engine: precomputes momentum_score + threshold counters.
-    # The task just wraps the `recompute_momentum` management command.
-    "recompute-momentum-every-10-min": {
-        "task": "app.tasks.momentum.recompute_momentum",
-        "schedule": crontab(minute="*/10"),
-    },
-}
-
-# Backend logging: everything in the "app" namespace goes to the console with
-# timestamp and level — visible in `make logs-web` and `make logs-worker`
-# (docker captures stdout/stderr). Complements the MomentumLog record:
-# the log is the operational trace, the record is the queryable history.
+# Backend logging: the "app" namespace goes to the console with timestamp and
+# level (visible in `make logs-web`).
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -159,7 +158,6 @@ LOGGING = {
         },
     },
     "loggers": {
-        # Cubre app.tasks.*, app.management.*, app.rest.*, etc.
         "app": {
             "handlers": ["console"],
             "level": "INFO",
@@ -319,8 +317,6 @@ USE_TZ = True
 
 # Media
 MEDIA_ROOT = os.path.join(BASE_DIR, "media/")
-REACTIONS_MEDIA_DIR = os.path.join(BASE_DIR, "media/reactions")
-MASKS_MEDIA_DIR = os.path.join(BASE_DIR, "media/masks")
 MEDIA_URL = "/media/"
 
 STATIC_URL = "/static/"
@@ -331,14 +327,31 @@ USE_AWS_STORAGE = config("USE_AWS_STORAGE", cast=bool)
 print("Use S3 storage system :", "YES" if USE_AWS_STORAGE else "NO")
 
 if USE_AWS_STORAGE:
-    AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY")
+    from botocore.config import Config
+
+    # Empty -> None. On AWS S3 the keys can be omitted to use the ECS task role;
+    # S3-compatible providers (Cloudflare R2) have no IAM, so keys are required.
+    AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="") or None
+    AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="") or None
     AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME")
     AWS_S3_CUSTOM_DOMAIN = config("AWS_S3_CUSTOM_DOMAIN")
-    AWS_S3_REGION_NAME = config("AWS_S3_REGION_NAME")
+    # R2 uses the literal region "auto"; AWS S3 set it to your bucket region.
+    AWS_S3_REGION_NAME = config("AWS_S3_REGION_NAME", default="auto")
+    # Custom endpoint -> S3-compatible provider (e.g. R2). Empty -> native AWS S3.
+    AWS_S3_ENDPOINT_URL = config("AWS_S3_ENDPOINT_URL", default="") or None
 
     AWS_S3_USE_SSL = True
     AWS_S3_VERIFY = True
+    # Public, non-expiring URLs for assets (admin/swagger/DRF static + media):
+    # no per-object ACLs and no querystring signing.
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = False
+    # R2 rejects boto3's default integrity checksums; only send them when the
+    # operation requires it. Harmless against native S3.
+    AWS_S3_CLIENT_CONFIG = Config(
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+    )
 
     STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'

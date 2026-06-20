@@ -35,7 +35,3 @@ class UserSearchSerializer(serializers.Serializer):
     country_code = serializers.CharField()
     posts_count = serializers.IntegerField()
     joined_at = serializers.DateTimeField(source="create_at")
-    miniature = serializers.SerializerMethodField()
-
-    def get_miniature(self, obj):
-        return obj.miniature.icon.url if obj.miniature else None

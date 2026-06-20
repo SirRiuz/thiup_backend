@@ -42,7 +42,7 @@ def with_card_relations(queryset, request_mask) -> QuerySet[Thread]:
     Preloads EVERYTHING that ThreadSerializer.to_representation needs per
     thread, for lists (feed/search/tag/replies) WITHOUT N+1:
 
-      - select_related mask+miniature and sub (before: 2-3 queries per post)
+      - select_related mask and sub (before: 2-3 queries per post)
       - responses_count_db via Subquery (before: 1 COUNT per post)
       - active_media prefetched (before: 1 query per post)
       - prefetched_reactions: ALL active relations with their reaction
@@ -60,7 +60,7 @@ def with_card_relations(queryset, request_mask) -> QuerySet[Thread]:
 
     return (
         queryset
-        .select_related("mask__miniature", "sub")
+        .select_related("mask", "sub")
         .annotate(
             responses_count_db=Coalesce(
                 Subquery(
