@@ -137,59 +137,38 @@ make restart
 
 ## Static files
 
-Static assets (Django admin CSS/JS, DRF, drf-yasg, anything in app `static/` dirs) are served by **nginx**, not Django. That's the production-grade pattern and the project keeps dev consistent with it.
+Where static assets (Django admin CSS/JS, DRF, drf-yasg) come from depends on
+`USE_AWS_STORAGE_SYSTEM`:
 
-### How it works
+- **`false`** (local) — nginx serves `/static/*` from `static_volume`
+  (`STATIC_ROOT=/app/staticfiles`). With `DEBUG=True`, `runserver` also serves them
+  directly, so no extra step is needed for the admin to render.
+- **`true`** (object storage) — `collectstatic` uploads them to the bucket
+  (S3 / Cloudflare R2) and they're served from `AWS_S3_CUSTOM_DOMAIN`. In AWS the
+  CI pipeline runs `collectstatic` on every deploy; locally, run it on demand when
+  assets change:
+  ```bash
+  docker compose run --rm web python manage.py collectstatic --noinput
+  ```
 
-1. `STATIC_URL = "/static/"`, `STATIC_ROOT = "/app/staticfiles/"` in `core/settings.py`.
-2. With `STAGE=dev`, an ephemeral `collectstatic` service runs `python manage.py collectstatic --noinput` before `web` starts.
-3. The output goes into the `static_volume`, which nginx mounts read-only.
-4. Browser requests `/static/admin/css/base.css` → nginx serves it directly from `/app/staticfiles/admin/css/base.css`.
-
-### Automatic dev flow
-
-```
-make up
-    │
-    ▼
-postgres (healthy)
-    │
-    ▼
-migration   collectstatic   (run in parallel after postgres is healthy)
-    │           │
-    └─────┬─────┘
-          ▼
-        web   (starts only after both succeed)
-          │
-          ▼
-        nginx (serves /static/* from the shared volume)
-```
-
-### Regenerating manually
-
-After installing a library that ships its own assets (`drf-yasg`, `debug-toolbar`, ...) or editing assets in `app/static/`:
-
-```bash
-make collectstatic
-```
-
-No restart needed — the file lands in the shared volume and nginx serves it on the next request.
-
-### In production
-
-`collectstatic` is dev-only here (`profiles: ["dev"]`). For prod, either:
-- Add a `RUN python manage.py collectstatic --noinput` step to the `Dockerfile` so the image ships with assets baked in (faster boot, no race on multi-instance deploys), or
-- Set `USE_AWS_STORAGE_SYSTEM=true` so `collectstatic` uploads to S3 and nginx is bypassed for static traffic entirely.
+> The auto `collectstatic` compose service was removed — on object storage it
+> re-uploaded every asset to the remote bucket on each `make up`, slowing startup.
+> Use `--clear` is intentionally avoided: S3/R2 backends reject the empty-key
+> existence check it triggers.
 
 ## Media URLs (always absolute)
 
-File fields (`ImageField`, `FileField`) always expose **absolute** URLs in API responses, admin templates, and anywhere else `.url` is accessed:
+File fields (`FileField` on `ThreadFile`) always expose **absolute** URLs in API responses, admin templates, and anywhere else `.url` is accessed:
 
 ```json
-{ "miniature": "http://localhost:8000/media/miniature/Frame-1.png" }
+{ "file": "https://cdn.thiup.com/uploads/7bd49b04fdac4f16a239794674ad47a4.png" }
 ```
 
 This makes a separate frontend (`http://localhost:3000`) just work — no per-request URL rewriting on the client side.
+
+**Uploads get a random name.** `ThreadFile.file` uses an `upload_to` callable that
+stores each file as `uploads/<uuid>.<ext>` — the original filename never leaks
+(privacy) and collisions are impossible.
 
 ### How it's wired
 
@@ -197,10 +176,13 @@ Two backends, one shape:
 
 | `USE_AWS_STORAGE_SYSTEM` | Backend | URLs come from |
 |---|---|---|
-| `true` | `storages.backends.s3boto3.S3Boto3Storage` | The bucket (already absolute) |
-| `false` | `apps.default.storages.AbsoluteUrlFileSystemStorage` | `MEDIA_BASE_URL` + the relative path |
+| `true` | `storages.backends.s3boto3.S3Boto3Storage` (AWS S3 or **Cloudflare R2**) | The bucket (already absolute) |
+| `false` | `app.storages.AbsoluteUrlFileSystemStorage` | `MEDIA_BASE_URL` + the relative path |
 
-`AbsoluteUrlFileSystemStorage` is a `FileSystemStorage` subclass that overrides `url()` to prepend `MEDIA_BASE_URL`. Everything else (saving, deleting, listing) is inherited.
+`AbsoluteUrlFileSystemStorage` is a `FileSystemStorage` subclass that overrides `url()` to prepend `MEDIA_BASE_URL`. Everything else (saving, deleting, listing) is inherited. The provider (AWS S3 vs R2) is chosen by config — set `AWS_S3_ENDPOINT_URL` to the R2 endpoint, `AWS_S3_REGION_NAME=auto`, and the R2 keys.
+
+> **Tests never touch the bucket.** Under pytest, `settings.py` forces an in-memory
+> storage backend, so a connected R2/S3 bucket is never written to during tests.
 
 ### Configure
 
@@ -222,29 +204,28 @@ No trailing slash. Ignored when `USE_AWS_STORAGE_SYSTEM=true`.
 
 ## Seed data
 
-The project ships binaries in `media/reactions/` and `media/masks/` that are meant to land in the DB as `Reaction` and `Miniature` rows. Ingestion is a Django **management command**, not a fixture:
+The reaction catalog (`Reaction` rows) is loaded from a JSON fixture
+(`app/fixtures/reactions.json`):
 
 ```bash
-make seed
+make load_fixtures
 ```
 
-Idempotent — running it twice is a no-op (it filters out Django's collision-renamed copies from prior runs).
+Idempotent — rows that already exist are skipped. Reactions are emoji-only now
+(the old image-based reactions and the `Miniature`/avatar feature were removed,
+along with the bundled `media/` binaries).
 
-### Why a command, not a fixture
+To fill the DB with throwaway content for local testing:
 
-Django fixtures store `ImageField` values as plain path strings — they don't move or transform files. The seed data here is "scan a directory of binaries and create one row per file, letting Django's storage handle the file write." A management command expresses that directly; a fixture would require pre-renaming each binary to match the path string baked into the JSON, doubling the files in the repo for no behavior change.
-
-If you later add a static catalog (e.g. `Tag` rows, default permissions), **that** is the natural place for a JSON fixture under `app/fixtures/`. The two patterns coexist; you pick the one that fits the data.
-
-### Quick reference
+```bash
+make add_dummy_threads 50
+```
 
 | Concept | Where it lives | In git? | Loaded with |
 |---|---|---|---|
-| Seed binaries | `media/reactions/`, `media/masks/` | yes | `make seed` |
-| Catalog rows (when added) | `app/fixtures/*.json` | yes | `python manage.py loaddata <name>` |
-| User uploads | `media/` (subdirs Django chooses) | no (gitignored) | runtime, by users |
-
-`media/` and `fixtures/` are different things — `media/` holds binary content (some of it bundled seed assets, the rest user-uploaded), `fixtures/` would hold versioned catalog JSON. Don't mix them.
+| Reaction catalog | `app/fixtures/reactions.json` | yes | `make load_fixtures` |
+| Dummy threads | generated | no | `make add_dummy_threads [N]` |
+| User uploads | the bucket (R2/S3) or local `media/` | no | runtime, by users |
 
 ## Migrations
 
@@ -254,14 +235,14 @@ The project uses a hybrid pattern: manual Make targets for intentional control, 
 
 | Command | Purpose |
 |---|---|
-| `make migrate` | Apply pending migrations |
 | `make makemigrations` | Generate migrations from model changes |
-| `make showmigrations` | Show applied vs pending state |
+| `make makemigrations-check` | Fail if models have unmade migrations (no write — for CI) |
 | `make sqlmigrate APP=x MIGRATION=N` | Print the SQL a migration will execute |
-| `make migrate-rollback APP=x MIGRATION=N` | Revert to a specific migration (leaves N applied) |
-| `make migrate-fake APP=x MIGRATION=N` | Mark a migration as applied **without running it** |
 
-All targets use `docker compose run --rm web …` so they work even when the stack is down.
+Applying migrations is **not** a manual target: in dev the `migration` compose
+service runs `migrate` automatically on `make up`; in AWS the CI pipeline runs it
+on every deploy (with optional rollback-to-common-ancestor — see
+[`ci/infra/README.md`](ci/infra/README.md)).
 
 ### Automatic in dev
 
@@ -290,16 +271,18 @@ With `STAGE=prod`, the `migration` service is skipped (it carries `profiles: [de
 - A long migration would block the rollout.
 - A failed migration would take down the whole deploy with no clean rollback path.
 
-The production playbook is to apply migrations in a dedicated CI/CD step **before** rolling out the new image — typically by running `make migrate` against the target environment, or a similar one-shot job.
+In AWS the CI pipeline applies migrations in a dedicated ephemeral ECS task
+**before** rolling out the new image (an optional gated step can also roll back
+migrations the deployed branch doesn't have). See
+[`ci/infra/README.md`](ci/infra/README.md).
 
 ### Typical workflow
 
 ```bash
-vim app/models/thread.py     # change a model
-make makemigrations                   # generates app/migrations/00XX_*.py
-make sqlmigrate APP=threads MIGRATION=00XX   # optional: review the SQL
-make migrate                          # apply
-make showmigrations                   # confirm
+vim app/models/thread.py                      # change a model
+make makemigrations                           # generates app/migrations/00XX_*.py
+make sqlmigrate APP=app MIGRATION=00XX        # optional: review the SQL
+make restart                                  # the migration service applies it
 git add app/migrations/00XX_*.py
 git commit -m "Migration for <change>"
 ```
@@ -307,7 +290,7 @@ git commit -m "Migration for <change>"
 ### Tips
 
 - **Commit your migrations.** They are code; they belong in the repo.
-- **After `git pull`**, run `make migrate` to apply any migrations a teammate added.
+- **After `git pull`**, run `make restart` to apply any migrations a teammate added.
 - **Don't edit applied migrations.** Generate a new one on top instead.
 
 ## Dependency management
@@ -318,27 +301,44 @@ The project uses the standard [pip-tools](https://pip-tools.readthedocs.io/) thr
 |---|---|---|
 | `requirements.in` | Top-level production deps (flexible ranges) | Yes — source of truth |
 | `requirements.dev` | Top-level dev deps (inherits from `.in`) | Yes |
-| `requirements.txt` | Generated lockfile (exact versions + transitives) | No — regenerated via `make dependencies` |
+| `requirements.txt` | Generated lockfile (exact versions + transitives) | No — regenerate with `pip-compile` |
 
 ### Add a dependency
 
 1. Edit `requirements.in` (production) or `requirements.dev` (development).
 2. Use a range, e.g. `Django>=4.2,<5.0`.
-3. Regenerate the lockfile: `make dependencies`
-4. Rebuild the image: `make build`
+3. Regenerate the lockfile: `pip-compile requirements.in` (run inside the container, e.g. `docker compose run --rm web pip-compile requirements.in`).
+4. Rebuild the image so it picks up the change: `make dependencies`
 5. Verify: `make test`
-
-### Upgrade dependencies
-
-```bash
-make dependencies-upgrade   # bumps to latest within the .in ranges
-make build
-make test                   # surface breaking changes
-```
 
 ### Why this pattern
 
 - **Reproducibility**: production runs the exact versions that were tested.
-- **Lean prod image**: the Docker image installs `requirements.txt` only — no `pytest`, `factory-boy`, etc.
+- **Lean prod image**: the prod image (`ci/aws.Dockerfile`) installs `requirements.txt` only. The **local** image also installs `requirements.dev` (pytest, etc.) so `make test` runs without extra setup.
 - **Auditability**: every version change shows up in the `requirements.txt` diff.
 - **Controlled upgrades**: the range in `.in` defines what is acceptable; the lockfile pins what is active.
+
+> `make dependencies` rebuilds the local `web` image (to pick up requirements
+> changes); `make test` then runs against that image.
+
+## Background jobs (momentum) — no Celery
+
+For You ranking is precomputed by a management command — not a per-request job and
+not a Celery worker (Celery/RabbitMQ were removed). `recompute_momentum` runs every
+10 minutes:
+
+- **Local:** the `momentum` compose service (a `while true; recompute_momentum; sleep 600` loop).
+- **AWS:** EventBridge Scheduler triggers an ephemeral Fargate task.
+
+Run it on demand with `make recompute_momentum`.
+
+## Deployment (AWS)
+
+The backend deploys to AWS ECS/Fargate from a single CloudFormation stack
+(`ci/infra/ecs.yml`): a public ALB → Fargate service, an S3-compatible asset bucket
+(AWS S3 or **Cloudflare R2**), the EventBridge momentum scheduler, and a CodeBuild
+CI/CD pipeline (build → collectstatic → migrate → deploy, with immutable per-commit
+image tags and optional migration rollback).
+
+Full deploy guide, parameters, and the manual GitHub-connection steps:
+**[`ci/infra/README.md`](ci/infra/README.md)**.
