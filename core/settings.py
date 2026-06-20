@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.1/ref/settings/
 """
 # Python
 import os
+import sys
 import hmac
 import hashlib
 from pathlib import Path
@@ -360,6 +361,13 @@ else:
     # see the same shape they get from S3/R2. Origin comes from MEDIA_BASE_URL.
     DEFAULT_FILE_STORAGE = "app.storages.AbsoluteUrlFileSystemStorage"
     MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "http://localhost:8000")
+
+# Under pytest, never touch real object storage: media goes to an in-memory
+# backend so a connected bucket (R2/S3) is never written to, and static resolves
+# locally. Overrides whatever the storage block set above.
+if "pytest" in sys.modules:
+    DEFAULT_FILE_STORAGE = "django.core.files.storage.InMemoryStorage"
+    STATICFILES_STORAGE = "django.contrib.staticfiles.storage.StaticFilesStorage"
 
 GEOLITE_DIR = "geolite2-country.mmdb"
 

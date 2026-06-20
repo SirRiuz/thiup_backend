@@ -1,3 +1,7 @@
+# Python
+import os
+import uuid
+
 # Django
 from django.db import models
 from django.core.validators import FileExtensionValidator
@@ -5,6 +9,13 @@ from django.core.validators import FileExtensionValidator
 # Libs
 from app.models.base_model import BaseModel
 from app.constants.threads import ALLOWED_MEDIA_FORMATS
+
+
+def thread_file_upload_to(instance, filename: str) -> str:
+    """Store uploads under a random name (keeps the extension) so the original
+    filename never leaks."""
+    ext = os.path.splitext(filename)[1].lower()
+    return f"uploads/{uuid.uuid4().hex}{ext}"
 
 
 class ThreadFile(BaseModel):
@@ -16,7 +27,7 @@ class ThreadFile(BaseModel):
     thread = models.ForeignKey("app.Thread", on_delete=models.CASCADE)
 
     file = models.FileField(
-        upload_to="uploads/",
+        upload_to=thread_file_upload_to,
         validators=[
             FileExtensionValidator(
                 ALLOWED_MEDIA_FORMATS,
