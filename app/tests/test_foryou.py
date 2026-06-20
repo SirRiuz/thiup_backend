@@ -91,7 +91,7 @@ class RecomputeMomentumTest(TestCase):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
         self.user_c = make_mask("c")
-        self.reaction = Reaction.objects.create(name="fire", emoji="🔥")
+        self.reaction = Reaction.objects.create(name="love", emoji="❤️")
 
     def react(self, thread, mask):
         ReactionRelation.objects.create(
@@ -206,7 +206,7 @@ class ForYouViewTest(TestCase):
     def setUp(self):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
-        self.reaction = Reaction.objects.create(name="fire", emoji="🔥")
+        self.reaction = Reaction.objects.create(name="love", emoji="❤️")
 
     def __get_client_token(self) -> (str):
         payload = {"timestamp": datetime.now().__str__()}
