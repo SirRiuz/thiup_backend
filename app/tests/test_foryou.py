@@ -20,6 +20,7 @@ from app.models.thread import Thread
 from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
+from app.rest.serializers.thread_serializer import ThreadSerializer
 
 
 client = Client()
@@ -91,7 +92,9 @@ class RecomputeMomentumTest(TestCase):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
         self.user_c = make_mask("c")
-        self.reaction = Reaction.objects.create(name="love", emoji="❤️")
+        # `love` is seeded by migration 0015; reuse it instead of recreating.
+        self.reaction, _ = Reaction.objects.get_or_create(
+            name="love", defaults={"emoji": "❤️"})
 
     def react(self, thread, mask):
         ReactionRelation.objects.create(
@@ -206,7 +209,9 @@ class ForYouViewTest(TestCase):
     def setUp(self):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
-        self.reaction = Reaction.objects.create(name="love", emoji="❤️")
+        # `love` is seeded by migration 0015; reuse it instead of recreating.
+        self.reaction, _ = Reaction.objects.get_or_create(
+            name="love", defaults={"emoji": "❤️"})
 
     def __get_client_token(self) -> (str):
         payload = {"timestamp": datetime.now().__str__()}
@@ -1102,3 +1107,35 @@ class SecretDerivationTest(SimpleTestCase):
         self.assertNotEqual(settings.GATEWAY_SEED, settings.API_SECRET_KEY)
         self.assertNotEqual(
             settings.GATEWAY_SEED, self._derive(settings.SECRET_KEY))
+
+
+class ThreadDetailsSerializationTest(TestCase):
+    """The 'thread details' panel reads real fields from the thread payload."""
+
+    def test_created_at_iso_present_and_matches(self):
+        """created_at_iso is an absolute ISO timestamp; create_at stays relative."""
+        mask = make_mask("author")
+        thread = make_thread(mask, text="hello")
+
+        data = ThreadSerializer(thread, context={"mask": mask}).data
+
+        # New absolute timestamp for the details panel.
+        self.assertIn("created_at_iso", data)
+        self.assertEqual(data["created_at_iso"], thread.create_at.isoformat())
+        # The card's compact relative string is untouched (contract preserved).
+        self.assertIn("create_at", data)
+        self.assertNotEqual(data["create_at"], data["created_at_iso"])
+
+    def test_details_fields_available_without_extra_request(self):
+        """uid, responses_count and reactions all travel in the same payload."""
+        author = make_mask("author")
+        replier = make_mask("replier")
+        make_thread(replier, sub=make_thread(author))  # noise
+        thread = make_thread(author, text="root")
+        make_thread(replier, sub=thread, text="reply")
+
+        data = ThreadSerializer(thread, context={"mask": author}).data
+
+        self.assertEqual(data["uid"], thread.uid)          # public thread id
+        self.assertEqual(data["responses_count"], 1)        # replies count
+        self.assertIn("reactions", data)                    # total derivable on FE

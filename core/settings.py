@@ -276,6 +276,8 @@ REST_FRAMEWORK = {
         # Ajustables sin tocar código.
         'search': config('THROTTLE_SEARCH', default='60/min'),
         'search_suggest': config('THROTTLE_SUGGEST', default='240/min'),
+        # Reports (ScopedRateThrottle, anonymous per IP): cap report abuse.
+        'reports': config('THROTTLE_REPORTS', default='30/min'),
     },
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'DEFAULT_RENDERER_CLASSES': [
