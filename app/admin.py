@@ -10,6 +10,7 @@ from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
 from app.models.momentum_log import MomentumLog
 from app.models.trending_tag import TrendingTag
+from app.models.report import Report
 
 # Libs
 import flag
@@ -197,6 +198,42 @@ class TrendingTagAdmin(BaseModelAdmin):
     list_display = ("name", "score", "thread_count", "update_at")
     search_fields = ("name", "name_norm")
     ordering = ("-score",)
+
+    def has_add_permission(self, request) -> (bool):
+        return False
+
+    def has_change_permission(self, request, obj=None) -> (bool):
+        return False
+
+
+@admin.register(Report)
+class ReportAdmin(BaseModelAdmin):
+    """
+    Thread reports: VIEW and DELETE only — add/change are disabled (reports are
+    created/updated by users through the API, never hand-authored in the admin).
+
+    Anonymity: the `reporter` mask is deliberately NOT shown. Moderation acts on
+    the thread + report, never on "who" the (pseudonymous) reporter is.
+
+    TODO(moderation): `is_priority` marks "minors" reports — they require a
+    SEPARATE priority/legal review workflow (not built here). They are filtered
+    and sorted first so moderation sees them at the top.
+    """
+
+    list_display = (
+        "thread", "category", "is_priority", "short_reason",
+        "create_at", "update_at")
+    list_filter = ("is_priority", "category")
+    search_fields = ("thread__uid",)
+    # Priority (minors) first, then newest.
+    ordering = ("-is_priority", "-create_at")
+    # Never expose the reporter mask (anonymity).
+    exclude = ("reporter",)
+
+    def short_reason(self, obj) -> str:
+        text = obj.reason or ""
+        return (text[:60] + "…") if len(text) > 60 else text
+    short_reason.short_description = "reason"
 
     def has_add_permission(self, request) -> (bool):
         return False

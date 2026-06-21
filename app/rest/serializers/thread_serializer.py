@@ -161,6 +161,12 @@ class ThreadSerializer(serializers.ModelSerializer):
         representation["is_new"] = instance.is_new()
         representation["is_op"] = instance.mask == self.context["mask"]
         representation["create_at"] = format_short_time(instance.create_at)
+        # Absolute publish timestamp (ISO 8601) for the "thread details" panel.
+        # `create_at` above is the compact RELATIVE string used by the card; this
+        # is the raw timestamp so the client can render a localized date. Public
+        # thread metadata, no extra query (the column is already loaded).
+        representation["created_at_iso"] = (
+            instance.create_at.isoformat() if instance.create_at else None)
 
         return representation
 
