@@ -7,10 +7,21 @@ from rest_framework import status
 
 # Models
 from app.models.reaction import Reaction
+from app.models.reaction_relation import ReactionRelation
 
 # Libs
 from app.methods.tokens import encode_token
 
+
+# New reaction set (6) — internal id in `name`, emoji is presentation.
+NEW_REACTIONS = [
+    ("love", "❤️"),
+    ("laugh", "😂"),
+    ("wow", "😮"),
+    ("sad", "😢"),
+    ("angry", "😡"),
+    ("applause", "👏"),
+]
 
 client = Client()
 
@@ -25,9 +36,12 @@ class ThreadsViewTest(TransactionTestCase):
     reset_sequences = True
 
     def setUp(self):
-        Reaction.objects.create(name="foo-1", emoji="🔥")
-        Reaction.objects.create(name="foo-2", emoji="👁")
-        Reaction.objects.create(name="foo-3", emoji="✊")
+        # Reset to a known catalog (the data migration already seeds the 6, and
+        # `name` is unique — clear first to avoid clashing across tests).
+        ReactionRelation.objects.all().delete()
+        Reaction.objects.all().delete()
+        for name, emoji in NEW_REACTIONS:
+            Reaction.objects.create(name=name, emoji=emoji)
 
     def __get_client_token(self) -> (str):
         """Se encarga de generar un client token."""
@@ -156,3 +170,68 @@ class ThreadsViewTest(TransactionTestCase):
         self.assertEqual(
             response.status_code,
             status.HTTP_201_CREATED)
+
+    def __make_thread(self) -> (str):
+        """Create a thread and return its uid."""
+        token = self.__get_client_token()
+        thread = client.post(
+            "/threads/",
+            {
+                "media": [],
+                "text": "test",
+                "content": {
+                    "blocks": [
+                        {
+                            "key": "cmnci",
+                            "text": "test",
+                            "type": "unstyled",
+                            "depth": 0,
+                            "inlineStyleRanges": [],
+                            "entityRanges": [],
+                            "data": {},
+                        }
+                    ],
+                    "entityMap": {},
+                },
+            },
+            HTTP_X_DYNAMIC_TOKEN=token,
+            content_type="application/json",
+        )
+        return thread.data["uid"]
+
+    def __react(self, reaction_id, thread_uid):
+        token = self.__get_client_token()
+        return client.post(
+            "/reactions/",
+            {"reaction": reaction_id, "thread": thread_uid},
+            HTTP_X_DYNAMIC_TOKEN=token,
+            content_type="application/json",
+        )
+
+    def test_one_reaction_per_user(self):
+        """Switching reactions keeps EXACTLY ONE reaction per user per thread:
+        reacting with A then B (different) leaves a single relation, now B."""
+        first, second = Reaction.objects.all()[:2]
+        uid = self.__make_thread()
+
+        self.__react(first.id, uid)
+        response = self.__react(second.id, uid)
+
+        relations = ReactionRelation.objects.filter(thread__uid=uid)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(relations.count(), 1)
+        self.assertEqual(relations.first().reaction_id, second.id)
+
+    def test_reaction_count(self):
+        """A single reaction yields reaction_count == 1 in the response."""
+        reaction = Reaction.objects.first()
+        uid = self.__make_thread()
+
+        response = self.__react(reaction.id, uid)
+
+        match = next(
+            (r for r in response.data["reactions"] if r["name"] == reaction.name),
+            None,
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match["reaction_count"], 1)

@@ -143,6 +143,9 @@ class ThreadSerializer(serializers.ModelSerializer):
                 many=True,
                 context=({
                     "mask": self.context["mask"],
+                    # Propagate the OP mask so nested sub-replies also compute
+                    # is_op against the thread author (local to this thread).
+                    "op_mask": self.context.get("op_mask"),
                     "short": True,
                     "show_responses": True})).data
 
@@ -159,8 +162,26 @@ class ThreadSerializer(serializers.ModelSerializer):
 
         representation["mask"] = mask_data
         representation["is_new"] = instance.is_new()
-        representation["is_op"] = instance.mask == self.context["mask"]
+        # is_mine: this thread/reply belongs to the CURRENT viewer (anonymous
+        # mask comparison). PRIVATE — only ever true for the viewer's own
+        # content, so only its author sees it; reveals nothing to third parties.
+        # Drives the feed/search "Your thread" tag. Only a boolean is sent.
+        representation["is_mine"] = instance.mask == self.context.get("mask")
+        # is_op: this reply's author IS the thread's Original Poster. Computed
+        # ONLY inside a thread — `op_mask` (the root thread's author mask) is put
+        # in context by the responses endpoint — so it is LOCAL to the thread and
+        # never exposes a reusable author id: only a boolean is sent, with no
+        # cross-thread correlation. False when op_mask is absent (feed/search).
+        op_mask = self.context.get("op_mask")
+        representation["is_op"] = bool(
+            op_mask is not None and instance.mask == op_mask)
         representation["create_at"] = format_short_time(instance.create_at)
+        # Absolute publish timestamp (ISO 8601) for the "thread details" panel.
+        # `create_at` above is the compact RELATIVE string used by the card; this
+        # is the raw timestamp so the client can render a localized date. Public
+        # thread metadata, no extra query (the column is already loaded).
+        representation["created_at_iso"] = (
+            instance.create_at.isoformat() if instance.create_at else None)
 
         return representation
 

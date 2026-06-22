@@ -28,11 +28,12 @@ from app.utils.geo import fuzzed_geohash, GEOHASH_PRECISION
 fake = Faker("es_CO")
 
 DEFAULT_REACTIONS = [
-    {"name": "fire", "emoji": "🔥"},
-    {"name": "seen", "emoji": "👁"},
-    {"name": "solidarity", "emoji": "✊"},
-    {"name": "skeptical", "emoji": "🤔"},
-    {"name": "heartbreak", "emoji": "💔"},
+    {"name": "love", "emoji": "❤️"},
+    {"name": "laugh", "emoji": "😂"},
+    {"name": "wow", "emoji": "😮"},
+    {"name": "sad", "emoji": "😢"},
+    {"name": "angry", "emoji": "😡"},
+    {"name": "applause", "emoji": "👏"},
 ]
 
 HASHTAG_POOL = [
