@@ -1,5 +1,5 @@
 # Django
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Sum
 from django.shortcuts import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -8,6 +8,7 @@ from rest_framework.status import HTTP_200_OK, HTTP_404_NOT_FOUND
 
 # Models
 from app.models.mask import Mask
+from app.models.thread import Thread
 
 # Serializers
 from app.rest.serializers.mask_profile_serializer import \
@@ -85,4 +86,28 @@ class CurrentMaskView(APIView):
             # to For You (?region=) for the regional boost. The BA
             # re-validates it against GeoIP on each request — declarative.
             "country_code": mask.country_code or "",
+            # PRIVATE stats — only returned here, for the owner's own /me. A
+            # SINGLE aggregate over the user's threads, no joins to the
+            # reaction/reply tables: it reuses the precomputed momentum counters
+            # (unique_reactors_count / unique_commenters_count, both excluding
+            # the author). Cheap on limited hardware, no N+1.
+            #   threads   = the user's ROOT threads (sub is null)
+            #   reactions = reactions received across all their posts (the
+            #               reaction model is one-per-user → distinct reactors
+            #               == total reactions)
+            #   replies   = distinct people who replied to their posts
+            "stats": self._owner_stats(mask),
         })
+
+    @staticmethod
+    def _owner_stats(mask) -> dict:
+        agg = Thread.objects.filter(mask=mask, is_active=True).aggregate(
+            threads=Count("id", filter=Q(sub__isnull=True)),
+            reactions=Sum("unique_reactors_count"),
+            replies=Sum("unique_commenters_count"),
+        )
+        return {
+            "threads": agg["threads"] or 0,
+            "reactions": agg["reactions"] or 0,
+            "replies": agg["replies"] or 0,
+        }

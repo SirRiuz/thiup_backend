@@ -1139,3 +1139,104 @@ class ThreadDetailsSerializationTest(TestCase):
         self.assertEqual(data["uid"], thread.uid)          # public thread id
         self.assertEqual(data["responses_count"], 1)        # replies count
         self.assertIn("reactions", data)                    # total derivable on FE
+
+
+class IdentityFlagsTest(TestCase):
+    """is_mine (feed/search) and is_op (thread replies) — boolean-only,
+    anonymous, no cross-thread author correlation."""
+
+    def setUp(self):
+        self.author = make_mask("author")
+        self.other = make_mask("other")
+
+    def test_is_mine_true_for_own_thread_false_for_others(self):
+        thread = make_thread(self.author, text="mine")
+        # Viewed by its author → is_mine True.
+        mine = ThreadSerializer(thread, context={"mask": self.author}).data
+        self.assertTrue(mine["is_mine"])
+        # Viewed by anyone else → is_mine False (private to the author).
+        theirs = ThreadSerializer(thread, context={"mask": self.other}).data
+        self.assertFalse(theirs["is_mine"])
+
+    def test_is_op_false_without_op_mask_context(self):
+        """Feed/search lists carry no op_mask → is_op is always False there."""
+        thread = make_thread(self.author, text="root")
+        data = ThreadSerializer(thread, context={"mask": self.author}).data
+        self.assertFalse(data["is_op"])
+
+    def test_is_op_marks_only_replies_by_the_thread_author(self):
+        thread = make_thread(self.author, text="root")
+        op_reply = make_thread(self.author, sub=thread, text="op reply")
+        other_reply = make_thread(self.other, sub=thread, text="other reply")
+
+        # Replies are serialized with op_mask = the thread author's mask.
+        ctx = {"mask": self.other, "op_mask": thread.mask}
+        op_data = ThreadSerializer(op_reply, context=ctx).data
+        other_data = ThreadSerializer(other_reply, context=ctx).data
+
+        self.assertTrue(op_data["is_op"])      # author's reply → OP
+        self.assertFalse(other_data["is_op"])  # someone else's reply → not OP
+
+    def test_flags_are_plain_booleans_no_author_identity_leaked(self):
+        """The payload exposes booleans, never a reusable author id/hash field
+        beyond the existing pseudonymous mask."""
+        thread = make_thread(self.author, text="root")
+        reply = make_thread(self.author, sub=thread, text="op reply")
+        data = ThreadSerializer(
+            reply, context={"mask": self.other, "op_mask": thread.mask}).data
+
+        self.assertIsInstance(data["is_mine"], bool)
+        self.assertIsInstance(data["is_op"], bool)
+        # No op-author identity field is added to the payload.
+        self.assertNotIn("op_mask", data)
+        self.assertNotIn("author_id", data)
+
+
+class OwnerStatsTest(TestCase):
+    """Private /me stats: threads / reactions received / replies received.
+    Owner-only, computed from the precomputed counters (one aggregate)."""
+
+    def _set_counters(self, thread, reactors=0, commenters=0):
+        Thread.objects.filter(pk=thread.pk).update(
+            unique_reactors_count=reactors,
+            unique_commenters_count=commenters,
+        )
+
+    def test_counts_threads_reactions_and_replies(self):
+        from app.rest.masks import CurrentMaskView
+        author = make_mask("author")
+        # Two root threads + one reply BY the author (reply also counts toward
+        # reactions/replies received on their content, but NOT toward "threads").
+        t1 = make_thread(author, text="root 1")
+        t2 = make_thread(author, text="root 2")
+        reply = make_thread(author, sub=t1, text="author reply")
+        self._set_counters(t1, reactors=3, commenters=2)
+        self._set_counters(t2, reactors=1, commenters=0)
+        self._set_counters(reply, reactors=4, commenters=1)
+
+        stats = CurrentMaskView._owner_stats(author)
+
+        self.assertEqual(stats["threads"], 2)            # only root threads
+        self.assertEqual(stats["reactions"], 3 + 1 + 4)  # summed across all
+        self.assertEqual(stats["replies"], 2 + 0 + 1)
+
+    def test_stats_are_per_owner_not_global(self):
+        from app.rest.masks import CurrentMaskView
+        author = make_mask("author")
+        other = make_mask("other")
+        mine = make_thread(author, text="mine")
+        self._set_counters(mine, reactors=5, commenters=2)
+        theirs = make_thread(other, text="theirs")
+        self._set_counters(theirs, reactors=9, commenters=7)
+
+        # Each owner only sees their own totals — never the other's.
+        self.assertEqual(CurrentMaskView._owner_stats(author),
+                         {"threads": 1, "reactions": 5, "replies": 2})
+        self.assertEqual(CurrentMaskView._owner_stats(other),
+                         {"threads": 1, "reactions": 9, "replies": 7})
+
+    def test_zero_when_no_threads(self):
+        from app.rest.masks import CurrentMaskView
+        empty = make_mask("empty")
+        self.assertEqual(CurrentMaskView._owner_stats(empty),
+                         {"threads": 0, "reactions": 0, "replies": 0})

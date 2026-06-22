@@ -894,8 +894,12 @@ class ThreadsViewSet(GenericViewSet):
         responses = responses.order_by(*replies_ordering)
 
         pages = self.paginate_queryset(responses)
+        # op_mask = the thread author's mask, so each reply can compute is_op
+        # (reply author == OP) LOCALLY to this thread, as a boolean only.
         serializer = self.get_serializer(pages, many=True, context=({
-            "mask": request.mask, "show_responses": True}))
+            "mask": request.mask,
+            "op_mask": thread.mask,
+            "show_responses": True}))
 
         return self.get_paginated_response(({
             "data": serializer.data,
