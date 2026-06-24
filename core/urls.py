@@ -1,6 +1,6 @@
 # Django
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, re_path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from rest_framework import permissions
@@ -11,6 +11,11 @@ from drf_yasg import openapi
 
 # Views
 from app.rest.health import HealthCheckView
+from app.methods.storage_backends import (
+    local_backend_active,
+    local_upload_put,
+    LOCAL_UPLOAD_ROUTE,
+)
 
 
 schema_view = get_schema_view(
@@ -38,3 +43,13 @@ urlpatterns = [
     # GraphQL (future) will be mounted separately without touching this.
     path("", include("app.rest.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+# Local-only PUT receiver: the local equivalent of R2's upload target, the
+# destination of the presigned PUT when the LocalStorageBackend is active
+# (DEBUG + no R2 + plain transport). NOT a business endpoint and NOT in the API
+# schema — registered only in that mode so it never exists in production.
+if local_backend_active():
+    urlpatterns += [
+        re_path(
+            rf"^{LOCAL_UPLOAD_ROUTE}/(?P<key>.+)$", local_upload_put),
+    ]

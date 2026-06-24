@@ -29,20 +29,10 @@ from app.middlewares.delay import SimulateDelayMiddleware
 from app.models.mask import Mask
 from app.models.thread import Thread
 from app.models.tag import Tag
-from app.models.media import ThreadFile
 from app.models.momentum_log import MomentumLog
-
-# More units
-from app.methods.files import save_files
 
 
 client = Client()
-
-# 1x1 transparent PNG (base64) for media tests.
-_ONE_PX_PNG = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA"
-    "60e6kgAAAABJRU5ErkJggg=="
-)
 
 
 class FormatShortTimeTest(SimpleTestCase):
@@ -207,26 +197,6 @@ class SearchTabsTest(TestCase):
     def test_query_too_long_is_rejected(self):
         r = client.get("/search/?q=" + "x" * 200)
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
-
-
-class SaveFilesTest(TestCase):
-    """save_files decodes base64 media and attaches ThreadFile rows."""
-
-    def test_creates_thread_file(self):
-        mask = Mask.objects.create(hash="c" * 64, country_code="CO")
-        thread = Thread.objects.create(
-            mask=mask, text="x", content={"blocks": [], "entityMap": {}})
-        save_files(
-            [{
-                "data": _ONE_PX_PNG,
-                "type": "image/png",
-                "resolution": {"width": 1, "height": 1},
-                "is_video": False,
-                "target_color": "#fff",
-            }],
-            thread,
-        )
-        self.assertEqual(ThreadFile.objects.filter(thread=thread).count(), 1)
 
 
 @override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False)

@@ -90,6 +90,12 @@ services:
       - USE_AWS_STORAGE_SYSTEM=${USE_AWS_STORAGE_SYSTEM:-}
       - USE_AWS_STORAGE=${USE_AWS_STORAGE_SYSTEM:-}
       - MEDIA_BASE_URL=${MEDIA_BASE_URL:-}
+      # Upload-flow knobs (read/defaulted in core/settings.py). Numeric vars
+      # carry a real default here: an EMPTY value would crash int() at startup
+      # (decouple doesn't use its default when the var is present-but-empty).
+      - UPLOAD_PRESIGN_EXPIRES=${UPLOAD_PRESIGN_EXPIRES:-600}
+      # 512 MB general hard cap (see .env.template; proxy must allow ≥ this).
+      - UPLOAD_MAX_BYTES=${UPLOAD_MAX_BYTES:-536870912}
     volumes:
       - .:/app:Z
       - static_volume:/app/staticfiles

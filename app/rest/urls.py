@@ -6,6 +6,7 @@ from rest_framework import routers
 from app.rest.threads import ThreadsViewSet
 from app.rest.reactions import ReactionsViewSet
 from app.rest.reports import ReportsViewSet
+from app.rest.thread_files import ThreadFilesViewSet
 from app.rest.tags import TagsViewSet
 from app.rest.search import SearchViewSet
 from app.rest.masks import MasksViewSet, CurrentMaskView
@@ -17,6 +18,7 @@ router = routers.DefaultRouter()
 router.register(r"threads", ThreadsViewSet)
 router.register(r"reactions", ReactionsViewSet)
 router.register(r"reports", ReportsViewSet, basename="reports")
+router.register(r"thread-files", ThreadFilesViewSet, basename="thread-files")
 router.register(r"tags", TagsViewSet)
 router.register(r"search", SearchViewSet, basename="search")
 router.register(r"users", MasksViewSet, basename="users")

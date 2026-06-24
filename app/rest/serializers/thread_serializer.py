@@ -1,9 +1,5 @@
-# Python
-import datetime
-
 # Django
 from rest_framework import serializers
-from django.utils import timezone
 from django.db.models import Count
 
 # Models
@@ -15,15 +11,10 @@ from app.models.reaction import Reaction
 
 # Serializers
 from app.rest.serializers.reaction_serializer import ReactionSerializer
-from app.rest.serializers.media_serializer import (
-    ThreadMediaSerializer,
-    MediaFileSerializer
-)
+from app.rest.serializers.media_serializer import ThreadMediaSerializer
 
 # Libs
 from app.utils.time import format_short_time
-from app.methods.files import save_files
-from app.models.mask import Mask
 from app.methods.tags import create_tags, get_tags_list
 from app.rest.serializers.mask_serializer import MaskSerializer
 
@@ -31,9 +22,6 @@ from app.rest.serializers.mask_serializer import MaskSerializer
 class ThreadSerializer(serializers.ModelSerializer):
 
     content = serializers.JSONField(required=True)
-    media = serializers.ListField(
-        required=False, child=MediaFileSerializer(
-            required=False))
     sub = serializers.SlugRelatedField(
         slug_field="uid",
         required=False,
@@ -43,19 +31,17 @@ class ThreadSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         data = validated_data.copy()
-        if "media" in data:
-            del data["media"]
 
         mask = self.context["mask"]
         # language/region come in validated_data: the view injects them
         # via serializer.save(...) already normalized from what the
         # frontend DECLARED (navigator.language) — without GeoIP.
         obj = super().create({"mask": mask, **data})
-        media_data = validated_data.get("media", [])
         tags = get_tags_list(data["text"])
 
         create_tags(obj, tags)
-        save_files(files=media_data, thread=obj)
+        # Media is attached separately via the presign/confirm upload flow
+        # (app/rest/thread_files.py), not embedded in the create payload.
         return obj
 
     def to_representation(self, instance):

@@ -263,3 +263,7 @@ make test
    consumed by the frontend. Refactors must be behavior-preserving; prove it with tests.
 9. **Discovery before modification**: read the model, view, serializer and tests involved before
    changing anything. This file is the map, not a substitute for reading the code.
+10. **Clean, elegant comments — no ASCII dividers.** Never use ruler/divider comment lines
+    (`# ----`, `# ====`, box headers, etc.) to separate sections. Let the code structure speak;
+    when a section genuinely needs a label, use a single short comment line (`# Backend selection.`).
+    Comments should explain the *why*, be concise, and stay in English (see rule 1).
