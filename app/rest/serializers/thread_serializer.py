@@ -8,7 +8,6 @@ from app.models.media import ThreadFile
 from app.models.reaction_relation import ReactionRelation
 from app.models.reaction import Reaction
 
-
 # Serializers
 from app.rest.serializers.reaction_serializer import ReactionSerializer
 from app.rest.serializers.media_serializer import ThreadMediaSerializer
@@ -27,7 +26,8 @@ class ThreadSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
         queryset=Thread.objects.filter(is_active=True),
-        help_text="Parent thread, referenced by its uid.")
+        help_text="Parent thread, referenced by its uid.",
+    )
 
     def create(self, validated_data):
         data = validated_data.copy()
@@ -58,16 +58,16 @@ class ThreadSerializer(serializers.ModelSerializer):
         responses_count = getattr(instance, "responses_count_db", None)
         if responses_count is None:
             responses_count = Thread.objects.filter(
-                is_active=True, sub=instance).count()
+                is_active=True,
+                sub=instance,
+            ).count()
         representation["responses_count"] = responses_count
 
         # media: prefetch (active_media) vs query per post.
         media = getattr(instance, "active_media", None)
         if media is None:
-            media = ThreadFile.objects.filter(
-                is_active=True, thread=instance)
-        representation["media"] = ThreadMediaSerializer(
-            media, many=True).data
+            media = ThreadFile.objects.filter(is_active=True, thread=instance)
+        representation["media"] = ThreadMediaSerializer(media, many=True).data
 
         # reactions (+counts) and last_reaction of the current mask: grouped in
         # Python from the prefetched relations vs 2 + N_reactions queries
@@ -96,26 +96,37 @@ class ThreadSerializer(serializers.ModelSerializer):
             my_relations = getattr(instance, "my_reaction_relations", [])
             last_reaction = my_relations[0].reaction if my_relations else None
         else:
-            thread_reactions = Reaction.objects.filter(
-                is_active=True,
-                reactionrelation__thread=instance).\
-                annotate(reaction_count=Count(
-                    'reactionrelation')).order_by('-reaction_count')
+            thread_reactions = (
+                Reaction.objects.filter(
+                    is_active=True,
+                    reactionrelation__thread=instance,
+                )
+                .annotate(reaction_count=Count("reactionrelation"))
+                .order_by("-reaction_count")
+            )
             representation["reactions_count"] = thread_reactions.count()
             representation["reactions"] = ReactionSerializer(
-                thread_reactions, many=True, context=({
-                    "thread": instance})).data
+                thread_reactions,
+                many=True,
+                context=({"thread": instance}),
+            ).data
 
             last_relation = ReactionRelation.objects.filter(
                 thread=instance,
                 is_active=True,
-                mask=self.context["mask"]
+                mask=self.context["mask"],
             )
             last_reaction = last_relation[0].reaction if last_relation else None
 
         representation["parent"] = head_id
-        representation["last_reaction"] = ReactionSerializer(last_reaction, many=False).data if \
-            last_reaction else None
+        representation["last_reaction"] = (
+            ReactionSerializer(
+                last_reaction,
+                many=False,
+            ).data
+            if last_reaction
+            else None
+        )
 
         if self.context.get("show_responses"):
             # We propagate show_responses to serialize the COMPLETE tree of
@@ -127,16 +138,26 @@ class ThreadSerializer(serializers.ModelSerializer):
             representation["responses"] = ThreadSerializer(
                 subs,
                 many=True,
-                context=({
-                    "mask": self.context["mask"],
-                    # Propagate the OP mask so nested sub-replies also compute
-                    # is_op against the thread author (local to this thread).
-                    "op_mask": self.context.get("op_mask"),
-                    "short": True,
-                    "show_responses": True})).data
+                context=(
+                    {
+                        "mask": self.context["mask"],
+                        # Propagate the OP mask so nested sub-replies also compute
+                        # is_op against the thread author (local to this thread).
+                        "op_mask": self.context.get("op_mask"),
+                        "short": True,
+                        "show_responses": True,
+                    }
+                ),
+            ).data
 
-        mask_data = MaskSerializer(instance.mask, many=False).data if \
-            instance.mask else None
+        mask_data = (
+            MaskSerializer(
+                instance.mask,
+                many=False,
+            ).data
+            if instance.mask
+            else None
+        )
 
         # momentum_final (For You): the momentum ALREADY boosted by region,
         # computed at query time in the action — it only exists in the
@@ -159,15 +180,13 @@ class ThreadSerializer(serializers.ModelSerializer):
         # never exposes a reusable author id: only a boolean is sent, with no
         # cross-thread correlation. False when op_mask is absent (feed/search).
         op_mask = self.context.get("op_mask")
-        representation["is_op"] = bool(
-            op_mask is not None and instance.mask == op_mask)
+        representation["is_op"] = bool(op_mask is not None and instance.mask == op_mask)
         representation["create_at"] = format_short_time(instance.create_at)
         # Absolute publish timestamp (ISO 8601) for the "thread details" panel.
         # `create_at` above is the compact RELATIVE string used by the card; this
         # is the raw timestamp so the client can render a localized date. Public
         # thread metadata, no extra query (the column is already loaded).
-        representation["created_at_iso"] = (
-            instance.create_at.isoformat() if instance.create_at else None)
+        representation["created_at_iso"] = instance.create_at.isoformat() if instance.create_at else None
 
         return representation
 
@@ -182,8 +201,16 @@ class ThreadSerializer(serializers.ModelSerializer):
         # nor part of the card.
         # text_norm is a derived search column (lowercase, accent-stripped
         # copy of text) — internal plumbing, never part of the card.
-        exclude = ("id", "is_active", "update_at",
-                   "visibility", "expire_date", "region", "language",
-                   "geohash", "text_norm",
-                   "unique_reactors_count",
-                   "unique_commenters_count")
+        exclude = (
+            "id",
+            "is_active",
+            "update_at",
+            "visibility",
+            "expire_date",
+            "region",
+            "language",
+            "geohash",
+            "text_norm",
+            "unique_reactors_count",
+            "unique_commenters_count",
+        )
