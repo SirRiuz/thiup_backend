@@ -256,3 +256,40 @@ class ThreadFileConfirmTest(TestCase):
 
         response = post(CONFIRM_URL, self._confirm_body(uid="otherfile123"))
         self.assertEqual(response.status_code, 404)
+
+
+class ThreadMediaSerializerTests(TestCase):
+    """Public media representation: width/height/target_color are surfaced FROM
+    metadata (no dedicated columns) so the client can reserve the media's real
+    aspect-ratio before it loads (no layout jump). The rest of the metadata
+    JSON stays internal."""
+
+    def test_exposes_dimensions_and_color_from_metadata(self):
+        from app.rest.serializers.media_serializer import ThreadMediaSerializer
+
+        record = ThreadFile.objects.create(
+            file_key="m/ab/cd/token.mp4",
+            file_url="https://cdn.test/m/ab/cd/token.mp4",
+            is_video=True,
+            metadata={"width": 1920, "height": 1080, "target_color": "#161c1e"},
+        )
+        data = ThreadMediaSerializer(record).data
+        self.assertEqual(data["width"], 1920)
+        self.assertEqual(data["height"], 1080)
+        self.assertEqual(data["target_color"], "#161c1e")
+        self.assertEqual(data["file"], "https://cdn.test/m/ab/cd/token.mp4")
+        # Only the surfaced trio leaves the API — never the raw metadata/key.
+        self.assertNotIn("metadata", data)
+        self.assertNotIn("file_key", data)
+
+    def test_missing_or_junk_dimensions_fall_back_to_zero(self):
+        from app.rest.serializers.media_serializer import ThreadMediaSerializer
+
+        record = ThreadFile.objects.create(
+            file_key="m/ab/cd/token2.webp",
+            file_url="https://cdn.test/m/ab/cd/token2.webp",
+            metadata={"width": "junk"},
+        )
+        data = ThreadMediaSerializer(record).data
+        self.assertEqual(data["width"], 0)
+        self.assertEqual(data["height"], 0)
