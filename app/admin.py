@@ -1,5 +1,6 @@
 # Django
 from django.contrib import admin
+from django.utils.html import format_html
 
 # Models
 from app.models.thread import Thread
@@ -92,16 +93,42 @@ class ThreadFileAdmin(BaseModelAdmin):
         "id",
         "thread",
         "extension",
+        "is_video",
+        "is_nsfw",
         "create_at",
         "update_at",
     )
 
+    list_filter = ("is_nsfw", "is_video", "is_active")
+
+    # Everything is read-only EXCEPT is_active and is_nsfw (the moderation
+    # toggles). The file metadata/reference is set by the upload flow and must
+    # not be hand-edited. (id/uid/create_at/update_at are made readonly by
+    # BaseModelAdmin.) `file_link` shows the URL as a clickable link instead of
+    # the raw editable field (which is excluded).
+    readonly_fields = (
+        "file_link",
+        "file_key",
+        "metadata",
+        "is_video",
+        "thread",
+        "mask",
+    )
+    exclude = ("file_url",)
+
     def extension(self, instance):
-        file = instance.file
-        return file.url.split(".")[1] if file else UNKNOWN_MEDIA_FORMAT
+        key = instance.file_key or ""
+        return key.rsplit(".", 1)[-1] if "." in key else UNKNOWN_MEDIA_FORMAT
+
+    @admin.display(description="File url")
+    def file_link(self, instance):
+        url = instance.file_url
+        if not url:
+            return "—"
+        # Clickable, opens in a new tab. format_html escapes the value safely.
+        return format_html('<a href="{0}" target="_blank" rel="noopener">{0}</a>', url)
 
     search_fields = ("uid", "thread__uid")
-    autocomplete_fields = ("thread",)
 
 
 @admin.register(Mask)

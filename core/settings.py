@@ -127,6 +127,16 @@ if INTERNAL_ADMIN_URL == "admin/":
 ENCRYPTED_RESPONSE = config("ENCRYPTED_RESPONSE", cast=bool)
 SINGLE_REQUEST_PROTECT = config("SINGLE_REQUEST_PROTECT", cast=bool)
 
+# The test suite assumes the encrypted transport AND single-request protection
+# (the helpers post encrypted bodies with a ticket; some tests assert a 403
+# without one). Force both ON under pytest — BEFORE REST_FRAMEWORK below picks
+# the renderer — so the suite is independent of the dev .env values (which may
+# be off for the local storage adapter). Tests that need them off pin them
+# per-test with @override_settings.
+if "pytest" in sys.modules:
+    ENCRYPTED_RESPONSE = True
+    SINGLE_REQUEST_PROTECT = True
+
 # Seed for the gateway's ROTATING PATH (/{hash}/). Dedicated to deriving the
 # path — it does NOT sign anything critical (that is API_SECRET_KEY). It also
 # ships in the frontend bundle → it is PUBLIC obfuscation, NOT a secret, and is
@@ -321,6 +331,33 @@ MEDIA_URL = "/media/"
 
 STATIC_URL = "/static/"
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
+
+# ─── Media uploads (ThreadFile presign/confirm) ─────────────────────
+# SINGLE source of truth for the upload-flow knobs (the storage adapter +
+# object_storage read these from settings, not from the env directly). Sensible
+# defaults so nothing needs configuring; override via env only if needed.
+UPLOAD_PRESIGN_EXPIRES = config("UPLOAD_PRESIGN_EXPIRES", cast=int, default=600)
+# General HARD CAP for ANY uploaded object (safety net). The frontend enforces
+# finer per-type limits (image 8 MB / GIF 15 MB / video 512 MB) for UX; this is
+# the real, untrusted-client guard. In production the upload goes straight to R2
+# (Django never holds the bytes) and the cap is checked at confirm via the
+# object's actual content-length.
+UPLOAD_MAX_BYTES = config("UPLOAD_MAX_BYTES", cast=int, default=512 * 1024 * 1024)
+# Keep large file uploads OFF the heap: anything past this small threshold is
+# streamed to a temp file on disk by Django (matters for the local debug upload
+# view; the R2 path never streams through Django). RAM is limited (~512 MB).
+FILE_UPLOAD_MAX_MEMORY_SIZE = config(
+    "FILE_UPLOAD_MAX_MEMORY_SIZE", cast=int, default=2 * 1024 * 1024)
+# Non-file request body cap (form fields / JSON). Uploaded file parts are NOT
+# counted against this — they spill to disk per the setting above.
+DATA_UPLOAD_MAX_MEMORY_SIZE = config(
+    "DATA_UPLOAD_MAX_MEMORY_SIZE", cast=int, default=5 * 1024 * 1024)
+# Object-key layout: "<prefix>/<shard>/.../<token>.<ext>", sharded by the first
+# chars of the random token. Hardcoded (not env): purely organizational —
+# security comes from the long random token, not the path.
+STORAGE_KEY_PREFIX = "m"
+STORAGE_SHARD_LEVELS = 2
+STORAGE_SHARD_WIDTH = 2
 
 USE_AWS_STORAGE = config("USE_AWS_STORAGE", cast=bool)
 

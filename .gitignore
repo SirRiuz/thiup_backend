@@ -12,6 +12,9 @@ htmlcov
 coverage.xml
 .pytest_cache/
 staticfiles/
+# Local media (incl. LocalStorageBackend debug uploads) — never commit test files.
+media/*
+!media/.gitkeep
 *.pyc
 *.log
 .claude
