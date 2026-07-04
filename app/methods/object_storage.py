@@ -80,6 +80,54 @@ def generate_presigned_put(key: str, content_type: str, expires: int = None) -> 
     )
 
 
+def delete_object(key: str) -> bool:
+    """Delete an object from the bucket. Returns True on success.
+
+    S3/R2 deletes are idempotent (deleting a missing key is not an error), so
+    this is safe to call for keys that may already be gone. Failures are logged
+    and reported as False — callers decide whether an orphaned object is fatal
+    (for DB-side deletions it never is: the row must go even if storage hiccups).
+    """
+    client = _get_client()
+    try:
+        client.delete_object(Bucket=_bucket(), Key=key)
+    except ClientError as error:
+        code = error.response.get("Error", {}).get("Code", "")
+        logger.warning("delete_object failed: code=%s", code)
+        return False
+    return True
+
+
+def delete_objects(keys) -> int:
+    """Batch-delete objects: ONE DeleteObjects request per 1000 keys (the S3
+    API maximum) instead of one round trip per key. Returns how many were
+    deleted. Idempotent like delete_object; per-key failures are reported in
+    the response, logged, and never raised.
+    """
+    client = _get_client()
+    deleted = 0
+    for start in range(0, len(keys), 1000):
+        chunk = keys[start : start + 1000]
+        try:
+            response = client.delete_objects(
+                Bucket=_bucket(),
+                # Quiet: the response only lists FAILURES, not every success.
+                Delete={
+                    "Objects": [{"Key": key} for key in chunk],
+                    "Quiet": True,
+                },
+            )
+        except ClientError as error:
+            code = error.response.get("Error", {}).get("Code", "")
+            logger.warning("delete_objects failed: code=%s", code)
+            continue
+        errors = response.get("Errors", [])
+        if errors:
+            logger.warning("delete_objects: %s keys failed", len(errors))
+        deleted += len(chunk) - len(errors)
+    return deleted
+
+
 def head_object(key: str):
     """Return the object's head metadata (dict) if it exists, else None.
 

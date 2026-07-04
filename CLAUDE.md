@@ -40,6 +40,7 @@ All models inherit `BaseModel` (`app/models/base_model.py`): UUID `id` (internal
 | `Mask` | `mask.py` | `hash` (SHA-256 of IP, unique; first 6 hex chars are the public `@id`), `country_code` (GeoIP) |
 | `ThreadFile` | `media.py` | Media attached to a thread (file, width/height, `is_video`, `target_color`). Formats: mp4/png/jpg/jpeg |
 | `MomentumLog` | `momentum_log.py` | Audit row per momentum recompute run (counts, duration, errors) |
+| `PurgeLog` | `purge_log.py` | Audit row per garbage-collector run (rows selected/deleted, storage objects removed, per-model breakdown JSON, duration, errors). Admin: view/delete only |
 | `TrendingTag` | `trending_tag.py` | Precomputed trending tags (name, score = Σ momentum of carrying threads). Fully rewritten on each momentum run; `/search/suggest/` only reads it |
 | `LoginAttempt`, `BlackList` | `honeypot/models/` | Honeypot forensics; a post_save signal blacklists an IP after `HONEYPOT_LOGIN_TRYOUT` (default 5) attempts |
 
@@ -85,9 +86,9 @@ request: SHA-256(client IP) → get-or-create `Mask`, country resolved via the l
   `points = unique_reactors + unique_commenters×3 + commenters_replied_by_author×5`;
   `momentum_score = points / (age_hours + 2)^1.5`.
   Golden rule: every signal counts **distinct masks** and **excludes the author**.
-- Trigger: an **external scheduler runs the management command every 10 min** — there is **no
+- Trigger: an **external scheduler runs the management command every 30 min** — there is **no
   Celery, no RabbitMQ, no in-process scheduler** (no APScheduler/threading). Locally it's the
-  `momentum` service in `docker-compose.yml` (a tiny `while true; recompute_momentum; sleep 600`
+  `momentum` service in `docker-compose.yml` (a tiny `while true; recompute_momentum; sleep 1800`
   loop); in prod it's **AWS EventBridge Scheduler → an ephemeral Fargate task** running
   `python manage.py recompute_momentum`, which starts, computes, exits. Manually:
   `make recompute_momentum`.
@@ -96,11 +97,38 @@ request: SHA-256(client IP) → get-or-create `Mask`, country resolved via the l
   table (top tags by momentum sum) and logs a `MomentumLog` row. It carries all the logic and
   needs nothing else to run.
 
+**Garbage collector (`purge_inactive`)** — hard-deletes soft-deleted rows, precomputed-style:
+- `app/management/commands/purge_inactive.py`: rows with `is_active=False` whose `update_at` is
+  older than `--min-age-hours` (default 24 — protects presigned uploads, which are *created*
+  inactive until confirm), oldest first, capped at `--limit` (default 1000) per run; cascades
+  don't count against the cap.
+- **Opt-in registry** (`PURGE_MODELS`): Thread, ThreadFile, ReactionRelation, Tag, Report.
+  Deliberately excluded: Mask (CASCADE would nuke its content), Reaction catalog, MomentumLog /
+  TrendingTag (owned by momentum), honeypot tables (deleting un-blacklists). Add models to the
+  registry consciously, never by introspection.
+- Deleting a `ThreadFile` also deletes its object from storage (R2/local) via a `post_delete`
+  signal → `StorageBackend.delete_object`; covers instance, bulk and cascade deletes. Storage
+  failures log a warning and never block the row delete. Soft-delete (`disable()`) keeps the
+  binary. Signals live in the **`app/signals/` package** (one file per domain, star-imported by
+  its `__init__`, connected via `MainAppConfig.ready()`) — add new receivers there, never inline
+  in models/views.
+- **I/O-frugal by contract** (tested with `assertNumQueries`): ONE pk-select + ONE delete per
+  registry model (cascades expand in bulk inside Django, reply subtrees walked per depth, not
+  per row), doomed `file_key`s collected up front, and ALL storage objects removed in **one
+  batched `DeleteObjects` request** (S3 API, ≤1000 keys — matching the run cap). During the run
+  the per-row signal is paused (`storage_cleanup_paused()` in `app/signals/media_signals.py`)
+  so rows fast-delete; ad-hoc deletes keep the per-row signal.
+- Every run writes a `PurgeLog` row (success metrics + per-model breakdown, or the error —
+  re-raised so the scheduler sees the failure). Read-only in the admin, like `MomentumLog`.
+- Trigger: EventBridge Scheduler **every 2 days** (same ephemeral-Fargate pattern as momentum,
+  sidecar neutralized). Locally: the `purge` docker-compose service (2-day sleep loop, mirrors
+  the `momentum` service). Manually: `make purge_inactive`.
+
 **Async stack reality check (cost-relevant)**: there is **no Redis, no Celery and no RabbitMQ** —
-they were removed. Momentum is the only background job, and it runs as an *ephemeral* scheduled
-task (see above), not on a permanent worker. This deliberately avoids the ~750 MB of always-on
+they were removed. Momentum and the every-2-days garbage collector are the only background jobs,
+and they run as *ephemeral* scheduled tasks (see above), not on permanent workers. This deliberately avoids the ~750 MB of always-on
 memory (Celery worker+beat ≈ 540–580 MB + RabbitMQ ≈ 184 MB) that a broker/worker would cost to
-run a job that takes seconds every 10 min, vs ~50 MB (PSS) for the whole web app. **Don't
+run a job that takes seconds every 30 min, vs ~50 MB (PSS) for the whole web app. **Don't
 reintroduce always-on async machinery** (broker/worker/Redis); if a new background job appears,
 make it another ephemeral scheduled command.
 
@@ -125,7 +153,7 @@ Legend — **Enc**: response encrypted when `ENCRYPTED_RESPONSE=True` (global re
 |---|---|---|---|---|---|---|
 | GET | `/config/` | `ConfigView` (`config.py`) | Transport flags: `{encrypted_response, single_request_protect}` | yes | no (AllowAny) | no (bootstrap) |
 | GET | `/ticket/` | `TicketView` (`ticket.py`) | Issues client-assertion JWT (anon throttle 120/min) | yes | no (AllowAny) | no (bootstrap) |
-| GET | `/health/` | `HealthCheckView` (`health.py`) | Liveness probe → 200 `{"status":"ok"}` (no DB) | yes | no (AllowAny — the ALB checker can't send a ticket) | yes |
+| GET | `/health/` | `HealthCheckView` (`health.py`) | Liveness probe → 200 `{"status":"ok"}` (no DB) | yes | no (AllowAny — the ECS container health check can't send a ticket) | yes |
 | GET | `/me/` | `CurrentMaskView` (`masks.py`) | Current mask: `{mask_id, country_code}` | yes | yes | yes |
 | GET/POST | `/threads/` | `ThreadsViewSet` (`threads.py`) | List (`?q=`, `?tag=`) / create thread | yes | yes | yes |
 | GET | `/threads/<uid>/` | 〃 | Thread detail | yes | yes | yes |
@@ -211,8 +239,8 @@ make test
 ```
 
 - Local stack (`make up`): postgres:15 (host port **5433**), `runserver` with autoreload,
-  migration, momentum loop, nginx. Production is AWS ECS/Fargate (gunicorn, external DB,
-  momentum via EventBridge) — not docker-compose. Entry point: nginx on `SERVER_PORT`
+  migration, momentum loop, nginx. Production is AWS ECS/Fargate — not docker-compose
+  (see "Production infrastructure" below). Local entry point: nginx on `SERVER_PORT`
   (default 8080).
 - Useful targets (see `make help`): `make shell`, `make shell-db` (psql), `make logs-web`,
   `make add_dummy_threads`, `make recompute_momentum`, `make validate-config`,
@@ -224,11 +252,48 @@ make test
 - Python 3.12 (Docker image). `app/` directory does all the work; `media/` and `staticfiles/`
   are served by nginx via volumes.
 
+## Production infrastructure (AWS)
+
+One CloudFormation stack (`ci/infra/ecs.yml`) owns everything: ECS Fargate service + CodeBuild
+CI + the EventBridge momentum schedule. Full detail and runbooks: `ci/infra/README.md`. The
+load-bearing facts:
+
+- **Ingress is a Cloudflare Tunnel, not a load balancer.** A `cloudflared` sidecar in the web
+  task opens an outbound-only connection to Cloudflare's edge and forwards to gunicorn over
+  the task-local loopback (`localhost:8000`). There is **no ALB and no inbound security-group
+  rule** — the task's public IP is egress-only (ECR/DB/Cloudflare). The hostname →
+  `localhost:8000` routing lives in the Cloudflare Zero Trust dashboard; the only AWS-side
+  piece is the connector token (Secrets Manager `/<stack>/TUNNEL_TOKEN`). The tunnel ID (and
+  DNS) never changes across deploys — connectors self-register, rolling deploys overlap two
+  connectors, zero downtime.
+- **Client IP arrives in `X-Forwarded-For` (set by Cloudflare, first entry);** `REMOTE_ADDR`
+  is the loopback. Mask identity, honeypot blacklisting and GeoIP all rely on that first XFF
+  entry (`app/middlewares/mask.py`, `app/utils/client.py`) — same value as the old ALB path,
+  so masks survived the migration. With no direct path to gunicorn, XFF is not spoofable.
+- **Health is the container-level health check** (python urllib against
+  `http://127.0.0.1:8000/health/`; the slim image has no curl). If `ALLOWED_HOSTS` is ever
+  tightened from `"*"`, it MUST include `127.0.0.1` or ECS cycles the task on 400s.
+- **Golden rule for one-off RunTasks** (momentum, collectstatic, migrate, or anything new):
+  override the `cloudflared` container command to `["version"]` so the ephemeral task never
+  registers as a live tunnel connector with no gunicorn behind it (502s). The momentum
+  schedule `Input`, `ecs-deploy run_ephemeral` and `automigrate.py` already do this; copy
+  that pattern. The sidecar is `Essential: false` (ephemeral tasks can exit) with a
+  `RestartPolicy` (crashed connector restarts in place; exit 0 ignored).
+- **Cost frugality is a design constraint** (~$17/mo total; it was $41 before the ALB was
+  removed): smallest Fargate size (0.25 vCPU / 512 MB — the app runs at ~84 MB with 1
+  gunicorn worker), momentum every 30 min (each tick is a billed ephemeral task), multi-stage
+  slim image (564 MB vs 1.15 GB — Fargate bills from pull start, and momentum pays that pull
+  every tick; don't add system packages to the runtime stage). Don't reintroduce a load
+  balancer, NAT gateway, or always-on machinery; cost knobs and history are in
+  `ci/infra/README.md`.
+
 ## Constraints
 
-- **Raspberry Pi**: ~2 gunicorn gthread workers × 4 threads, `max_requests` recycling,
-  `CONN_MAX_AGE=60`, sparse logging (SD card). No Redis, no Celery, no RabbitMQ. Expensive
-  computation goes into the 10-min ephemeral scheduled command, never the request path.
+- **Raspberry Pi frugality**: ~1–2 gunicorn gthread workers × 4 threads (prod image defaults
+  to 1 on the 0.25 vCPU / 512 MB Fargate task; override with `GUNICORN_WORKERS`),
+  `max_requests` recycling, `CONN_MAX_AGE=60`, sparse logging (SD card). No Redis, no Celery,
+  no RabbitMQ. Expensive computation goes into the 30-min ephemeral scheduled command, never
+  the request path.
 - **Privacy**: search queries, feed personalization inputs and geolocation are ephemeral — never
   log or persist them, never echo them in error messages. Only **public** identifiers (`uid`,
   mask `hash` prefix) leave the API; internal UUIDs stay internal. No raw coordinates, no

@@ -10,6 +10,7 @@ from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
 from app.models.momentum_log import MomentumLog
+from app.models.purge_log import PurgeLog
 from app.models.trending_tag import TrendingTag
 from app.models.report import Report
 
@@ -206,6 +207,36 @@ class MomentumLogAdmin(BaseModelAdmin):
 
     def has_add_permission(self, request) -> (bool):
         # Only the scheduled recompute_momentum run creates records.
+        return False
+
+    def has_change_permission(self, request, obj=None) -> (bool):
+        # No editing: the changelist offers "View" instead of "Change".
+        return False
+
+
+@admin.register(PurgeLog)
+class PurgeLogAdmin(BaseModelAdmin):
+    """
+    Log of the garbage collector: READ-ONLY. The records are created only by
+    the management command `purge_inactive` (run by the external scheduler
+    every 2 days) — from the admin they can't be created or edited; deleting
+    is allowed, as housekeeping of old logs.
+    """
+
+    list_display = (
+        "create_at",
+        "was_successful",
+        "selected_count",
+        "deleted_count",
+        "files_removed",
+        "files_total",
+        "duration_ms",
+    )
+    list_filter = ("was_successful",)
+    date_hierarchy = "create_at"
+
+    def has_add_permission(self, request) -> (bool):
+        # Only the scheduled purge_inactive run creates records.
         return False
 
     def has_change_permission(self, request, obj=None) -> (bool):

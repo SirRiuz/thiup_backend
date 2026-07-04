@@ -82,7 +82,7 @@ help() {
    echo "-n, --service        ECS service name for 'deploy'."
    echo "-t, --timeout        Seconds to wait for the service to stabilize ('deploy')."
    echo "-p, --port           Container port for the printed URL ('deploy', optional)."
-   echo "    --schedule       EventBridge schedule name to re-point at the new revision ('deploy', optional)."
+   echo "    --schedule       EventBridge schedule name(s), comma-separated, to re-point at the new revision ('deploy', optional)."
    echo "-r, --region         AWS region."
    echo ""
    echo "Requires AWS credentials configured locally (aws configure)."
@@ -130,11 +130,23 @@ run_ephemeral() {
   local task_def="$1" command_json="$2" label="$3"
   echo "Running ${label} via run-task (task-def=${task_def})"
 
-  local network_configuration overrides task_arn exit_code
+  local network_configuration overrides task_arn exit_code has_sidecar
   network_configuration=$(aws ecs describe-services \
     --cluster "$CLUSTER" --services "$SERVICE" --region "$REGION" \
     --query 'services[0].networkConfiguration' --output json | jq -c)
-  overrides=$(printf '{"containerOverrides":[{"name":"web","command":%s}]}' "$command_json")
+
+  # Neutralize the cloudflared sidecar when the task def carries one: these
+  # one-off tasks replace gunicorn with a management command, so a live
+  # connector would route tunnel traffic into a task with nothing on :8000.
+  # "version" prints and exits 0 (ignored by the sidecar's RestartPolicy).
+  # Conditional so the script also works on task defs without the sidecar.
+  has_sidecar=$(aws ecs describe-task-definition --task-definition "$task_def" --region "$REGION" \
+    --query 'length(taskDefinition.containerDefinitions[?name==`cloudflared`])' --output text)
+  if [[ "$has_sidecar" != "0" ]]; then
+    overrides=$(printf '{"containerOverrides":[{"name":"web","command":%s},{"name":"cloudflared","command":["version"]}]}' "$command_json")
+  else
+    overrides=$(printf '{"containerOverrides":[{"name":"web","command":%s}]}' "$command_json")
+  fi
 
   task_arn=$(aws ecs run-task \
     --cluster "$CLUSTER" \
@@ -213,20 +225,24 @@ automigrate() {
     --cluster "$CLUSTER" --service "$SERVICE" --region "$REGION"
 }
 
-# --- re-point the momentum schedule at the just-deployed revision (post-migrate) ---
+# --- re-point EventBridge schedules at the just-deployed revision (post-migrate) ---
+# MOMENTUM_SCHEDULE holds a COMMA-SEPARATED list of schedule names (momentum,
+# garbage collector, ...). Each keeps its own expression/overrides; only the
+# task-definition revision changes.
 update_momentum_schedule() {
-  local task_def="$1"
+  local task_def="$1" name tmp
   [[ -z "$MOMENTUM_SCHEDULE" ]] && return 0
-  echo "Re-pointing momentum schedule ${MOMENTUM_SCHEDULE} at ${task_def}"
-  local tmp
-  tmp=$(mktemp)
-  aws scheduler get-schedule --name "$MOMENTUM_SCHEDULE" --region "$REGION" --output json \
-    | jq --arg ARN "$task_def" '
-        .Target.EcsParameters.TaskDefinitionArn = $ARN
-        | del(.Arn, .CreationDate, .LastModificationDate)' > "$tmp"
-  aws scheduler update-schedule --region "$REGION" --cli-input-json "file://$tmp" > /dev/null
-  rm -f "$tmp"
-  echo "Momentum schedule now runs the deployed revision."
+  for name in ${MOMENTUM_SCHEDULE//,/ }; do
+    echo "Re-pointing schedule ${name} at ${task_def}"
+    tmp=$(mktemp)
+    aws scheduler get-schedule --name "$name" --region "$REGION" --output json \
+      | jq --arg ARN "$task_def" '
+          .Target.EcsParameters.TaskDefinitionArn = $ARN
+          | del(.Arn, .CreationDate, .LastModificationDate)' > "$tmp"
+    aws scheduler update-schedule --region "$REGION" --cli-input-json "file://$tmp" > /dev/null
+    rm -f "$tmp"
+  done
+  echo "Schedules now run the deployed revision."
 }
 
 # --- deploy (switch the service to the freshly registered revision) ---
@@ -296,12 +312,9 @@ deploy() {
   fi
 
   echo ""
-  echo "Deployment complete. App is reachable at:"
-  if [[ -n "$CONTAINER_PORT" ]]; then
-    echo "    http://${PUBLIC_IP}:${CONTAINER_PORT}"
-  else
-    echo "    http://${PUBLIC_IP}"
-  fi
+  echo "Deployment complete. Ingress is served by the Cloudflare Tunnel (the"
+  echo "hostname routes live in the Zero Trust dashboard, not in AWS)."
+  echo "Task egress-only public IP (no inbound rules): ${PUBLIC_IP}"
 }
 
 # --- Main program ---

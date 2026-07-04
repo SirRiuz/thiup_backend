@@ -6,7 +6,7 @@
         logs-momentum \
         shell shell-db makemigrations makemigrations-check sqlmigrate \
         createsuperuser \
-        load_fixtures add_dummy_threads recompute_momentum \
+        load_fixtures add_dummy_threads recompute_momentum purge_inactive \
         validate-config \
         test clean clean-volumes \
         dependencies
@@ -34,7 +34,8 @@ help:
 	@echo '    make createsuperuser   Create a superuser'
 	@echo '    make load_fixtures     Load predefined fixtures (reactions, …)'
 	@echo '    make add_dummy_threads [N]  Create N dummy threads (default 10). E.g. make add_dummy_threads 50'
-	@echo '    make recompute_momentum  Recompute For You momentum NOW (the scheduler already runs it every 10 min)'
+	@echo '    make recompute_momentum  Recompute For You momentum NOW (the scheduler already runs it every 30 min)'
+	@echo '    make purge_inactive    Hard-delete soft-deleted rows NOW (prod runs it every 2 days)'
 	@echo '    make validate-config   Load settings.py once and surface config errors'
 	@echo ''
 	@echo '  Migrations:'
@@ -134,6 +135,9 @@ add_dummy_threads:
 # is for manual runs.
 recompute_momentum:
 	docker compose exec -T web python manage.py recompute_momentum
+
+purge_inactive:
+	docker compose exec -T web python manage.py purge_inactive
 
 validate-config:
 	docker compose run --rm web python manage.py check

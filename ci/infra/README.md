@@ -4,11 +4,16 @@ One CloudFormation stack that provisions the whole backend runtime **and** its
 CodeBuild CI:
 
 ```
-Internet → ALB (stable DNS) → Fargate ECS service (gunicorn)
+Internet → Cloudflare edge → Tunnel ← cloudflared sidecar → gunicorn (same Fargate task, localhost)
                                    ├─ static/media served from an external S3-compatible bucket (Cloudflare R2)
-                                   └─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 10 min)
+                                   ├─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 30 min)
+                                   └─ garbage collector (purge_inactive): EventBridge Scheduler → ephemeral Fargate task (every 2 days)
 CI: CodeBuild project (build image → collectstatic to the bucket → deploy) — role fully permissioned
 ```
+
+No load balancer and no inbound security-group rules: ingress is the Cloudflare
+Tunnel only (see the Tunnel section below). DNS points at the tunnel ID
+(`<TUNNEL_ID>.cfargotunnel.com`), which never changes across deploys.
 
 - Uses the account's **default VPC** + **2 public subnets** (no VPC/RDS created).
 - **External PostgreSQL** (you provide host/credentials).
@@ -66,11 +71,13 @@ project bound to the old connection (including older ones).
 
 ## Prerequisites
 
-- A **default VPC** with at least **2 public subnets in different AZs** (the ALB
-  requires two AZs).
+- A **default VPC** with **2 public subnets** (different AZs preferred, so tasks
+  can land in either).
 - An **external PostgreSQL** reachable from the default VPC (its security group /
-  firewall must allow `5432` from the tasks). If unreachable, the ALB target stays
-  *unhealthy* (`/health/` does a `SELECT 1`).
+  firewall must allow `5432` from the tasks).
+- A **Cloudflare Tunnel** already created (Zero Trust → Networks → Tunnels) with
+  a published application route `your-api-hostname → http://localhost:8000`, and
+  its **connector token** at hand (the `TunnelToken` stack parameter).
 - The **GitHub App connection** already authorized (Developer Tools → Settings →
   Connections), status *Available*.
 - The **ECR repository** `thiup-backend` already exists (the stack does not create it).
@@ -82,7 +89,8 @@ project bound to the old connection (including older ones).
 3. Fill parameters (see below). Acknowledge **IAM capabilities**. **Submit**.
 4. On **CREATE_COMPLETE**, do the **manual GitHub steps** above (connect GitHub + webhook).
 5. Trigger a build in `…-ci` (or push). Pipeline: **build → collectstatic → deploy**.
-6. Open the app at the **`LoadBalancerURL`** output.
+6. Open the app at the **tunnel hostname** (the published application route in
+   the Cloudflare Zero Trust dashboard — there is no AWS URL).
 
 ### Key parameters
 
@@ -91,12 +99,14 @@ project bound to the old connection (including older ones).
 | `VpcId`, `PublicSubnet1`, `PublicSubnet2` | Default VPC + 2 subnets in **different AZs**. |
 | `SecretKey` | The only backend secret (`API_SECRET_KEY` is derived). NoEcho. |
 | `GatewaySeed` | **Required.** Public obfuscation; must match the frontend's `REACT_APP_GATEWAY_SEED`. |
+| `TunnelToken` | **Required.** Cloudflare Tunnel connector token (`eyJ...`). NoEcho → Secrets Manager. |
 | `InternalAdminUrl` | Obfuscated admin path, ends with `/`, not `admin/`. |
 | `DatabaseHost/Name/User/Password/Port` | Your external Postgres. |
 | `StorageBucketName` / `StoragePublicDomain` | Bucket name + its public domain (R2). |
 | `StorageEndpointUrl` | R2: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. |
 | `StorageAccessKeyId` / `StorageSecretAccessKey` | R2 API token keys. NoEcho. |
-| `MomentumScheduleExpression` | Default `rate(10 minutes)`. |
+| `MomentumScheduleExpression` | Default `rate(30 minutes)` — each tick is a billed ephemeral task, so the cadence is a cost knob. |
+| `PurgeScheduleExpression` | Default `rate(2 days)` — garbage collector (`purge_inactive`). |
 
 Static port is fixed at **8000** (not a parameter). The image tag is fixed too: the
 service boots from `:latest` and the deploy pins it to an immutable `:SHA` (no
@@ -236,13 +246,102 @@ role lists the secret ARNs — add the new one, or scope it to `secret:/<stack>/
 | Make a NEW var reach the app | ✅ 1 line in task def + Update | ❌ no |
 | Change app CODE | ✅/— deploy via CodeBuild | ✅ yes |
 
+## Cloudflare Tunnel (ingress)
+
+Ingress arrives through a **Cloudflare Tunnel**: a `cloudflared` sidecar in the
+web task opens an **outbound-only** connection to Cloudflare's edge and forwards
+requests to gunicorn over the task-local loopback (`localhost:8000`). The public
+hostname → service mapping lives in the **Cloudflare Zero Trust dashboard**
+(Networks → Tunnels → the tunnel → Published application routes), not in AWS.
+
+- The tunnel ID (and therefore DNS) is **independent of deploys and task IPs**:
+  each new task's cloudflared registers itself as a connector; during a rolling
+  deploy two connectors coexist and Cloudflare balances between them (zero
+  downtime, nothing to update anywhere).
+- The only AWS-side piece is the **connector token** (`TunnelToken` parameter →
+  Secrets Manager `/<stack>/TUNNEL_TOKEN` → injected as `TUNNEL_TOKEN`). Rotating
+  it (dashboard → Refresh token) means updating the secret value and forcing a
+  new deployment.
+- The sidecar is `Essential: false` with a `RestartPolicy` (crash → in-place
+  restart; exit 0 ignored). **Every one-off RunTask on this task definition must
+  override the `cloudflared` command to `["version"]`** so ephemeral tasks
+  (momentum, collectstatic, migrate) never register as live connectors with no
+  gunicorn behind them — the momentum schedule's `Input`, `ecs-deploy
+  run_ephemeral` and `automigrate.py` already do this (conditionally, so they
+  also work on pre-tunnel task defs).
+
+**History / ALB removal runbook:** ingress used to be a public ALB (+ 2 public
+IPv4s, ~$24/mo of fixed cost). Removing it in ONE stack update fails: CFN
+closes the security group before the service lets go of the target group, the
+ALB health checks time out and the deployment circuit breaker rolls everything
+back. The working sequence is TWO updates:
+
+1. **`ecs-transition-alb-detach.yml`** — replaces the service (`-svc` →
+   `-svc-v2`, no `LoadBalancers`) while keeping the ALB stack and the security
+   group EXACTLY as deployed. CFN creates the LB-free service first (its
+   cloudflared connector joins the tunnel alongside the old one → zero
+   downtime), then deletes the old service on cleanup.
+2. **`ecs.yml`** — deletes `LoadBalancer`/`TargetGroup`/`Listener`/
+   `AlbSecurityGroup` and closes the service security group (no inbound at
+   all). Nothing is attached to the target group anymore, so no health check
+   can object. The `web` container's own health check replaced the ALB target
+   health check back in step 1 (it ships in the task definition).
+
+The transition template was deleted after the migration completed (recover it
+from git history if a future stack ever needs the same two-step detach).
+
 ## Momentum (For You ranking)
 
-EventBridge Scheduler runs `python manage.py recompute_momentum` every 10 min as an
+EventBridge Scheduler runs `python manage.py recompute_momentum` every 30 min as an
 ephemeral Fargate task (same task definition, command overridden). The `deploy` step
 re-points the schedule at the **deployed immutable revision** (after `migrate`), so
 the cron runs exactly the deployed, already-migrated code — no pre-migration window.
 No broker/worker.
+
+## Garbage collector (purge_inactive)
+
+Same ephemeral pattern, **every 2 days** (`PurgeSchedule`, 1-hour flexible window —
+punctuality is irrelevant for a GC): `python manage.py purge_inactive` hard-deletes
+rows soft-deleted (`is_active=False`) more than 24 h ago, oldest first, max 1000 per
+run, from an **opt-in model registry** (see the command + CLAUDE.md for what is
+excluded and why). I/O-frugal: one select + one delete per model, and every doomed
+storage object is removed with ONE batched `DeleteObjects` request against R2. Each
+run writes a `PurgeLog` row (read-only in the admin) with counts, per-model breakdown
+and errors. The `deploy` step re-points BOTH schedules (`--schedule` takes a
+comma-separated list) at the deployed revision.
+
+## Cost profile
+
+Cost is a design constraint: one user shouldn't pay for idle enterprise plumbing.
+The stack was rebuilt around that in July 2026 — **~$41/mo → ~$17/mo**:
+
+| Removed / reduced | Saving |
+|---|---|
+| ALB (fixed hourly) + its 2 public IPv4s → replaced by the Cloudflare Tunnel (free) | ~$24/mo |
+| Web task 0.5 vCPU / 1 GB → **0.25 vCPU / 512 MB** (app measured at ~84 MB RSS, 1 gunicorn worker) | ~$7/mo |
+| Momentum `rate(10 minutes)` → `rate(30 minutes)` + image 1.15 GB → 564 MB (multi-stage `ci/aws.Dockerfile`) | ~$1–2/mo |
+
+What still bills (approx., us-east-1): the 24/7 web task ~$10.6 · the task's
+egress IPv4 $3.65 · momentum ticks ~$0.5 · Secrets Manager (5 × $0.40) $2 ·
+logs/ECR ~$0.5.
+
+**Cost knobs** (in order of impact):
+
+- `TaskCpu`/`TaskMemory` — the 24/7 task is the biggest line. Bump only with
+  measured pressure (rule: measure before optimizing).
+- **Fargate Spot** for the web service: ~−70% (~$10.6 → ~$3). Not applied yet;
+  requires a capacity-provider strategy — reuse the two-step service-replacement
+  pattern from the ALB runbook above.
+- `MomentumScheduleExpression` — each tick is a billed ephemeral task that also
+  pays the image pull (Fargate bills from pull start). Keep the image slim: do
+  NOT add system packages to the runtime stage of `ci/aws.Dockerfile`.
+- Secrets Manager → SSM SecureString would save ~$2/mo (manual: CFN can't create
+  SecureString params; re-map the task-def ARNs).
+- ECR: immutable `:SHA` tags accumulate ($0.10/GB/mo). A lifecycle policy keeping
+  the last ~10 images caps it (the repo is external to the stack).
+
+Anti-goals: no load balancer, no NAT gateway, no Redis/broker/always-on workers
+(see CLAUDE.md). Verify spend with Cost Explorer's daily by-service breakdown.
 
 ## Teardown
 
@@ -261,5 +360,6 @@ reused). The ECR repo and the external DB are untouched too.
 | `DOWNLOAD_SOURCE`: *Access denied to connection* | Role missing `UseConnection` (it's in the template — update the stack). |
 | `CreateWebhook` / `PassConnection` *not authorized* | SCP blocks it — do the webhook by hand (step 2). |
 | Build `429 Too Many Requests` pulling python image | Base image already uses ECR Public; if it recurs, it's a different pull. |
-| ALB target **unhealthy** | DB unreachable (open `5432` from the VPC) or app boot env missing. Logs: `/ecs/<stack>-web`. |
+| Task keeps restarting (**unhealthy**) | Container health check failing: DB unreachable (open `5432` from the VPC), app boot env missing, or `ALLOWED_HOSTS` missing `127.0.0.1`. Logs: `/ecs/<stack>-web`. |
+| Tunnel **DOWN** / 502 from Cloudflare | No connector: cloudflared sidecar not running or `TUNNEL_TOKEN` invalid/rotated — check the `cloudflared` log stream and the Zero Trust dashboard. |
 | `collectstatic` `AccessDenied ecs:RunTask` | CodeBuild role — included in template; update the stack. |
