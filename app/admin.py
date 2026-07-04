@@ -1,6 +1,7 @@
 # Django
 from django.contrib import admin
 from django.utils.html import format_html
+from django.template.response import TemplateResponse
 
 # Models
 from app.models.thread import Thread
@@ -11,8 +12,13 @@ from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
 from app.models.momentum_log import MomentumLog
 from app.models.purge_log import PurgeLog
+from app.models.system_metrics import SystemMetrics
 from app.models.trending_tag import TrendingTag
 from app.models.report import Report
+
+# Methods
+from app.methods import presence
+from app.methods.metrics import collect_metrics
 
 # Libs
 import flag
@@ -132,12 +138,37 @@ class ThreadFileAdmin(BaseModelAdmin):
     search_fields = ("uid", "thread__uid")
 
 
+class OnlineNowFilter(admin.SimpleListFilter):
+    """
+    Filter the mask changelist down to the users active RIGHT NOW (the metrics
+    dashboard's "Online now" card links here). Optimal on purpose: the online
+    hashes are enumerated from the in-process presence cache (microseconds,
+    no DB) and resolved with ONE indexed query (hash is unique+indexed), so
+    the admin's normal pagination/search work unchanged on top of it.
+    """
+
+    title = "presence"
+    parameter_name = "online"
+
+    def lookups(self, request, model_admin):
+        return (("yes", "Online now"),)
+
+    def queryset(self, request, queryset):
+        if self.value() != "yes":
+            return queryset
+        hashes = presence.online_hashes()
+        # None = cache backend can't be introspected: match nothing rather
+        # than silently showing everyone as online.
+        return queryset.filter(hash__in=hashes or [])
+
+
 @admin.register(Mask)
 class MaskAdmin(BaseModelAdmin):
 
     list_display = (
         "id",
         "is_active",
+        "is_online_now",
         "mask",
         "country_flag",
         "create_at",
@@ -145,6 +176,12 @@ class MaskAdmin(BaseModelAdmin):
     )
 
     search_fields = ("hash", "country_code")
+    list_filter = (OnlineNowFilter,)
+
+    @admin.display(boolean=True, description="online")
+    def is_online_now(self, obj) -> (bool):
+        # LocMem lookup (~1 µs per row on the 100-row page) — no DB cost.
+        return presence.is_online(obj.hash)
 
     def mask(self, obj) -> str:
         return str(obj)
@@ -211,6 +248,37 @@ class MomentumLogAdmin(BaseModelAdmin):
 
     def has_change_permission(self, request, obj=None) -> (bool):
         # No editing: the changelist offers "View" instead of "Change".
+        return False
+
+
+@admin.register(SystemMetrics)
+class SystemMetricsAdmin(admin.ModelAdmin):
+    """
+    Owner dashboard: online users, memory, DB health, content counters and
+    the last run of each scheduled job — computed ON DEMAND when the page is
+    opened (a handful of indexed COUNTs + two /proc reads; nothing scheduled,
+    nothing in the API request path). SystemMetrics is a PROXY model that
+    exists only to give this page a natural entry in the admin index; the
+    changelist is fully replaced by the dashboard template.
+    """
+
+    def changelist_view(self, request, extra_context=None):
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "System metrics",
+            "metrics": collect_metrics(),
+        }
+        return TemplateResponse(
+            request, "admin/system_metrics.html", context)
+
+    # Pure dashboard: nothing to create, edit or delete here.
+    def has_add_permission(self, request) -> (bool):
+        return False
+
+    def has_change_permission(self, request, obj=None) -> (bool):
+        return False
+
+    def has_delete_permission(self, request, obj=None) -> (bool):
         return False
 
 

@@ -1,0 +1,157 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<style>
+  .mx-wrap { max-width: 1080px; }
+  .mx-meta { color: var(--body-quiet-color, #666); font-size: 12px; margin: 0 0 16px; }
+  .mx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+  .mx-card {
+    background: var(--darkened-bg, #f8f8f8);
+    border: 1px solid var(--hairline-color, #e8e8e8);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .mx-card h3 {
+    margin: 0 0 4px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em;
+    color: var(--body-quiet-color, #666);
+  }
+  .mx-value { font-size: 26px; font-weight: 700; line-height: 1.2; color: var(--body-fg, #333); }
+  .mx-sub { font-size: 12px; color: var(--body-quiet-color, #777); margin-top: 2px; }
+  .mx-section { margin: 26px 0 10px; font-size: 14px; font-weight: 700; color: var(--body-fg, #333); }
+  .mx-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #31A24C; margin-right: 8px; }
+  .mx-bar { height: 8px; border-radius: 4px; background: var(--hairline-color, #e5e5e5); margin-top: 10px; overflow: hidden; }
+  .mx-bar span { display: block; height: 100%; border-radius: 4px; background: #31A24C; }
+  .mx-bar.warn span { background: #e69f00; }
+  .mx-bar.crit span { background: #d0342c; }
+  .mx-ok { color: #31A24C; font-weight: 700; }
+  .mx-fail { color: #d0342c; font-weight: 700; }
+  a.mx-card { display: block; text-decoration: none; }
+  a.mx-card:hover { border-color: #31A24C; }
+</style>
+
+<div class="mx-wrap">
+  <p class="mx-meta">
+    Snapshot generated at {{ metrics.generated_at }} — refresh the page for a
+    new one. Uptime and RSS are per gunicorn worker (recycling via
+    max_requests is normal, not a crash).
+  </p>
+
+  <div class="mx-section">Activity</div>
+  <div class="mx-grid">
+    {# Clickable: opens the mask changelist filtered to the users active now. #}
+    <a class="mx-card" href="{% url 'admin:app_mask_changelist' %}?online=yes">
+      <h3>Online now</h3>
+      <div class="mx-value">
+        <span class="mx-dot"></span>{% if metrics.activity.online_now is not None %}{{ metrics.activity.online_now }}{% else %}n/a{% endif %}
+      </div>
+      <div class="mx-sub">active in the last {{ metrics.activity.presence_ttl }}s — click to list them</div>
+    </a>
+    <div class="mx-card">
+      <h3>Masks (total)</h3>
+      <div class="mx-value">{{ metrics.activity.masks_total }}</div>
+      <div class="mx-sub">pseudonymous visitors ever seen</div>
+    </div>
+    <div class="mx-card">
+      <h3>Threads · last 24h</h3>
+      <div class="mx-value">{{ metrics.activity.threads_24h }}</div>
+      <div class="mx-sub">posts + replies created</div>
+    </div>
+    <div class="mx-card">
+      <h3>Reactions · last 24h</h3>
+      <div class="mx-value">{{ metrics.activity.reactions_24h }}</div>
+    </div>
+  </div>
+
+  <div class="mx-section">Memory &amp; process</div>
+  <div class="mx-grid">
+    <div class="mx-card">
+      <h3>App memory (RSS)</h3>
+      <div class="mx-value">{{ metrics.process.rss }}</div>
+      <div class="mx-sub">worker pid {{ metrics.process.pid }} · up {{ metrics.process.uptime }}</div>
+    </div>
+    <div class="mx-card">
+      <h3>System memory</h3>
+      <div class="mx-value">{% if metrics.system.memory_used_percent is not None %}{{ metrics.system.memory_used_percent }}%{% else %}n/a{% endif %}</div>
+      <div class="mx-sub">{{ metrics.system.memory_available }} free of {{ metrics.system.memory_total }}</div>
+      {% if metrics.system.memory_used_percent is not None %}
+      <div class="mx-bar {% if metrics.system.memory_used_percent > 90 %}crit{% elif metrics.system.memory_used_percent > 75 %}warn{% endif %}">
+        <span style="width: {{ metrics.system.memory_used_percent }}%"></span>
+      </div>
+      {% endif %}
+    </div>
+    <div class="mx-card">
+      <h3>CPU load (1m)</h3>
+      <div class="mx-value">{{ metrics.system.load_1m|default:"n/a" }}</div>
+      <div class="mx-sub">{{ metrics.system.cpu_count }} core(s)</div>
+    </div>
+    <div class="mx-card">
+      <h3>Build</h3>
+      <div class="mx-value" style="font-size:18px">{{ metrics.process.git_sha }}</div>
+      <div class="mx-sub">Python {{ metrics.process.python }} · Django {{ metrics.process.django }}</div>
+    </div>
+  </div>
+
+  <div class="mx-section">Database</div>
+  <div class="mx-grid">
+    <div class="mx-card">
+      <h3>Latency</h3>
+      <div class="mx-value">{{ metrics.database.latency_ms }} ms</div>
+      <div class="mx-sub">SELECT 1 round-trip ({{ metrics.database.vendor }})</div>
+    </div>
+    <div class="mx-card">
+      <h3>Size</h3>
+      <div class="mx-value">{{ metrics.database.size }}</div>
+    </div>
+    <div class="mx-card">
+      <h3>Content</h3>
+      <div class="mx-value">{{ metrics.content.threads }}</div>
+      <div class="mx-sub">
+        threads · {{ metrics.content.replies }} replies ·
+        {{ metrics.content.reactions }} reactions ·
+        {{ metrics.content.media_files }} media
+      </div>
+    </div>
+    <div class="mx-card">
+      <h3>Moderation</h3>
+      <div class="mx-value">{{ metrics.content.open_reports }}</div>
+      <div class="mx-sub">open reports · {{ metrics.content.soft_deleted }} soft-deleted rows awaiting the GC</div>
+    </div>
+  </div>
+
+  <div class="mx-section">Scheduled jobs</div>
+  <div class="mx-grid">
+    <div class="mx-card">
+      <h3>Momentum (every 30 min)</h3>
+      {% with run=metrics.jobs.momentum %}
+        {% if run %}
+          <div class="mx-value {% if run.was_successful %}mx-ok{% else %}mx-fail{% endif %}" style="font-size:18px">
+            {% if run.was_successful %}OK{% else %}FAILED{% endif %}
+          </div>
+          <div class="mx-sub">
+            {{ run.create_at }} · {{ run.duration_ms }} ms ·
+            {{ run.processed_count }} processed / {{ run.updated_count }} updated
+          </div>
+        {% else %}
+          <div class="mx-value" style="font-size:18px">no runs yet</div>
+        {% endif %}
+      {% endwith %}
+    </div>
+    <div class="mx-card">
+      <h3>Garbage collector (every 2 days)</h3>
+      {% with run=metrics.jobs.purge %}
+        {% if run %}
+          <div class="mx-value {% if run.was_successful %}mx-ok{% else %}mx-fail{% endif %}" style="font-size:18px">
+            {% if run.was_successful %}OK{% else %}FAILED{% endif %}
+          </div>
+          <div class="mx-sub">
+            {{ run.create_at }} · {{ run.selected_count }} selected /
+            {{ run.deleted_count }} deleted · {{ run.files_removed }} files removed
+          </div>
+        {% else %}
+          <div class="mx-value" style="font-size:18px">no runs yet</div>
+        {% endif %}
+      {% endwith %}
+    </div>
+  </div>
+</div>
+{% endblock %}

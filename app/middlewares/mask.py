@@ -6,6 +6,7 @@ from app.models.mask import Mask
 
 # Libs
 from app.methods.location import get_country
+from app.methods.presence import mark_online
 
 
 class MaskMiddleware:
@@ -44,6 +45,9 @@ class MaskMiddleware:
             obj.save()
 
         request.mask = obj
+        # Passive presence: every request the user makes IS the heartbeat.
+        # Ephemeral cache-only marking (60 s TTL) — see app/methods/presence.
+        mark_online(obj.hash)
 
         response = self.get_response(request)
         return response
