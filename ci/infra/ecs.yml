@@ -1,12 +1,11 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Thiup backend infrastructure: a Fargate ECS service with TWO ingress paths
-  during the tunnel migration — a Cloudflare Tunnel (cloudflared sidecar,
-  outbound-only, stable tunnel ID independent of deploys/IPs) and the legacy
-  public ALB (to be removed once the tunnel hostname is verified; it is the
-  main fixed cost). Uses the default VPC and an EXTERNAL PostgreSQL (no RDS
-  created here). Only ONE backend secret (SecretKey); API_SECRET_KEY is
-  derived from it at boot.
+  Thiup backend infrastructure: a Fargate ECS service whose ONLY ingress is a
+  Cloudflare Tunnel (cloudflared sidecar, outbound-only connection; the tunnel
+  ID — and therefore DNS — is independent of deploys and task IPs). No load
+  balancer, no inbound security-group rules, no open ports. Uses the default
+  VPC and an EXTERNAL PostgreSQL (no RDS created here). Only ONE backend
+  secret (SecretKey); API_SECRET_KEY is derived from it at boot.
 
 # Console display order/grouping for the create/update-stack form (without this,
 # the console lists parameters alphabetically).
@@ -38,7 +37,7 @@ Parameters:
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet::Id
-    Description: Second public subnet, in a DIFFERENT Availability Zone than PublicSubnet1. The ALB requires two AZs.
+    Description: Second public subnet, ideally in a DIFFERENT Availability Zone than PublicSubnet1 (lets tasks land in either AZ).
 
   ImageRepoName:
     Type: String
@@ -79,9 +78,11 @@ Parameters:
     Type: String
     Default: "*"
     Description: >
-      Django ALLOWED_HOSTS. Keep "*" initially (ALB health checks send the task's
-      private IP as Host; a narrow list 400s them). Later add your Cloudflare
-      subdomain, e.g. api.tudominio.com.
+      Django ALLOWED_HOSTS. With tunnel-only ingress this can finally be
+      tightened: set it to your API hostname PLUS 127.0.0.1 (the container
+      health check hits http://127.0.0.1:8000/health/ — without it, Django
+      400s the probe and ECS cycles the task). Example:
+      api.tudominio.com,127.0.0.1,localhost. "*" also still works.
 
   EncryptedResponse:
     Type: String
@@ -242,75 +243,15 @@ Resources:
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
 
-  # ---- Security groups ----
-  AlbSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: !Sub "${AWS::StackName} ALB - public HTTP"
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: Public HTTP
-
+  # ---- Security group ----
+  # NO ingress rules on purpose: the only way in is the Cloudflare Tunnel,
+  # which the cloudflared sidecar opens OUTBOUND (default egress is open).
+  # Nothing on the internet — or even inside the VPC — can dial the task.
   ServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub "${AWS::StackName} service - traffic from ALB only"
+      GroupDescription: !Sub "${AWS::StackName} service - no inbound (tunnel-only ingress)"
       VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 8000
-          ToPort: 8000
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
-          Description: From ALB to container
-
-  # ---- Application Load Balancer ----
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Name: !Sub "${AWS::StackName}-alb"
-      Type: application
-      Scheme: internet-facing
-      Subnets:
-        - !Ref PublicSubnet1
-        - !Ref PublicSubnet2
-      SecurityGroups:
-        - !Ref AlbSecurityGroup
-
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Name: !Sub "${AWS::StackName}-tg"
-      VpcId: !Ref VpcId
-      TargetType: ip
-      Protocol: HTTP
-      Port: 8000
-      HealthCheckProtocol: HTTP
-      HealthCheckPath: /health/
-      # 30 s halves the health-check request/log volume vs 15 s; with
-      # HealthyThresholdCount=2 a new task still turns healthy in ~1 min.
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 5
-      HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 3
-      Matcher:
-        HttpCode: "200"
-      TargetGroupAttributes:
-        - Key: deregistration_delay.timeout_seconds
-          Value: "30"
-
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Protocol: HTTP
-      Port: 80
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
 
   # ---- Config in SSM Parameter Store (editable in the AWS console) ----
   # Seeded from the stack parameters on create; afterwards edit the VALUES in
@@ -429,13 +370,13 @@ Resources:
           PortMappings:
             - ContainerPort: 8000
               Protocol: tcp
-          # Container-level health check: with ingress moving to the tunnel
-          # there is no ALB probing /health/, so ECS itself must detect a
-          # wedged gunicorn (the deployment circuit breaker consumes this
-          # signal too). The slim image has no curl — urllib raises on any
-          # non-2xx. StartPeriod covers Django boot AND the scheduled momentum
-          # runs: their command override leaves no gunicorn listening, but
-          # those tasks exit within seconds, long before failures count.
+          # Container-level health check: the tunnel has no load balancer
+          # probing /health/, so ECS itself must detect a wedged gunicorn
+          # (the deployment circuit breaker consumes this signal too). The
+          # slim image has no curl — urllib raises on any non-2xx.
+          # StartPeriod covers Django boot AND the scheduled momentum runs:
+          # their command override leaves no gunicorn listening, but those
+          # tasks exit within seconds, long before failures count.
           HealthCheck:
             Command:
               - CMD-SHELL
@@ -518,38 +459,40 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: cloudflared
 
-  # ---- ECS service (fronted by the ALB) ----
+  # ---- ECS service (ingress via the Cloudflare Tunnel sidecar) ----
   Service:
     Type: AWS::ECS::Service
-    DependsOn: Listener
     Properties:
-      ServiceName: !Sub "${AWS::StackName}-svc"
+      # "-svc-v2": the original "-svc" was created ATTACHED to the ALB and
+      # detaching it in place failed (the update kept the target-group wiring
+      # while the SG closed -> ALB health checks timed out -> deployment
+      # circuit breaker). A new ServiceName forces REPLACEMENT: CFN creates
+      # this LB-free service first, then deletes the old one on cleanup.
+      # Applied in two steps — see "ALB removal runbook" in ci/infra/README.md.
+      ServiceName: !Sub "${AWS::StackName}-svc-v2"
       Cluster: !Ref Cluster
       LaunchType: FARGATE
       DesiredCount: !Ref DesiredCount
       TaskDefinition: !Ref TaskDefinition
-      # Give Django time to boot before unhealthy checks count against the task.
-      HealthCheckGracePeriodSeconds: 120
       DeploymentConfiguration:
         MinimumHealthyPercent: 100
         MaximumPercent: 200
-        # Auto-roll back a deploy that never becomes healthy.
+        # Auto-roll back a deploy that never becomes healthy. Health now comes
+        # from the web container's own health check (task def), not an ALB.
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true
       NetworkConfiguration:
         AwsvpcConfiguration:
-          # Public subnets + public IP so the task can pull from ECR without a NAT.
+          # Public subnets + public IP: EGRESS only (pull from ECR without a
+          # NAT, reach the DB and Cloudflare's edge). Nothing dials in — the
+          # security group has no ingress rules.
           AssignPublicIp: ENABLED
           Subnets:
             - !Ref PublicSubnet1
             - !Ref PublicSubnet2
           SecurityGroups:
             - !Ref ServiceSecurityGroup
-      LoadBalancers:
-        - ContainerName: web
-          ContainerPort: 8000
-          TargetGroupArn: !Ref TargetGroup
 
   # ---- Momentum recompute: EventBridge Scheduler -> ephemeral Fargate task ----
   # Replaces the old Celery beat + RabbitMQ. Every 30 min the scheduler launches
@@ -771,13 +714,11 @@ Outputs:
     Description: Set this as SERVICE in the CodeBuild project env.
     Value: !GetAtt Service.Name
 
-  LoadBalancerDNS:
-    Description: ALB DNS name. CNAME your Cloudflare subdomain to THIS value.
-    Value: !GetAtt LoadBalancer.DNSName
-
-  LoadBalancerURL:
-    Description: Stable public URL of the app (does not change between deploys).
-    Value: !Sub "http://${LoadBalancer.DNSName}"
+  TunnelConsole:
+    Description: >
+      Ingress is a Cloudflare Tunnel — the public hostname -> localhost:8000
+      routes live here (Zero Trust -> Networks -> Tunnels), not in AWS.
+    Value: "https://one.dash.cloudflare.com/"
 
   MomentumScheduleName:
     Description: EventBridge schedule that runs recompute_momentum.

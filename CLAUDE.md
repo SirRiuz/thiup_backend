@@ -125,7 +125,7 @@ Legend — **Enc**: response encrypted when `ENCRYPTED_RESPONSE=True` (global re
 |---|---|---|---|---|---|---|
 | GET | `/config/` | `ConfigView` (`config.py`) | Transport flags: `{encrypted_response, single_request_protect}` | yes | no (AllowAny) | no (bootstrap) |
 | GET | `/ticket/` | `TicketView` (`ticket.py`) | Issues client-assertion JWT (anon throttle 120/min) | yes | no (AllowAny) | no (bootstrap) |
-| GET | `/health/` | `HealthCheckView` (`health.py`) | Liveness probe → 200 `{"status":"ok"}` (no DB) | yes | no (AllowAny — the ALB checker can't send a ticket) | yes |
+| GET | `/health/` | `HealthCheckView` (`health.py`) | Liveness probe → 200 `{"status":"ok"}` (no DB) | yes | no (AllowAny — the ECS container health check can't send a ticket) | yes |
 | GET | `/me/` | `CurrentMaskView` (`masks.py`) | Current mask: `{mask_id, country_code}` | yes | yes | yes |
 | GET/POST | `/threads/` | `ThreadsViewSet` (`threads.py`) | List (`?q=`, `?tag=`) / create thread | yes | yes | yes |
 | GET | `/threads/<uid>/` | 〃 | Thread detail | yes | yes | yes |
@@ -211,8 +211,8 @@ make test
 ```
 
 - Local stack (`make up`): postgres:15 (host port **5433**), `runserver` with autoreload,
-  migration, momentum loop, nginx. Production is AWS ECS/Fargate (gunicorn, external DB,
-  momentum via EventBridge) — not docker-compose. Entry point: nginx on `SERVER_PORT`
+  migration, momentum loop, nginx. Production is AWS ECS/Fargate — not docker-compose
+  (see "Production infrastructure" below). Local entry point: nginx on `SERVER_PORT`
   (default 8080).
 - Useful targets (see `make help`): `make shell`, `make shell-db` (psql), `make logs-web`,
   `make add_dummy_threads`, `make recompute_momentum`, `make validate-config`,
@@ -224,12 +224,48 @@ make test
 - Python 3.12 (Docker image). `app/` directory does all the work; `media/` and `staticfiles/`
   are served by nginx via volumes.
 
+## Production infrastructure (AWS)
+
+One CloudFormation stack (`ci/infra/ecs.yml`) owns everything: ECS Fargate service + CodeBuild
+CI + the EventBridge momentum schedule. Full detail and runbooks: `ci/infra/README.md`. The
+load-bearing facts:
+
+- **Ingress is a Cloudflare Tunnel, not a load balancer.** A `cloudflared` sidecar in the web
+  task opens an outbound-only connection to Cloudflare's edge and forwards to gunicorn over
+  the task-local loopback (`localhost:8000`). There is **no ALB and no inbound security-group
+  rule** — the task's public IP is egress-only (ECR/DB/Cloudflare). The hostname →
+  `localhost:8000` routing lives in the Cloudflare Zero Trust dashboard; the only AWS-side
+  piece is the connector token (Secrets Manager `/<stack>/TUNNEL_TOKEN`). The tunnel ID (and
+  DNS) never changes across deploys — connectors self-register, rolling deploys overlap two
+  connectors, zero downtime.
+- **Client IP arrives in `X-Forwarded-For` (set by Cloudflare, first entry);** `REMOTE_ADDR`
+  is the loopback. Mask identity, honeypot blacklisting and GeoIP all rely on that first XFF
+  entry (`app/middlewares/mask.py`, `app/utils/client.py`) — same value as the old ALB path,
+  so masks survived the migration. With no direct path to gunicorn, XFF is not spoofable.
+- **Health is the container-level health check** (python urllib against
+  `http://127.0.0.1:8000/health/`; the slim image has no curl). If `ALLOWED_HOSTS` is ever
+  tightened from `"*"`, it MUST include `127.0.0.1` or ECS cycles the task on 400s.
+- **Golden rule for one-off RunTasks** (momentum, collectstatic, migrate, or anything new):
+  override the `cloudflared` container command to `["version"]` so the ephemeral task never
+  registers as a live tunnel connector with no gunicorn behind it (502s). The momentum
+  schedule `Input`, `ecs-deploy run_ephemeral` and `automigrate.py` already do this; copy
+  that pattern. The sidecar is `Essential: false` (ephemeral tasks can exit) with a
+  `RestartPolicy` (crashed connector restarts in place; exit 0 ignored).
+- **Cost frugality is a design constraint** (~$17/mo total; it was $41 before the ALB was
+  removed): smallest Fargate size (0.25 vCPU / 512 MB — the app runs at ~84 MB with 1
+  gunicorn worker), momentum every 30 min (each tick is a billed ephemeral task), multi-stage
+  slim image (564 MB vs 1.15 GB — Fargate bills from pull start, and momentum pays that pull
+  every tick; don't add system packages to the runtime stage). Don't reintroduce a load
+  balancer, NAT gateway, or always-on machinery; cost knobs and history are in
+  `ci/infra/README.md`.
+
 ## Constraints
 
-- **Raspberry Pi**: ~1–2 gunicorn gthread workers × 4 threads (prod image defaults to 1 on a
-  0.25 vCPU / 512 MB Fargate task; override with `GUNICORN_WORKERS`), `max_requests` recycling,
-  `CONN_MAX_AGE=60`, sparse logging (SD card). No Redis, no Celery, no RabbitMQ. Expensive
-  computation goes into the 30-min ephemeral scheduled command, never the request path.
+- **Raspberry Pi frugality**: ~1–2 gunicorn gthread workers × 4 threads (prod image defaults
+  to 1 on the 0.25 vCPU / 512 MB Fargate task; override with `GUNICORN_WORKERS`),
+  `max_requests` recycling, `CONN_MAX_AGE=60`, sparse logging (SD card). No Redis, no Celery,
+  no RabbitMQ. Expensive computation goes into the 30-min ephemeral scheduled command, never
+  the request path.
 - **Privacy**: search queries, feed personalization inputs and geolocation are ephemeral — never
   log or persist them, never echo them in error messages. Only **public** identifiers (`uid`,
   mask `hash` prefix) leave the API; internal UUIDs stay internal. No raw coordinates, no

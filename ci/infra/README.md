@@ -4,11 +4,15 @@ One CloudFormation stack that provisions the whole backend runtime **and** its
 CodeBuild CI:
 
 ```
-Internet → ALB (stable DNS) → Fargate ECS service (gunicorn)
+Internet → Cloudflare edge → Tunnel ← cloudflared sidecar → gunicorn (same Fargate task, localhost)
                                    ├─ static/media served from an external S3-compatible bucket (Cloudflare R2)
                                    └─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 30 min)
 CI: CodeBuild project (build image → collectstatic to the bucket → deploy) — role fully permissioned
 ```
+
+No load balancer and no inbound security-group rules: ingress is the Cloudflare
+Tunnel only (see the Tunnel section below). DNS points at the tunnel ID
+(`<TUNNEL_ID>.cfargotunnel.com`), which never changes across deploys.
 
 - Uses the account's **default VPC** + **2 public subnets** (no VPC/RDS created).
 - **External PostgreSQL** (you provide host/credentials).
@@ -66,11 +70,13 @@ project bound to the old connection (including older ones).
 
 ## Prerequisites
 
-- A **default VPC** with at least **2 public subnets in different AZs** (the ALB
-  requires two AZs).
+- A **default VPC** with **2 public subnets** (different AZs preferred, so tasks
+  can land in either).
 - An **external PostgreSQL** reachable from the default VPC (its security group /
-  firewall must allow `5432` from the tasks). If unreachable, the ALB target stays
-  *unhealthy* (`/health/` does a `SELECT 1`).
+  firewall must allow `5432` from the tasks).
+- A **Cloudflare Tunnel** already created (Zero Trust → Networks → Tunnels) with
+  a published application route `your-api-hostname → http://localhost:8000`, and
+  its **connector token** at hand (the `TunnelToken` stack parameter).
 - The **GitHub App connection** already authorized (Developer Tools → Settings →
   Connections), status *Available*.
 - The **ECR repository** `thiup-backend` already exists (the stack does not create it).
@@ -82,7 +88,8 @@ project bound to the old connection (including older ones).
 3. Fill parameters (see below). Acknowledge **IAM capabilities**. **Submit**.
 4. On **CREATE_COMPLETE**, do the **manual GitHub steps** above (connect GitHub + webhook).
 5. Trigger a build in `…-ci` (or push). Pipeline: **build → collectstatic → deploy**.
-6. Open the app at the **`LoadBalancerURL`** output.
+6. Open the app at the **tunnel hostname** (the published application route in
+   the Cloudflare Zero Trust dashboard — there is no AWS URL).
 
 ### Key parameters
 
@@ -91,6 +98,7 @@ project bound to the old connection (including older ones).
 | `VpcId`, `PublicSubnet1`, `PublicSubnet2` | Default VPC + 2 subnets in **different AZs**. |
 | `SecretKey` | The only backend secret (`API_SECRET_KEY` is derived). NoEcho. |
 | `GatewaySeed` | **Required.** Public obfuscation; must match the frontend's `REACT_APP_GATEWAY_SEED`. |
+| `TunnelToken` | **Required.** Cloudflare Tunnel connector token (`eyJ...`). NoEcho → Secrets Manager. |
 | `InternalAdminUrl` | Obfuscated admin path, ends with `/`, not `admin/`. |
 | `DatabaseHost/Name/User/Password/Port` | Your external Postgres. |
 | `StorageBucketName` / `StoragePublicDomain` | Bucket name + its public domain (R2). |
@@ -260,13 +268,25 @@ hostname → service mapping lives in the **Cloudflare Zero Trust dashboard**
   run_ephemeral` and `automigrate.py` already do this (conditionally, so they
   also work on pre-tunnel task defs).
 
-**Migration status / phase 2:** the ALB (+ its 2 public IPv4s, ~$24/mo) is still
-in the template so the tunnel can be verified on a test hostname first. Once the
-real API hostname is flipped to the tunnel (CNAME → `<TUNNEL_ID>.cfargotunnel.com`),
-remove `LoadBalancer`, `TargetGroup`, `Listener`, `AlbSecurityGroup`, the
-service's `LoadBalancers`/`HealthCheckGracePeriodSeconds` and the
-`ServiceSecurityGroup` ingress rule (no inbound needed at all) — the container
-health check on `web` replaces the ALB target health check.
+**History / ALB removal runbook:** ingress used to be a public ALB (+ 2 public
+IPv4s, ~$24/mo of fixed cost). Removing it in ONE stack update fails: CFN
+closes the security group before the service lets go of the target group, the
+ALB health checks time out and the deployment circuit breaker rolls everything
+back. The working sequence is TWO updates:
+
+1. **`ecs-transition-alb-detach.yml`** — replaces the service (`-svc` →
+   `-svc-v2`, no `LoadBalancers`) while keeping the ALB stack and the security
+   group EXACTLY as deployed. CFN creates the LB-free service first (its
+   cloudflared connector joins the tunnel alongside the old one → zero
+   downtime), then deletes the old service on cleanup.
+2. **`ecs.yml`** — deletes `LoadBalancer`/`TargetGroup`/`Listener`/
+   `AlbSecurityGroup` and closes the service security group (no inbound at
+   all). Nothing is attached to the target group anymore, so no health check
+   can object. The `web` container's own health check replaced the ALB target
+   health check back in step 1 (it ships in the task definition).
+
+The transition template was deleted after the migration completed (recover it
+from git history if a future stack ever needs the same two-step detach).
 
 ## Momentum (For You ranking)
 
@@ -275,6 +295,39 @@ ephemeral Fargate task (same task definition, command overridden). The `deploy` 
 re-points the schedule at the **deployed immutable revision** (after `migrate`), so
 the cron runs exactly the deployed, already-migrated code — no pre-migration window.
 No broker/worker.
+
+## Cost profile
+
+Cost is a design constraint: one user shouldn't pay for idle enterprise plumbing.
+The stack was rebuilt around that in July 2026 — **~$41/mo → ~$17/mo**:
+
+| Removed / reduced | Saving |
+|---|---|
+| ALB (fixed hourly) + its 2 public IPv4s → replaced by the Cloudflare Tunnel (free) | ~$24/mo |
+| Web task 0.5 vCPU / 1 GB → **0.25 vCPU / 512 MB** (app measured at ~84 MB RSS, 1 gunicorn worker) | ~$7/mo |
+| Momentum `rate(10 minutes)` → `rate(30 minutes)` + image 1.15 GB → 564 MB (multi-stage `ci/aws.Dockerfile`) | ~$1–2/mo |
+
+What still bills (approx., us-east-1): the 24/7 web task ~$10.6 · the task's
+egress IPv4 $3.65 · momentum ticks ~$0.5 · Secrets Manager (5 × $0.40) $2 ·
+logs/ECR ~$0.5.
+
+**Cost knobs** (in order of impact):
+
+- `TaskCpu`/`TaskMemory` — the 24/7 task is the biggest line. Bump only with
+  measured pressure (rule: measure before optimizing).
+- **Fargate Spot** for the web service: ~−70% (~$10.6 → ~$3). Not applied yet;
+  requires a capacity-provider strategy — reuse the two-step service-replacement
+  pattern from the ALB runbook above.
+- `MomentumScheduleExpression` — each tick is a billed ephemeral task that also
+  pays the image pull (Fargate bills from pull start). Keep the image slim: do
+  NOT add system packages to the runtime stage of `ci/aws.Dockerfile`.
+- Secrets Manager → SSM SecureString would save ~$2/mo (manual: CFN can't create
+  SecureString params; re-map the task-def ARNs).
+- ECR: immutable `:SHA` tags accumulate ($0.10/GB/mo). A lifecycle policy keeping
+  the last ~10 images caps it (the repo is external to the stack).
+
+Anti-goals: no load balancer, no NAT gateway, no Redis/broker/always-on workers
+(see CLAUDE.md). Verify spend with Cost Explorer's daily by-service breakdown.
 
 ## Teardown
 
@@ -293,5 +346,6 @@ reused). The ECR repo and the external DB are untouched too.
 | `DOWNLOAD_SOURCE`: *Access denied to connection* | Role missing `UseConnection` (it's in the template — update the stack). |
 | `CreateWebhook` / `PassConnection` *not authorized* | SCP blocks it — do the webhook by hand (step 2). |
 | Build `429 Too Many Requests` pulling python image | Base image already uses ECR Public; if it recurs, it's a different pull. |
-| ALB target **unhealthy** | DB unreachable (open `5432` from the VPC) or app boot env missing. Logs: `/ecs/<stack>-web`. |
+| Task keeps restarting (**unhealthy**) | Container health check failing: DB unreachable (open `5432` from the VPC), app boot env missing, or `ALLOWED_HOSTS` missing `127.0.0.1`. Logs: `/ecs/<stack>-web`. |
+| Tunnel **DOWN** / 502 from Cloudflare | No connector: cloudflared sidecar not running or `TUNNEL_TOKEN` invalid/rotated — check the `cloudflared` log stream and the Zero Trust dashboard. |
 | `collectstatic` `AccessDenied ecs:RunTask` | CodeBuild role — included in template; update the stack. |

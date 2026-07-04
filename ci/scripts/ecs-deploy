@@ -308,12 +308,9 @@ deploy() {
   fi
 
   echo ""
-  echo "Deployment complete. App is reachable at:"
-  if [[ -n "$CONTAINER_PORT" ]]; then
-    echo "    http://${PUBLIC_IP}:${CONTAINER_PORT}"
-  else
-    echo "    http://${PUBLIC_IP}"
-  fi
+  echo "Deployment complete. Ingress is served by the Cloudflare Tunnel (the"
+  echo "hostname routes live in the Zero Trust dashboard, not in AWS)."
+  echo "Task egress-only public IP (no inbound rules): ${PUBLIC_IP}"
 }
 
 # --- Main program ---
