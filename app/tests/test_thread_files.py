@@ -55,6 +55,8 @@ class FakeBackend:
     def __init__(self, exists=True, content_length=81000):
         self._exists = exists
         self._content_length = content_length
+        self.deleted = []
+        self.batch_calls = 0
 
     def generate_upload(self, key, content_type, expires=None, base_url=None):
         return {
@@ -73,6 +75,15 @@ class FakeBackend:
 
     def public_url(self, key, base_url=None):
         return f"https://cdn.test/{key}"
+
+    def delete_object(self, key):
+        self.deleted.append(key)
+        return True
+
+    def delete_objects(self, keys):
+        self.batch_calls += 1
+        self.deleted.extend(keys)
+        return len(keys)
 
 
 @override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False)
@@ -293,3 +304,61 @@ class ThreadMediaSerializerTests(TestCase):
         data = ThreadMediaSerializer(record).data
         self.assertEqual(data["width"], 0)
         self.assertEqual(data["height"], 0)
+
+
+class ThreadFileStorageCleanupTest(TestCase):
+    """Deleting a ThreadFile row must also remove its object from storage
+    (post_delete signal -> StorageBackend.delete_object), for EVERY deletion
+    path. Soft-delete keeps the binary."""
+
+    # The signal resolves the adapter lazily from storage_backends; patch there.
+    SIGNAL_GET_BACKEND = "app.methods.storage_backends.get_backend"
+
+    def setUp(self):
+        self.backend = FakeBackend()
+        patcher = mock.patch(self.SIGNAL_GET_BACKEND, return_value=self.backend)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _make_file(self, key="m/ab/cd/token.webp", thread=None):
+        return ThreadFile.objects.create(
+            file_key=key, file_url=f"https://cdn.test/{key}", thread=thread)
+
+    def test_instance_delete_removes_storage_object(self):
+        record = self._make_file()
+        record.delete()
+        self.assertEqual(self.backend.deleted, ["m/ab/cd/token.webp"])
+
+    def test_thread_cascade_delete_removes_storage_object(self):
+        thread = Thread.objects.create(text="hola mundo", content={})
+        self._make_file(key="m/xy/zz/cascade.webp", thread=thread)
+        thread.delete()
+        self.assertEqual(self.backend.deleted, ["m/xy/zz/cascade.webp"])
+
+    def test_queryset_bulk_delete_removes_every_object(self):
+        self._make_file(key="m/aa/aa/one.webp")
+        self._make_file(key="m/bb/bb/two.webp")
+        ThreadFile.objects.all().delete()
+        self.assertEqual(
+            sorted(self.backend.deleted),
+            ["m/aa/aa/one.webp", "m/bb/bb/two.webp"],
+        )
+
+    def test_empty_file_key_never_touches_storage(self):
+        record = ThreadFile.objects.create(file_key="")
+        record.delete()
+        self.assertEqual(self.backend.deleted, [])
+
+    def test_storage_failure_does_not_block_the_row_delete(self):
+        record = self._make_file(key="m/cc/cc/flaky.webp")
+        with mock.patch.object(
+            self.backend, "delete_object", side_effect=RuntimeError("boom")):
+            record.delete()
+        self.assertFalse(
+            ThreadFile.objects.filter(pk=record.pk).exists())
+
+    def test_soft_delete_keeps_the_storage_object(self):
+        record = self._make_file(key="m/dd/dd/kept.webp")
+        record.disable()
+        self.assertEqual(self.backend.deleted, [])
+        self.assertFalse(ThreadFile.objects.get(pk=record.pk).is_active)

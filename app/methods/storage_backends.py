@@ -64,6 +64,17 @@ class StorageBackend:
         """-> public URL to serve the object."""
         raise NotImplementedError
 
+    def delete_object(self, key):
+        """Permanently remove the object from storage (idempotent)."""
+        raise NotImplementedError
+
+    def delete_objects(self, keys):
+        """Batch removal. Default: per-key fallback so every backend works;
+        backends with a real batch API (R2/S3 DeleteObjects) override it."""
+        for key in keys:
+            self.delete_object(key)
+        return len(keys)
+
 
 class R2StorageBackend(StorageBackend):
     """S3-compatible (Cloudflare R2). Real presigned PUT + head_object. Uses the
@@ -83,6 +94,12 @@ class R2StorageBackend(StorageBackend):
 
     def public_url(self, key, base_url=None):
         return object_storage.public_url(key)
+
+    def delete_object(self, key):
+        return object_storage.delete_object(key)
+
+    def delete_objects(self, keys):
+        return object_storage.delete_objects(list(keys))
 
 
 class LocalStorageBackend(StorageBackend):
@@ -119,6 +136,13 @@ class LocalStorageBackend(StorageBackend):
 
     def public_url(self, key, base_url=None):
         return f"{self._base(base_url)}{settings.MEDIA_URL}{key}"
+
+    def delete_object(self, key):
+        # Mirror R2's idempotency: deleting a missing file is not an error.
+        path = local_path(key)
+        if path and os.path.exists(path):
+            os.remove(path)
+        return True
 
 
 # Backend selection.

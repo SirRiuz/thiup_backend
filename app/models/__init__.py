@@ -9,5 +9,6 @@ from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
 from app.models.momentum_log import MomentumLog
+from app.models.purge_log import PurgeLog
 from app.models.trending_tag import TrendingTag
 from app.models.report import Report

@@ -6,7 +6,8 @@ CodeBuild CI:
 ```
 Internet → Cloudflare edge → Tunnel ← cloudflared sidecar → gunicorn (same Fargate task, localhost)
                                    ├─ static/media served from an external S3-compatible bucket (Cloudflare R2)
-                                   └─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 30 min)
+                                   ├─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 30 min)
+                                   └─ garbage collector (purge_inactive): EventBridge Scheduler → ephemeral Fargate task (every 2 days)
 CI: CodeBuild project (build image → collectstatic to the bucket → deploy) — role fully permissioned
 ```
 
@@ -105,6 +106,7 @@ project bound to the old connection (including older ones).
 | `StorageEndpointUrl` | R2: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. |
 | `StorageAccessKeyId` / `StorageSecretAccessKey` | R2 API token keys. NoEcho. |
 | `MomentumScheduleExpression` | Default `rate(30 minutes)` — each tick is a billed ephemeral task, so the cadence is a cost knob. |
+| `PurgeScheduleExpression` | Default `rate(2 days)` — garbage collector (`purge_inactive`). |
 
 Static port is fixed at **8000** (not a parameter). The image tag is fixed too: the
 service boots from `:latest` and the deploy pins it to an immutable `:SHA` (no
@@ -295,6 +297,18 @@ ephemeral Fargate task (same task definition, command overridden). The `deploy` 
 re-points the schedule at the **deployed immutable revision** (after `migrate`), so
 the cron runs exactly the deployed, already-migrated code — no pre-migration window.
 No broker/worker.
+
+## Garbage collector (purge_inactive)
+
+Same ephemeral pattern, **every 2 days** (`PurgeSchedule`, 1-hour flexible window —
+punctuality is irrelevant for a GC): `python manage.py purge_inactive` hard-deletes
+rows soft-deleted (`is_active=False`) more than 24 h ago, oldest first, max 1000 per
+run, from an **opt-in model registry** (see the command + CLAUDE.md for what is
+excluded and why). I/O-frugal: one select + one delete per model, and every doomed
+storage object is removed with ONE batched `DeleteObjects` request against R2. Each
+run writes a `PurgeLog` row (read-only in the admin) with counts, per-model breakdown
+and errors. The `deploy` step re-points BOTH schedules (`--schedule` takes a
+comma-separated list) at the deployed revision.
 
 ## Cost profile
 

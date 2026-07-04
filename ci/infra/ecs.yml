@@ -15,7 +15,7 @@ Metadata:
       - Label: { default: "Network" }
         Parameters: [VpcId, PublicSubnet1, PublicSubnet2]
       - Label: { default: "Image & scaling" }
-        Parameters: [ImageRepoName, DesiredCount, TaskCpu, TaskMemory, MomentumScheduleExpression]
+        Parameters: [ImageRepoName, DesiredCount, TaskCpu, TaskMemory, MomentumScheduleExpression, PurgeScheduleExpression]
       - Label: { default: "Cloudflare Tunnel" }
         Parameters: [TunnelToken]
       - Label: { default: "Application config" }
@@ -59,6 +59,14 @@ Parameters:
   # Smallest Fargate size (0.25 vCPU / 512 MB). The whole web app is ~50 MB PSS
   # with 1 gunicorn worker, so 512 MB leaves ample headroom; the task runs 24/7,
   # making its size the main ECS cost knob. Bump only with measured pressure.
+  PurgeScheduleExpression:
+    Type: String
+    Default: "rate(2 days)"
+    Description: >
+      How often the garbage collector (purge_inactive) hard-deletes
+      soft-deleted rows (EventBridge Scheduler -> ephemeral Fargate task,
+      same pattern as momentum).
+
   TaskCpu:
     Type: String
     Default: "256"
@@ -573,6 +581,45 @@ Resources:
         Input: !Sub |
           {"containerOverrides":[{"name":"web","command":["python","manage.py","recompute_momentum"]},{"name":"cloudflared","command":["version"]}]}
 
+  # ---- Garbage collector: same ephemeral pattern as momentum, every 2 days.
+  # Hard-deletes rows soft-deleted >24h ago (opt-in model registry, 1000 rows
+  # per run) — ThreadFile deletions also remove the object from storage.
+  PurgeSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-purge"
+      Description: Hard-delete soft-deleted rows every 2 days (ephemeral Fargate task).
+      ScheduleExpression: !Ref PurgeScheduleExpression
+      ScheduleExpressionTimezone: UTC
+      State: ENABLED
+      # A one-hour flex window is fine here (unlike momentum, punctuality is
+      # irrelevant for a GC) and lets the scheduler pick a cheap moment.
+      FlexibleTimeWindow:
+        Mode: FLEXIBLE
+        MaximumWindowInMinutes: 60
+      Target:
+        Arn: !GetAtt Cluster.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        # Idempotent: a missed run is recovered by the next one.
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+        EcsParameters:
+          TaskDefinitionArn: !Ref TaskDefinition
+          LaunchType: FARGATE
+          TaskCount: 1
+          NetworkConfiguration:
+            AwsvpcConfiguration:
+              AssignPublicIp: ENABLED
+              Subnets:
+                - !Ref PublicSubnet1
+                - !Ref PublicSubnet2
+              SecurityGroups:
+                - !Ref ServiceSecurityGroup
+        # web runs the GC; cloudflared is neutralized like in every one-off
+        # task (no gunicorn on :8000 -> must not join the tunnel).
+        Input: !Sub |
+          {"containerOverrides":[{"name":"web","command":["python","manage.py","purge_inactive"]},{"name":"cloudflared","command":["version"]}]}
+
   # ---- CI: CodeBuild project (build image -> collectstatic -> deploy) ----
   # CLUSTER/SERVICE are wired to THIS stack's resources, so they can never go
   # stale. The role carries every permission the buildspec needs (ECR, ECS
@@ -627,11 +674,14 @@ Resources:
                 Effect: Allow
                 Action: [logs:GetLogEvents, logs:FilterLogEvents]
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AWS::StackName}-web:*"
-              # deploy re-points the momentum schedule at the freshly deployed revision.
+              # deploy re-points the momentum + purge schedules at the freshly
+              # deployed revision.
               - Sid: UpdateMomentumSchedule
                 Effect: Allow
                 Action: [scheduler:GetSchedule, scheduler:UpdateSchedule]
-                Resource: !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${AWS::StackName}-momentum"
+                Resource:
+                  - !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${AWS::StackName}-momentum"
+                  - !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/${AWS::StackName}-purge"
               # update-schedule re-passes the scheduler's own role to EventBridge Scheduler.
               - Sid: PassSchedulerRole
                 Effect: Allow
@@ -691,6 +741,7 @@ Resources:
           - { Name: CLUSTER,           Value: !Ref Cluster }
           - { Name: SERVICE,           Value: !GetAtt Service.Name }
           - { Name: MOMENTUM_SCHEDULE, Value: !Sub "${AWS::StackName}-momentum" }
+          - { Name: PURGE_SCHEDULE,    Value: !Sub "${AWS::StackName}-purge" }
       Source:
         # GITHUB + BuildSpec: buildspec.yml so the build runs the repo's buildspec.
         # Location is required by CloudFormation for a GitHub source. The GitHub
@@ -723,6 +774,10 @@ Outputs:
   MomentumScheduleName:
     Description: EventBridge schedule that runs recompute_momentum.
     Value: !Ref MomentumSchedule
+
+  PurgeScheduleName:
+    Description: EventBridge schedule that runs purge_inactive (garbage collector).
+    Value: !Ref PurgeSchedule
 
   CodeBuildProjectName:
     Description: CodeBuild project for this stack's CI.

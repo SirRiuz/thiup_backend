@@ -67,8 +67,9 @@ phases:
         --cluster "$CLUSTER"
         --service "$SERVICE"
         --region "$AWS_DEFAULT_REGION"
-      # Switch the service to the new revision, re-point the momentum schedule at
-      # it (so the cron runs the deployed, already-migrated code), and wait.
+      # Switch the service to the new revision, re-point the momentum + purge
+      # schedules at it (so the crons run the deployed, already-migrated code),
+      # and wait.
       - >-
         bash ci/scripts/ecs-deploy deploy
         --cluster "$CLUSTER"
@@ -76,4 +77,4 @@ phases:
         --region "$AWS_DEFAULT_REGION"
         --timeout "$TIMEOUT"
         --port "$CONTAINER_PORT"
-        --schedule "$MOMENTUM_SCHEDULE"
+        --schedule "$MOMENTUM_SCHEDULE,$PURGE_SCHEDULE"

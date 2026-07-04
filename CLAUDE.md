@@ -40,6 +40,7 @@ All models inherit `BaseModel` (`app/models/base_model.py`): UUID `id` (internal
 | `Mask` | `mask.py` | `hash` (SHA-256 of IP, unique; first 6 hex chars are the public `@id`), `country_code` (GeoIP) |
 | `ThreadFile` | `media.py` | Media attached to a thread (file, width/height, `is_video`, `target_color`). Formats: mp4/png/jpg/jpeg |
 | `MomentumLog` | `momentum_log.py` | Audit row per momentum recompute run (counts, duration, errors) |
+| `PurgeLog` | `purge_log.py` | Audit row per garbage-collector run (rows selected/deleted, storage objects removed, per-model breakdown JSON, duration, errors). Admin: view/delete only |
 | `TrendingTag` | `trending_tag.py` | Precomputed trending tags (name, score = Σ momentum of carrying threads). Fully rewritten on each momentum run; `/search/suggest/` only reads it |
 | `LoginAttempt`, `BlackList` | `honeypot/models/` | Honeypot forensics; a post_save signal blacklists an IP after `HONEYPOT_LOGIN_TRYOUT` (default 5) attempts |
 
@@ -96,9 +97,36 @@ request: SHA-256(client IP) → get-or-create `Mask`, country resolved via the l
   table (top tags by momentum sum) and logs a `MomentumLog` row. It carries all the logic and
   needs nothing else to run.
 
+**Garbage collector (`purge_inactive`)** — hard-deletes soft-deleted rows, precomputed-style:
+- `app/management/commands/purge_inactive.py`: rows with `is_active=False` whose `update_at` is
+  older than `--min-age-hours` (default 24 — protects presigned uploads, which are *created*
+  inactive until confirm), oldest first, capped at `--limit` (default 1000) per run; cascades
+  don't count against the cap.
+- **Opt-in registry** (`PURGE_MODELS`): Thread, ThreadFile, ReactionRelation, Tag, Report.
+  Deliberately excluded: Mask (CASCADE would nuke its content), Reaction catalog, MomentumLog /
+  TrendingTag (owned by momentum), honeypot tables (deleting un-blacklists). Add models to the
+  registry consciously, never by introspection.
+- Deleting a `ThreadFile` also deletes its object from storage (R2/local) via a `post_delete`
+  signal → `StorageBackend.delete_object`; covers instance, bulk and cascade deletes. Storage
+  failures log a warning and never block the row delete. Soft-delete (`disable()`) keeps the
+  binary. Signals live in the **`app/signals/` package** (one file per domain, star-imported by
+  its `__init__`, connected via `MainAppConfig.ready()`) — add new receivers there, never inline
+  in models/views.
+- **I/O-frugal by contract** (tested with `assertNumQueries`): ONE pk-select + ONE delete per
+  registry model (cascades expand in bulk inside Django, reply subtrees walked per depth, not
+  per row), doomed `file_key`s collected up front, and ALL storage objects removed in **one
+  batched `DeleteObjects` request** (S3 API, ≤1000 keys — matching the run cap). During the run
+  the per-row signal is paused (`storage_cleanup_paused()` in `app/signals/media_signals.py`)
+  so rows fast-delete; ad-hoc deletes keep the per-row signal.
+- Every run writes a `PurgeLog` row (success metrics + per-model breakdown, or the error —
+  re-raised so the scheduler sees the failure). Read-only in the admin, like `MomentumLog`.
+- Trigger: EventBridge Scheduler **every 2 days** (same ephemeral-Fargate pattern as momentum,
+  sidecar neutralized). Locally: the `purge` docker-compose service (2-day sleep loop, mirrors
+  the `momentum` service). Manually: `make purge_inactive`.
+
 **Async stack reality check (cost-relevant)**: there is **no Redis, no Celery and no RabbitMQ** —
-they were removed. Momentum is the only background job, and it runs as an *ephemeral* scheduled
-task (see above), not on a permanent worker. This deliberately avoids the ~750 MB of always-on
+they were removed. Momentum and the every-2-days garbage collector are the only background jobs,
+and they run as *ephemeral* scheduled tasks (see above), not on permanent workers. This deliberately avoids the ~750 MB of always-on
 memory (Celery worker+beat ≈ 540–580 MB + RabbitMQ ≈ 184 MB) that a broker/worker would cost to
 run a job that takes seconds every 30 min, vs ~50 MB (PSS) for the whole web app. **Don't
 reintroduce always-on async machinery** (broker/worker/Redis); if a new background job appears,

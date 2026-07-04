@@ -293,5 +293,5 @@ class Command(BaseCommand):
         TrendingTag.objects.all().delete()
         if trending:
             TrendingTag.objects.bulk_create(trending)
-            
+
         LOGGER.info("recompute_momentum: %s trending tags", len(trending))

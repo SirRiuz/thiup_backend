@@ -154,6 +154,49 @@ services:
     networks:
       - internal
 
+  purge:
+    container_name: "${APP_NAME}_purge"
+    restart: unless-stopped
+    build:
+      context: .
+    # Local stand-in for the purge_inactive EventBridge schedule: the garbage
+    # collector runs every 2 days (mirrors the prod cadence), hard-deleting
+    # soft-deleted rows and their storage objects in ONE batched request.
+    # Same sleep-loop pattern as `momentum` — no broker, no always-on worker.
+    command: >
+      sh -c 'while true; do
+               python manage.py purge_inactive;
+               sleep 172800;
+             done'
+    environment:
+      - DATABASE_ENGINE=${DATABASE_ENGINE:-}
+      - DATABASE_HOST=${DATABASE_HOST:-}
+      - DATABASE_NAME=${DATABASE_NAME:-}
+      - DATABASE_USER=${DATABASE_USER:-}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
+      - DATABASE_PORT=${DATABASE_PORT:-}
+      - SECRET_KEY=${SECRET_KEY:-}
+      - GATEWAY_SEED=${GATEWAY_SEED:-}
+      - DEBUG=${DEBUG:-}
+      - ENCRYPTED_RESPONSE=${ENCRYPTED_RESPONSE:-}
+      - SINGLE_REQUEST_PROTECT=${SINGLE_REQUEST_PROTECT:-}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-}
+      - INTERNAL_ADMIN_URL=${INTERNAL_ADMIN_URL:-}
+      - USE_AWS_STORAGE_SYSTEM=${USE_AWS_STORAGE_SYSTEM:-}
+      - USE_AWS_STORAGE=${USE_AWS_STORAGE_SYSTEM:-}
+      - MEDIA_BASE_URL=${MEDIA_BASE_URL:-}
+    volumes:
+      - .:/app:Z
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      migration:
+        condition: service_completed_successfully
+        required: false
+    networks:
+      - internal
+
   nginx:
     image: nginx:alpine
     container_name: "${APP_NAME}_nginx"
