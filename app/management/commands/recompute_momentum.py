@@ -47,12 +47,12 @@ UPDATED_FIELDS = (
 
 class Command(BaseCommand):
     help = (
-        "Recalcula momentum_score y los contadores del For You para los "
-        "posts raíz de la ventana activa (default 30 días). Idempotente y "
-        "barato: 3 queries agregadas + bulk_update en lotes. Un scheduler "
-        "externo lo ejecuta cada 10 min (EventBridge Scheduler en prod, el "
-        "servicio `momentum` de docker-compose en local); tambien invocable a "
-        "mano para debug o backfill: make recompute_momentum"
+        "Recompute momentum_score and the For You counters for the root "
+        "posts inside the active window (default 30 days). Idempotent and "
+        "cheap: 3 aggregate queries + batched bulk_update. An external "
+        "scheduler runs it every 30 min (EventBridge Scheduler in prod, the "
+        "`momentum` docker-compose service locally); also invocable by hand "
+        "for debug or backfill: make recompute_momentum"
     )
 
     def add_arguments(self, parser):

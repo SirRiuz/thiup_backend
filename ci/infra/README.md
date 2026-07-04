@@ -6,7 +6,7 @@ CodeBuild CI:
 ```
 Internet → ALB (stable DNS) → Fargate ECS service (gunicorn)
                                    ├─ static/media served from an external S3-compatible bucket (Cloudflare R2)
-                                   └─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 10 min)
+                                   └─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 30 min)
 CI: CodeBuild project (build image → collectstatic to the bucket → deploy) — role fully permissioned
 ```
 
@@ -96,7 +96,7 @@ project bound to the old connection (including older ones).
 | `StorageBucketName` / `StoragePublicDomain` | Bucket name + its public domain (R2). |
 | `StorageEndpointUrl` | R2: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. |
 | `StorageAccessKeyId` / `StorageSecretAccessKey` | R2 API token keys. NoEcho. |
-| `MomentumScheduleExpression` | Default `rate(10 minutes)`. |
+| `MomentumScheduleExpression` | Default `rate(30 minutes)` — each tick is a billed ephemeral task, so the cadence is a cost knob. |
 
 Static port is fixed at **8000** (not a parameter). The image tag is fixed too: the
 service boots from `:latest` and the deploy pins it to an immutable `:SHA` (no
@@ -236,9 +236,41 @@ role lists the secret ARNs — add the new one, or scope it to `secret:/<stack>/
 | Make a NEW var reach the app | ✅ 1 line in task def + Update | ❌ no |
 | Change app CODE | ✅/— deploy via CodeBuild | ✅ yes |
 
+## Cloudflare Tunnel (ingress)
+
+Ingress arrives through a **Cloudflare Tunnel**: a `cloudflared` sidecar in the
+web task opens an **outbound-only** connection to Cloudflare's edge and forwards
+requests to gunicorn over the task-local loopback (`localhost:8000`). The public
+hostname → service mapping lives in the **Cloudflare Zero Trust dashboard**
+(Networks → Tunnels → the tunnel → Published application routes), not in AWS.
+
+- The tunnel ID (and therefore DNS) is **independent of deploys and task IPs**:
+  each new task's cloudflared registers itself as a connector; during a rolling
+  deploy two connectors coexist and Cloudflare balances between them (zero
+  downtime, nothing to update anywhere).
+- The only AWS-side piece is the **connector token** (`TunnelToken` parameter →
+  Secrets Manager `/<stack>/TUNNEL_TOKEN` → injected as `TUNNEL_TOKEN`). Rotating
+  it (dashboard → Refresh token) means updating the secret value and forcing a
+  new deployment.
+- The sidecar is `Essential: false` with a `RestartPolicy` (crash → in-place
+  restart; exit 0 ignored). **Every one-off RunTask on this task definition must
+  override the `cloudflared` command to `["version"]`** so ephemeral tasks
+  (momentum, collectstatic, migrate) never register as live connectors with no
+  gunicorn behind them — the momentum schedule's `Input`, `ecs-deploy
+  run_ephemeral` and `automigrate.py` already do this (conditionally, so they
+  also work on pre-tunnel task defs).
+
+**Migration status / phase 2:** the ALB (+ its 2 public IPv4s, ~$24/mo) is still
+in the template so the tunnel can be verified on a test hostname first. Once the
+real API hostname is flipped to the tunnel (CNAME → `<TUNNEL_ID>.cfargotunnel.com`),
+remove `LoadBalancer`, `TargetGroup`, `Listener`, `AlbSecurityGroup`, the
+service's `LoadBalancers`/`HealthCheckGracePeriodSeconds` and the
+`ServiceSecurityGroup` ingress rule (no inbound needed at all) — the container
+health check on `web` replaces the ALB target health check.
+
 ## Momentum (For You ranking)
 
-EventBridge Scheduler runs `python manage.py recompute_momentum` every 10 min as an
+EventBridge Scheduler runs `python manage.py recompute_momentum` every 30 min as an
 ephemeral Fargate task (same task definition, command overridden). The `deploy` step
 re-points the schedule at the **deployed immutable revision** (after `migrate`), so
 the cron runs exactly the deployed, already-migrated code — no pre-migration window.

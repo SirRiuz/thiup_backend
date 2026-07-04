@@ -130,11 +130,23 @@ run_ephemeral() {
   local task_def="$1" command_json="$2" label="$3"
   echo "Running ${label} via run-task (task-def=${task_def})"
 
-  local network_configuration overrides task_arn exit_code
+  local network_configuration overrides task_arn exit_code has_sidecar
   network_configuration=$(aws ecs describe-services \
     --cluster "$CLUSTER" --services "$SERVICE" --region "$REGION" \
     --query 'services[0].networkConfiguration' --output json | jq -c)
-  overrides=$(printf '{"containerOverrides":[{"name":"web","command":%s}]}' "$command_json")
+
+  # Neutralize the cloudflared sidecar when the task def carries one: these
+  # one-off tasks replace gunicorn with a management command, so a live
+  # connector would route tunnel traffic into a task with nothing on :8000.
+  # "version" prints and exits 0 (ignored by the sidecar's RestartPolicy).
+  # Conditional so the script also works on task defs without the sidecar.
+  has_sidecar=$(aws ecs describe-task-definition --task-definition "$task_def" --region "$REGION" \
+    --query 'length(taskDefinition.containerDefinitions[?name==`cloudflared`])' --output text)
+  if [[ "$has_sidecar" != "0" ]]; then
+    overrides=$(printf '{"containerOverrides":[{"name":"web","command":%s},{"name":"cloudflared","command":["version"]}]}' "$command_json")
+  else
+    overrides=$(printf '{"containerOverrides":[{"name":"web","command":%s}]}' "$command_json")
+  fi
 
   task_arn=$(aws ecs run-task \
     --cluster "$CLUSTER" \

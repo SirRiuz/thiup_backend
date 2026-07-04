@@ -31,19 +31,31 @@ def _run_task_logs(ecs, logs, cluster, svc, command):
     td = ecs.describe_task_definition(taskDefinition=td_arn)["taskDefinition"]
     log_opts = next(c for c in td["containerDefinitions"] if c["name"] == CONTAINER)["logConfiguration"]["options"]
 
+    overrides = [{"name": CONTAINER, "command": command}]
+    # Neutralize the cloudflared sidecar if the task def carries one: this
+    # one-off task has no gunicorn on :8000, so it must not register as a
+    # live tunnel connector ("version" prints and exits 0).
+    if any(c["name"] == "cloudflared" for c in td["containerDefinitions"]):
+        overrides.append({"name": "cloudflared", "command": ["version"]})
+
     task = ecs.run_task(
         cluster=cluster,
         taskDefinition=td_arn,
         launchType="FARGATE",
         networkConfiguration=svc["networkConfiguration"],
-        overrides={"containerOverrides": [{"name": CONTAINER, "command": command}]},
+        overrides={"containerOverrides": overrides},
     )["tasks"][0]
     arn = task["taskArn"]
     task_id = arn.split("/")[-1]
 
     ecs.get_waiter("tasks_stopped").wait(cluster=cluster, tasks=[arn])
 
-    container = ecs.describe_tasks(cluster=cluster, tasks=[arn])["tasks"][0]["containers"][0]
+    # Look the container up by name — with the cloudflared sidecar present,
+    # containers[0] is not guaranteed to be the web container.
+    container = next(
+        c for c in ecs.describe_tasks(cluster=cluster, tasks=[arn])["tasks"][0]["containers"]
+        if c["name"] == CONTAINER
+    )
     if container.get("exitCode") not in (0, None):
         print(f"WARNING: task exited with code {container.get('exitCode')}", file=sys.stderr)
 

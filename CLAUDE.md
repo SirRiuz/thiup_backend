@@ -85,9 +85,9 @@ request: SHA-256(client IP) → get-or-create `Mask`, country resolved via the l
   `points = unique_reactors + unique_commenters×3 + commenters_replied_by_author×5`;
   `momentum_score = points / (age_hours + 2)^1.5`.
   Golden rule: every signal counts **distinct masks** and **excludes the author**.
-- Trigger: an **external scheduler runs the management command every 10 min** — there is **no
+- Trigger: an **external scheduler runs the management command every 30 min** — there is **no
   Celery, no RabbitMQ, no in-process scheduler** (no APScheduler/threading). Locally it's the
-  `momentum` service in `docker-compose.yml` (a tiny `while true; recompute_momentum; sleep 600`
+  `momentum` service in `docker-compose.yml` (a tiny `while true; recompute_momentum; sleep 1800`
   loop); in prod it's **AWS EventBridge Scheduler → an ephemeral Fargate task** running
   `python manage.py recompute_momentum`, which starts, computes, exits. Manually:
   `make recompute_momentum`.
@@ -100,7 +100,7 @@ request: SHA-256(client IP) → get-or-create `Mask`, country resolved via the l
 they were removed. Momentum is the only background job, and it runs as an *ephemeral* scheduled
 task (see above), not on a permanent worker. This deliberately avoids the ~750 MB of always-on
 memory (Celery worker+beat ≈ 540–580 MB + RabbitMQ ≈ 184 MB) that a broker/worker would cost to
-run a job that takes seconds every 10 min, vs ~50 MB (PSS) for the whole web app. **Don't
+run a job that takes seconds every 30 min, vs ~50 MB (PSS) for the whole web app. **Don't
 reintroduce always-on async machinery** (broker/worker/Redis); if a new background job appears,
 make it another ephemeral scheduled command.
 
@@ -226,9 +226,10 @@ make test
 
 ## Constraints
 
-- **Raspberry Pi**: ~2 gunicorn gthread workers × 4 threads, `max_requests` recycling,
+- **Raspberry Pi**: ~1–2 gunicorn gthread workers × 4 threads (prod image defaults to 1 on a
+  0.25 vCPU / 512 MB Fargate task; override with `GUNICORN_WORKERS`), `max_requests` recycling,
   `CONN_MAX_AGE=60`, sparse logging (SD card). No Redis, no Celery, no RabbitMQ. Expensive
-  computation goes into the 10-min ephemeral scheduled command, never the request path.
+  computation goes into the 30-min ephemeral scheduled command, never the request path.
 - **Privacy**: search queries, feed personalization inputs and geolocation are ephemeral — never
   log or persist them, never echo them in error messages. Only **public** identifiers (`uid`,
   mask `hash` prefix) leave the API; internal UUIDs stay internal. No raw coordinates, no

@@ -1,11 +1,12 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Thiup backend infrastructure: a public Application Load Balancer in front of a
-  Fargate ECS service. Internet -> ALB (stable DNS) -> Fargate task. Gives a
-  fixed public URL (http://<alb-dns>) that does NOT change between deploys, so
-  you can CNAME a Cloudflare subdomain to it. Uses the default VPC and an
-  EXTERNAL PostgreSQL (no RDS created here). Only ONE backend secret (SecretKey);
-  API_SECRET_KEY is derived from it at boot.
+  Thiup backend infrastructure: a Fargate ECS service with TWO ingress paths
+  during the tunnel migration — a Cloudflare Tunnel (cloudflared sidecar,
+  outbound-only, stable tunnel ID independent of deploys/IPs) and the legacy
+  public ALB (to be removed once the tunnel hostname is verified; it is the
+  main fixed cost). Uses the default VPC and an EXTERNAL PostgreSQL (no RDS
+  created here). Only ONE backend secret (SecretKey); API_SECRET_KEY is
+  derived from it at boot.
 
 # Console display order/grouping for the create/update-stack form (without this,
 # the console lists parameters alphabetically).
@@ -16,6 +17,8 @@ Metadata:
         Parameters: [VpcId, PublicSubnet1, PublicSubnet2]
       - Label: { default: "Image & scaling" }
         Parameters: [ImageRepoName, DesiredCount, TaskCpu, TaskMemory, MomentumScheduleExpression]
+      - Label: { default: "Cloudflare Tunnel" }
+        Parameters: [TunnelToken]
       - Label: { default: "Application config" }
         Parameters: [DebugValue, AllowedHosts, EncryptedResponse, SingleRequestProtect, GatewaySeed, InternalAdminUrl, CorsAllowedOrigins, CsrfTrustedOrigins, SecretKey]
       - Label: { default: "Object storage (S3 / Cloudflare R2)" }
@@ -47,19 +50,24 @@ Parameters:
 
   MomentumScheduleExpression:
     Type: String
-    Default: "rate(10 minutes)"
+    Default: "rate(30 minutes)"
     Description: >
       How often the momentum recompute runs (EventBridge Scheduler). Default is
-      every 10 minutes; FlexibleTimeWindow is OFF so it fires on time.
+      every 30 minutes (each tick is a billed ephemeral Fargate task, so the
+      cadence is a direct cost knob); FlexibleTimeWindow is OFF so it fires on
+      time.
 
+  # Smallest Fargate size (0.25 vCPU / 512 MB). The whole web app is ~50 MB PSS
+  # with 1 gunicorn worker, so 512 MB leaves ample headroom; the task runs 24/7,
+  # making its size the main ECS cost knob. Bump only with measured pressure.
   TaskCpu:
     Type: String
-    Default: "512"
+    Default: "256"
     AllowedValues: ["256", "512", "1024", "2048"]
 
   TaskMemory:
     Type: String
-    Default: "1024"
+    Default: "512"
 
   # ---- App config (required at Django boot) ----
   DebugValue:
@@ -147,6 +155,17 @@ Parameters:
     Type: String
     NoEcho: true
 
+  # Cloudflare Tunnel connector token (Zero Trust -> Networks -> Tunnels ->
+  # the tunnel -> install commands; the long "eyJ..." string). The cloudflared
+  # sidecar uses it to register as a connector — ingress then arrives through
+  # the tunnel instead of the ALB. Treat it like a password: whoever holds it
+  # can attach a connector to the tunnel's hostnames.
+  TunnelToken:
+    Type: String
+    NoEcho: true
+    AllowedPattern: ".+"
+    ConstraintDescription: Required (the cloudflared sidecar cannot start without it).
+
   # ---- External database ---- (engine is hardcoded in the task def: always postgresql)
   DatabaseHost:
     Type: String
@@ -208,6 +227,7 @@ Resources:
                   - !Ref DatabasePasswordSecret
                   - !Ref StorageAccessKeyIdSecret
                   - !Ref StorageSecretAccessKeySecret
+                  - !Ref TunnelTokenSecret
 
   # Assets live in an external S3-compatible bucket (Cloudflare R2) reached with
   # access keys, so the task role needs no storage permissions.
@@ -270,7 +290,9 @@ Resources:
       Port: 8000
       HealthCheckProtocol: HTTP
       HealthCheckPath: /health/
-      HealthCheckIntervalSeconds: 15
+      # 30 s halves the health-check request/log volume vs 15 s; with
+      # HealthyThresholdCount=2 a new task still turns healthy in ~1 min.
+      HealthCheckIntervalSeconds: 30
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 3
@@ -365,6 +387,11 @@ Resources:
     Properties:
       Name: !Sub "/${AWS::StackName}/AWS_SECRET_ACCESS_KEY"
       SecretString: !Ref StorageSecretAccessKey
+  TunnelTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/TUNNEL_TOKEN"
+      SecretString: !Ref TunnelToken
 
   # ---- Task definition ----
   TaskDefinition:
@@ -402,6 +429,21 @@ Resources:
           PortMappings:
             - ContainerPort: 8000
               Protocol: tcp
+          # Container-level health check: with ingress moving to the tunnel
+          # there is no ALB probing /health/, so ECS itself must detect a
+          # wedged gunicorn (the deployment circuit breaker consumes this
+          # signal too). The slim image has no curl — urllib raises on any
+          # non-2xx. StartPeriod covers Django boot AND the scheduled momentum
+          # runs: their command override leaves no gunicorn listening, but
+          # those tasks exit within seconds, long before failures count.
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/', timeout=5)"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 120
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -441,6 +483,41 @@ Resources:
             - { Name: AWS_ACCESS_KEY_ID,      ValueFrom: !Ref StorageAccessKeyIdSecret }
             - { Name: AWS_SECRET_ACCESS_KEY,  ValueFrom: !Ref StorageSecretAccessKeySecret }
 
+        # Cloudflare Tunnel connector: opens an OUTBOUND-only connection to
+        # Cloudflare's edge and forwards tunnel traffic to gunicorn over the
+        # task-local loopback (awsvpc mode: containers in a task share
+        # localhost). Ingress needs no open ports and no load balancer; the
+        # tunnel hostname -> http://localhost:8000 mapping lives in the
+        # Cloudflare Zero Trust dashboard, not here.
+        - Name: cloudflared
+          # Docker Hub is the only official source (no ECR Public mirror).
+          # Unlike CodeBuild, each Fargate task pulls from its own fresh
+          # public IP, so the anonymous per-IP pull limit is a non-issue.
+          Image: docker.io/cloudflare/cloudflared:latest
+          # Image entrypoint is "cloudflared --no-autoupdate"; the connector
+          # token comes from the TUNNEL_TOKEN env var (kept out of process
+          # args and task-definition JSON).
+          Command: ["tunnel", "run"]
+          # NOT essential, restarted on crash:
+          #  - Essential false lets the ephemeral momentum task exit when its
+          #    web container finishes (an essential sidecar would keep that
+          #    task alive — and billing — forever).
+          #  - RestartPolicy revives a crashed connector in place. Exit 0 is
+          #    ignored so the momentum schedule's "version" override (see
+          #    MomentumSchedule Input) runs once and stays down.
+          Essential: false
+          RestartPolicy:
+            Enabled: true
+            IgnoredExitCodes: [0]
+          Secrets:
+            - { Name: TUNNEL_TOKEN, ValueFrom: !Ref TunnelTokenSecret }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: cloudflared
+
   # ---- ECS service (fronted by the ALB) ----
   Service:
     Type: AWS::ECS::Service
@@ -475,7 +552,7 @@ Resources:
           TargetGroupArn: !Ref TargetGroup
 
   # ---- Momentum recompute: EventBridge Scheduler -> ephemeral Fargate task ----
-  # Replaces the old Celery beat + RabbitMQ. Every 10 min the scheduler launches
+  # Replaces the old Celery beat + RabbitMQ. Every 30 min the scheduler launches
   # a ONE-OFF task from the SAME task definition as the web service, overriding
   # the command to run `python manage.py recompute_momentum`. Because the image
   # tag is mutable (e.g. :test) and Fargate pulls the image fresh on every task
@@ -517,11 +594,11 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${AWS::StackName}-momentum"
-      Description: Recompute For You momentum every 10 min (ephemeral Fargate task).
+      Description: Recompute For You momentum every 30 min (ephemeral Fargate task).
       ScheduleExpression: !Ref MomentumScheduleExpression
       ScheduleExpressionTimezone: UTC
       State: ENABLED
-      # OFF = fire exactly on schedule (no jitter window) — punctual every 10 min.
+      # OFF = fire exactly on schedule (no jitter window) — punctual on every tick.
       FlexibleTimeWindow:
         Mode: "OFF"
       Target:
@@ -545,8 +622,13 @@ Resources:
               SecurityGroups:
                 - !Ref ServiceSecurityGroup
         # Override gunicorn with the management command for this run only.
+        # cloudflared is overridden to "version" (prints and exits 0): the
+        # cron task must NOT register as a tunnel connector — with gunicorn
+        # replaced by the management command, nothing listens on :8000 and
+        # Cloudflare would route live traffic into it (502s). Exit 0 is in
+        # the sidecar's RestartPolicy IgnoredExitCodes, so it stays down.
         Input: !Sub |
-          {"containerOverrides":[{"name":"web","command":["python","manage.py","recompute_momentum"]}]}
+          {"containerOverrides":[{"name":"web","command":["python","manage.py","recompute_momentum"]},{"name":"cloudflared","command":["version"]}]}
 
   # ---- CI: CodeBuild project (build image -> collectstatic -> deploy) ----
   # CLUSTER/SERVICE are wired to THIS stack's resources, so they can never go
