@@ -1,6 +1,9 @@
 # Django
 from rest_framework import serializers
 
+# Libs
+from app.methods.presence import is_online
+
 
 class TagSearchSerializer(serializers.Serializer):
     """
@@ -35,3 +38,9 @@ class UserSearchSerializer(serializers.Serializer):
     country_code = serializers.CharField()
     posts_count = serializers.IntegerField()
     joined_at = serializers.DateTimeField(source="create_at")
+    # Ephemeral presence (LocMem, 60 s TTL) — additive; drives the green dot
+    # on the people-tab card, same semantics as mask.is_online in threads.
+    is_online = serializers.SerializerMethodField()
+
+    def get_is_online(self, obj) -> bool:
+        return is_online(obj.hash)

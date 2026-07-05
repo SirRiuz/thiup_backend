@@ -41,6 +41,7 @@ All models inherit `BaseModel` (`app/models/base_model.py`): UUID `id` (internal
 | `ThreadFile` | `media.py` | Media attached to a thread (file, width/height, `is_video`, `target_color`). Formats: mp4/png/jpg/jpeg |
 | `MomentumLog` | `momentum_log.py` | Audit row per momentum recompute run (counts, duration, errors) |
 | `PurgeLog` | `purge_log.py` | Audit row per garbage-collector run (rows selected/deleted, storage objects removed, per-model breakdown JSON, duration, errors). Admin: view/delete only |
+| `SystemMetrics` | `system_metrics.py` | PROXY model (no table) — gives the admin an entry for the owner metrics dashboard (`templates/admin/system_metrics.html`, data from `app/methods/metrics.py::collect_metrics`, computed on demand: online-now via presence, worker RSS + system memory from `/proc`, DB latency/size, content counters, last momentum/GC runs) |
 | `TrendingTag` | `trending_tag.py` | Precomputed trending tags (name, score = Σ momentum of carrying threads). Fully rewritten on each momentum run; `/search/suggest/` only reads it |
 | `LoginAttempt`, `BlackList` | `honeypot/models/` | Honeypot forensics; a post_save signal blacklists an IP after `HONEYPOT_LOGIN_TRYOUT` (default 5) attempts |
 
@@ -80,6 +81,17 @@ is a no-op.
 **Mask identity** — `MaskMiddleware` (`app/middlewares/mask.py`) sets `request.mask` on every
 request: SHA-256(client IP) → get-or-create `Mask`, country resolved via the local
 `geolite2-country.mmdb` GeoIP DB. `/health/` is exempt so it can answer when the DB is down.
+
+**Presence ("online now")** — `app/methods/presence.py`, ephemeral by design:
+- Passive marking: `MaskMiddleware` refreshes `online:<mask_hash>` in the LocMem cache (TTL 60 s)
+  on every request — the user's own browsing IS the heartbeat; there is no heartbeat endpoint.
+  `/health/` never marks (it's exempt from the middleware).
+- Read side: `mask.is_online` (boolean) is ADDED to every mask payload — thread/reply authors
+  (`MaskSerializer`) and the hover card (`MaskProfileSerializer`). Each read is a LocMem dict
+  lookup (~1 µs); with LocMem there is no N+1 to batch (`get_many` is internally a loop).
+- Privacy: boolean only, never persisted, never logged, no "last seen" timestamps — expiry IS
+  the offline transition. Do NOT move this to Redis (cost anti-goal) or a DB column (trackable
+  history). LocMem is per-process: exact with 1 gunicorn worker; degrades gracefully with more.
 
 **Momentum (For You ranking)** — precomputed, never per-request:
 - Formula (`app/management/commands/recompute_momentum.py`):
