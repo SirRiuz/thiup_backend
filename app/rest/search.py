@@ -9,7 +9,7 @@ from django.core.cache import cache
 
 # Django
 from django.utils import timezone
-from django.db.models import Q, Count
+from django.db.models import Q, Count, OuterRef, Subquery
 from django.db.models.query import QuerySet
 from django.db.models.functions import TruncDate
 from rest_framework.response import Response
@@ -22,10 +22,12 @@ from rest_framework.status import HTTP_400_BAD_REQUEST
 from app.models.thread import Thread
 from app.models.tag import Tag
 from app.models.mask import Mask
+from app.models.media import ThreadFile
 from app.models.trending_tag import TrendingTag
 
 # Serializers
 from app.rest.serializers.thread_serializer import ThreadSerializer
+from app.rest.serializers.media_serializer import ThreadMediaSerializer
 from app.rest.serializers.search_serializers import (
     TagSearchSerializer,
     UserSearchSerializer,
@@ -35,47 +37,49 @@ from app.rest.serializers.search_serializers import (
 from app.permissions.client import IsClientAuthenticated
 from app.constants.search import (
     MAX_QUERY_LENGTH,
-    SUGGEST_MIN_CHARS as SEARCH_SUGGEST_MIN_CHARS,
+    SUGGEST_MIN_CHARS,
+    POSTS,
+    TAGS,
+    USERS,
+    MEDIA,
+    VALID_TYPES,
+    ACTIVITY_DAYS,
+    SUGGEST_TAGS_LIMIT,
+    SUGGEST_THREADS_LIMIT,
+    SUGGEST_TRENDING_LIMIT,
+    SUGGEST_SNIPPET_RADIUS,
 )
 from app.utils.text import strip_accents
 from app.methods.threads import with_card_relations
+from app.methods.moderation import find_blocked_terms, shadowban_matching
 from app.rest.pagination import SearchPagination
-
-
-POSTS = "posts"
-TAGS = "tags"
-USERS = "users"
-VALID_TYPES = (POSTS, TAGS, USERS)
-
-# Days of the per-tag activity time series (frontend sparkline).
-ACTIVITY_DAYS = 14
-
-# Autocomplete suggestions cap (short lists, Google-style).
-SUGGEST_LIMIT = 8
-SUGGEST_TAGS_LIMIT = 5       # tags al escribir (prefix por tendencia)
-SUGGEST_THREADS_LIMIT = 4    # hilos al escribir (contenido por momentum)
-SUGGEST_TRENDING_LIMIT = 8   # tendencias con el input vacío
-SUGGEST_MIN_CHARS = SEARCH_SUGGEST_MIN_CHARS
-SUGGEST_SNIPPET_RADIUS = 30  # caracteres a cada lado de la coincidencia
 
 
 class SearchViewSet(GenericViewSet):
     """
-    Global search by `q` query param over posts, tags and users.
+    Global search by `q` query param over posts, tags, users and media.
 
     Single-endpoint design (option A): it ALWAYS returns the counts of the
-    3 types (to render the 3 tabs without 3 calls) + the paginated results
+    4 types (to render the tabs without extra calls) + the paginated results
     of the active type (`type`).
 
-        GET /search/?q=<query>&type=posts|tags|users[&page=N]
+        GET /search/?q=<query>&type=posts|tags|users|media[&page=N]
 
         {
-            "counts": {"posts": 10, "tags": 5, "users": 4},
+            "counts": {"posts": 10, "tags": 5, "users": 4, "media": 7},
             "count": 10,            # total of the active type (pagination)
             "next": "http://.../search/?q=a&type=posts&page=2",
             "previous": null,
             "results": [ ... ]      # results of the active type
         }
+
+    `type=media` is the IG-explore style gallery tab: each result is ONE
+    tile per matching thread — its first media file (same shape as a thread
+    card's `media` items: uid, file, is_video, is_nsfw, width, height,
+    target_color) plus `media_count` (the thread's total active files, for
+    the client's carousel mark) and `thread`, the parent thread's full
+    card, so the client can seed the preview panel and navigate without a
+    second request.
 
     All search is case-insensitive and accent-insensitive: posts/tags match
     against the *_norm columns (text_norm / name_norm — lowercase, accent
@@ -117,6 +121,19 @@ class SearchViewSet(GenericViewSet):
                 status=HTTP_400_BAD_REQUEST,
             )
         return None
+
+    def _empty_search_response(self) -> Response:
+        """The 'nothing exists' shape: same contract ({counts, count, next,
+        previous, results}) with everything at zero. Used by the empty query
+        AND by blocklisted queries — a shadowbanned term must be
+        indistinguishable from a term nobody ever posted about."""
+        self.paginate_queryset(Thread.objects.none())
+        return self.get_paginated_response({
+            "data": [],
+            "context": {
+                "counts": {POSTS: 0, TAGS: 0, USERS: 0, MEDIA: 0},
+            },
+        })
 
     # -- Querysets per type --------------------------------------------------
 
@@ -195,6 +212,67 @@ class SearchViewSet(GenericViewSet):
             base.order_by(*order),
             getattr(self.request, "mask", None),
         )
+
+    def _media_queryset(self, posts_base) -> QuerySet:
+        """Media tab (IG-explore style gallery): ONE tile per matching
+        thread — its FIRST active file in upload order. (The previous
+        Twitter-style one-row-per-file contract made a multi-image thread
+        occupy N consecutive tiles, which read as duplicates in the grid;
+        the client shows a carousel mark instead, via `media_count`.)
+        Built on top of the FLAT posts filter (same universe — active,
+        visible, root, not expired, same text/author match) as a semi-join:
+        the thread side is served by the same trigram index as the posts
+        count and ThreadFile.thread_id is the FK index. The first-per-thread
+        cut is a correlated LIMIT 1 subquery on the same FK index. Ordered
+        by the parent thread's relevance (precomputed momentum, date as
+        tiebreaker)."""
+        first_per_thread = ThreadFile.objects.filter(
+            is_active=True,
+            thread=OuterRef("thread"),
+        ).order_by("create_at", "pk").values("pk")[:1]
+        return ThreadFile.objects.filter(
+            is_active=True,
+            thread__in=posts_base.order_by().values("pk"),
+            pk__in=Subquery(first_per_thread),
+        ).order_by("-thread__momentum_score", "-thread__create_at")
+
+    def _media_results(self, files) -> list:
+        """Serializes a page of media items and attaches each one's parent
+        thread card so the gallery can seed the thread panel / "View thread"
+        navigation without a second request, plus `media_count` (the parent
+        thread's TOTAL active files) so the grid can mark multi-media
+        threads with a carousel indicator. Efficiency: the card is
+        serialized ONCE per thread, the counts come from ONE grouped COUNT
+        over the page's thread ids, and the threads are hydrated with the
+        same prefetch set the feed uses (with_card_relations) — a constant
+        number of queries for the whole page, no per-item lookups."""
+        files = list(files or [])
+        results = ThreadMediaSerializer(files, many=True).data
+        mask = getattr(self.request, "mask", None)
+        thread_ids = {f.thread_id for f in files}
+        cards = {}
+        file_counts = {}
+        if thread_ids:
+            threads = with_card_relations(
+                Thread.objects.filter(pk__in=thread_ids), mask)
+            cards = {
+                t.pk: ThreadSerializer(
+                    t, many=False, context={"mask": mask, "short": True},
+                ).data
+                for t in threads
+            }
+            file_counts = dict(
+                ThreadFile.objects.filter(
+                    is_active=True, thread_id__in=thread_ids,
+                )
+                .values("thread_id")
+                .annotate(n=Count("id"))
+                .values_list("thread_id", "n")
+            )
+        for item, file in zip(results, files):
+            item["thread"] = cards.get(file.thread_id)
+            item["media_count"] = file_counts.get(file.thread_id, 1)
+        return results
 
     def _tags_queryset(self, query) -> QuerySet:
         """Groups the Tag rows by name and counts the distinct threads
@@ -335,6 +413,13 @@ class SearchViewSet(GenericViewSet):
                 ]
             })
 
+        # Shadowban blocklist: a blocked input suggests NOTHING — the same
+        # shape a term nobody posted about returns. Read-only here (no
+        # sweep): suggest fires on every keystroke; the deactivation runs
+        # once, on the real search.
+        if find_blocked_terms(normalized):
+            return Response({"tags": [], "threads": []})
+
         # TAGS: prefix sobre la tabla de tendencias (indexada), por score.
         tag_rows = TrendingTag.objects.filter(
             name_norm__startswith=normalized
@@ -414,14 +499,22 @@ class SearchViewSet(GenericViewSet):
         # matches everything). We keep the {counts, results} contract with
         # empty values.
         if not query:
-            page = self.paginate_queryset(Thread.objects.none())
-            return self.get_paginated_response({
-                "data": [],
-                "context": {"counts": {POSTS: 0, TAGS: 0, USERS: 0}},
-            })
+            return self._empty_search_response()
+
+        # Shadowban blocklist: a query carrying a blocked term (whole-word,
+        # both sides normalized) answers exactly like a no-match search —
+        # as if that content never existed — and every active thread/tag
+        # still carrying the term is soft-deleted on the spot (the purge GC
+        # hard-deletes it later). Privacy rule holds: the query is neither
+        # logged nor echoed.
+        blocked = find_blocked_terms(query)
+        if blocked:
+            shadowban_matching(blocked)
+            return self._empty_search_response()
 
         posts_base = self._posts_base_queryset(query, author_mask=author_mask)
         posts_qs = self._posts_queryset(posts_base, request.GET.get("ordering"))
+        media_qs = self._media_queryset(posts_base)
         # Tags are stored WITHOUT '#': strip a leading '#' so '#dns' and 'dns'
         # match the same tag (and yield the same tags count). posts/users keep
         # the raw query, so the hashtag text search is preserved. Same
@@ -437,6 +530,9 @@ class SearchViewSet(GenericViewSet):
             POSTS: posts_base.order_by().count(),
             TAGS: tags_qs.count(),
             USERS: users_qs.count(),
+            # Gallery tiles (one per thread with media) — what the tab
+            # paginates.
+            MEDIA: media_qs.order_by().count(),
         }
         # The paginator (SearchPagination) reuses the active tab's count —
         # without this it would re-issue the SAME expensive COUNT over the
@@ -447,6 +543,9 @@ class SearchViewSet(GenericViewSet):
             # Only the tags of the current page carry an activity series.
             page = self._attach_activity(self.paginate_queryset(tags_qs))
             results = TagSearchSerializer(page, many=True).data
+        elif search_type == MEDIA:
+            page = self.paginate_queryset(media_qs)
+            results = self._media_results(page)
         elif search_type == USERS:
             page = self.paginate_queryset(users_qs)
             results = UserSearchSerializer(page, many=True).data

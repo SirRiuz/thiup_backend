@@ -13,3 +13,4 @@ from app.models.purge_log import PurgeLog
 from app.models.system_metrics import SystemMetrics
 from app.models.trending_tag import TrendingTag
 from app.models.report import Report
+from app.models.blocked_term import BlockedTerm

@@ -17,6 +17,7 @@ from app.methods.tokens import encode_token
 # Models
 from app.models.mask import Mask
 from app.models.thread import Thread
+from app.models.media import ThreadFile
 from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
@@ -978,12 +979,109 @@ class SearchByMaskTest(TestCase):
         self.assertNotIn(self.by_author.uid, uids)
 
     def test_no_duplicates_when_text_and_author_match(self):
-        # Hilo del autor que ADEMÁS contiene su propio id en el texto:
+        # A thread by the author that ALSO contains their own id in the text:
         dual = make_thread(self.author, age_hours=3, text="mi id es abcdef")
         call_command("recompute_momentum")
         uids = [p["uid"] for p in self.search("abcdef")["results"]]
         self.assertEqual(uids.count(dual.uid), 1)
 
+
+def make_file(thread, is_video=False, is_active=True, tag="x"):
+    """Attaches a confirmed-style media file to a thread (metadata carries
+    the dimensions/color like the confirm endpoint stores them)."""
+    return ThreadFile.objects.create(
+        thread=thread,
+        mask=thread.mask,
+        is_video=is_video,
+        is_active=is_active,
+        file_key=f"m/aa/bb/{tag}.webp",
+        file_url=f"https://cdn.test/m/aa/bb/{tag}.webp",
+        metadata={"width": 1080, "height": 1350, "target_color": "161c1e"},
+    )
+
+
+class SearchMediaTest(TestCase):
+    """The Media tab: gallery of the files of the threads the search matches."""
+
+    def setUp(self):
+        self.author = make_mask("author")
+        self.viewer = make_mask("viewer")
+
+    def __get_client_token(self) -> (str):
+        return encode_token({"timestamp": datetime.now().__str__()})
+
+    def search(self, q, search_type="media"):
+        r = client.get(
+            f"/search/?q={q}&type={search_type}",
+            HTTP_CLIENT_ASSERTION=self.__get_client_token(),
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        return decode_body(r)
+
+    def test_media_one_tile_per_matching_thread_with_media_count(self):
+        # A matching thread with 2 files → ONE tile (its FIRST file, upload
+        # order) carrying media_count=2 (the client's carousel mark); a
+        # non-matching thread never appears.
+        hit = make_thread(self.author, age_hours=1, text="lluvia fuerte")
+        first = make_file(hit, tag="one")
+        make_file(hit, is_video=True, tag="two")
+        miss = make_thread(self.author, age_hours=1, text="sol radiante")
+        make_file(miss, tag="three")
+
+        body = self.search("lluvia")
+
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["counts"]["media"], 1)
+        items = body["results"]
+        self.assertEqual([i["uid"] for i in items], [first.uid])
+        # Gallery item shape: what the frontend's mapMedia consumes.
+        self.assertEqual(items[0]["file"], first.file_url)
+        self.assertEqual(items[0]["width"], 1080)
+        self.assertEqual(items[0]["height"], 1350)
+        self.assertEqual(items[0]["target_color"], "161c1e")
+        self.assertFalse(items[0]["is_video"])
+        self.assertEqual(items[0]["media_count"], 2)
+        # Parent card attached for the preview panel / navigation.
+        self.assertEqual(items[0]["thread"]["uid"], hit.uid)
+
+    def test_media_excludes_inactive_files_and_reply_media(self):
+        root = make_thread(self.author, age_hours=1, text="lluvia hoy")
+        kept = make_file(root, tag="kept")
+        make_file(root, is_active=False, tag="soft-deleted")
+        # Replies are outside the posts universe (root-only), even if they match.
+        reply = make_thread(self.viewer, sub=root, text="lluvia tambien")
+        make_file(reply, tag="reply-file")
+
+        body = self.search("lluvia")
+        self.assertEqual([i["uid"] for i in body["results"]], [kept.uid])
+        # media_count also ignores inactive files (1 visible, not 2).
+        self.assertEqual(body["results"][0]["media_count"], 1)
+
+    def test_media_ordered_by_parent_momentum(self):
+        quiet = make_thread(self.author, age_hours=1, text="lluvia hoy")
+        quiet_file = make_file(quiet, tag="quiet")
+        hot = make_thread(self.author, age_hours=10, text="lluvia fuerte")
+        hot_file = make_file(hot, tag="hot")
+        make_thread(self.viewer, sub=hot)  # commenter → momentum
+        call_command("recompute_momentum")
+
+        body = self.search("lluvia")
+        # hot is older but has momentum → its file leads the gallery.
+        self.assertEqual(
+            [i["uid"] for i in body["results"]],
+            [hot_file.uid, quiet_file.uid],
+        )
+
+    def test_counts_carry_media_on_other_tabs_and_empty_query(self):
+        thread = make_thread(self.author, age_hours=1, text="lluvia hoy")
+        make_file(thread, tag="one")
+
+        posts_body = self.search("lluvia", search_type="posts")
+        self.assertEqual(posts_body["counts"]["media"], 1)
+
+        empty_body = self.search("", search_type="media")
+        self.assertEqual(empty_body["counts"]["media"], 0)
+        self.assertEqual(empty_body["results"], [])
 
 class RequestCryptoTest(TestCase):
     """Middleware de descifrado de request + endpoint /config/."""
@@ -1240,3 +1338,122 @@ class OwnerStatsTest(TestCase):
         empty = make_mask("empty")
         self.assertEqual(CurrentMaskView._owner_stats(empty),
                          {"threads": 0, "reactions": 0, "replies": 0})
+
+
+class SearchShadowbanTest(TestCase):
+    """Blocklist shadowban: a blocked query answers exactly like a term
+    nobody posted about, and soft-deletes the threads carrying the term."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        from app.models.blocked_term import BlockedTerm
+        # Drop the blocked-terms LocMem cache left by other tests.
+        cache.clear()
+        self.author = make_mask("author")
+        BlockedTerm.objects.create(term="palabraprohibida")
+
+    def __get_client_token(self) -> (str):
+        return encode_token({"timestamp": datetime.now().__str__()})
+
+    def search(self, q, search_type="posts"):
+        r = client.get(
+            "/search/",
+            {"q": q, "type": search_type},
+            HTTP_CLIENT_ASSERTION=self.__get_client_token(),
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        return decode_body(r)
+
+    def test_blocked_query_returns_the_empty_no_match_shape(self):
+        make_thread(self.author, text="difunde palabraprohibida aqui")
+        body = self.search("palabraprohibida")
+        self.assertEqual(body["count"], 0)
+        self.assertEqual(body["results"], [])
+        self.assertEqual(
+            body["counts"], {"posts": 0, "tags": 0, "users": 0, "media": 0})
+
+    def test_blocked_query_shadowbans_whole_word_matches_only(self):
+        hit = make_thread(self.author, text="difunde palabraprohibida aqui")
+        # Contains the term only as a SUBSTRING of a longer word → innocent.
+        inner = make_thread(
+            self.author, text="palabraprohibidasufijo no es la palabra")
+        clean = make_thread(self.author, text="texto normal")
+
+        self.search("busco palabraprohibida ya")
+
+        hit.refresh_from_db()
+        inner.refresh_from_db()
+        clean.refresh_from_db()
+        self.assertFalse(hit.is_active)
+        self.assertTrue(inner.is_active)
+        self.assertTrue(clean.is_active)
+
+    def test_seeded_terms_block_accent_and_case_insensitive(self):
+        # 'pedofilia' is seeded by migration 0020; accents/case must not
+        # bypass it (both sides normalize with strip_accents + lower).
+        body = self.search("PEDOFILÍA")
+        self.assertEqual(body["count"], 0)
+        self.assertEqual(
+            body["counts"], {"posts": 0, "tags": 0, "users": 0, "media": 0})
+
+    def test_clean_queries_are_unaffected(self):
+        visible = make_thread(self.author, text="la lluvia de hoy")
+        body = self.search("lluvia")
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["results"][0]["uid"], visible.uid)
+
+    def test_suggest_returns_nothing_for_blocked_query(self):
+        make_thread(self.author, text="difunde palabraprohibida aqui")
+        r = client.get(
+            "/search/suggest/",
+            {"q": "palabraprohibida"},
+            HTTP_CLIENT_ASSERTION=self.__get_client_token(),
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(decode_body(r), {"tags": [], "threads": []})
+
+    def test_threads_list_q_and_tag_are_blocked_too(self):
+        thread = make_thread(self.author, text="difunde palabraprohibida")
+        Tag.objects.create(
+            thread=thread, name="palabraprohibida",
+            name_norm="palabraprohibida")
+        for params in ({"q": "palabraprohibida"},
+                       {"tag": "palabraprohibida"}):
+            r = client.get(
+                "/threads/", params,
+                HTTP_CLIENT_ASSERTION=self.__get_client_token(),
+            )
+            self.assertEqual(r.status_code, status.HTTP_200_OK)
+            self.assertEqual(decode_body(r)["count"], 0)
+
+
+class BlockedTermSweepTest(TestCase):
+    """Adding a term takes effect immediately: the post_save signal sweeps
+    the existing content and refreshes the cached blocklist."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.mask = make_mask("sweeper")
+
+    def test_saving_a_term_sweeps_existing_threads_and_tags(self):
+        from app.models.blocked_term import BlockedTerm
+        pre = make_thread(self.mask, text="contenido con terminonuevo aqui")
+        tagged = make_thread(self.mask, text="texto limpio")
+        tag = Tag.objects.create(
+            thread=tagged, name="terminonuevo", name_norm="terminonuevo")
+
+        BlockedTerm.objects.create(term="Terminonuevo")
+
+        pre.refresh_from_db()
+        tag.refresh_from_db()
+        tagged.refresh_from_db()
+        self.assertFalse(pre.is_active)
+        self.assertFalse(tag.is_active)
+        # The tag falls, its thread stays: its own text is clean.
+        self.assertTrue(tagged.is_active)
+
+    def test_term_norm_is_derived_like_the_search_pipeline(self):
+        from app.models.blocked_term import BlockedTerm
+        term = BlockedTerm.objects.create(term="  Niños   Prohibidos ")
+        self.assertEqual(term.term_norm, "ninos prohibidos")

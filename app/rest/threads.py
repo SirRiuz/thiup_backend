@@ -27,6 +27,22 @@ from app.permissions.client import IsClientAuthenticated
 from app.utils.text import strip_accents
 from app.constants.search import MAX_QUERY_LENGTH
 from app.utils.locale import normalize_language, normalize_region
+from app.constants.threads import (
+    FORYOU_MIN_COMMENTERS,
+    FORYOU_MIN_REACTORS,
+    FORYOU_GRACE_HOURS,
+    FORYOU_TAGS_MAX,
+    FORYOU_MIX_POOL,
+    FORYOU_AFFINITY_K,
+    FORYOU_AFFINITY_MAX_TAGS,
+    FORYOU_REGION_BOOST,
+    FORYOU_ROW_FIELDS,
+    CLOSEYOU_PROXIMITY_K,
+    CLOSEYOU_RADIUS_DEFAULT_KM,
+    CLOSEYOU_RADIUS_MIN_KM,
+    CLOSEYOU_RADIUS_MAX_KM,
+    CLOSEYOU_ROW_FIELDS,
+)
 from app.utils.geo import (
     normalize_geohash,
     cells_for_radius,
@@ -34,91 +50,18 @@ from app.utils.geo import (
 )
 from app.rest.pagination import CustomThreadPagination
 from app.methods.threads import get_ranked_thread, with_card_relations
-
-
-# ── For You entry threshold ──────────────────────────────────────────────
-# SEPARATE from momentum: momentum SORTS, the threshold decides who ENTERS.
-# A post enters if it meets AT LEAST ONE:
-#   unique_commenters ≥ 1  OR  unique_reactions ≥ 3  OR  age < 2h
-# (the grace window lets new posts receive their first interactions). All
-# fields are precomputed by `recompute_momentum`: the WHERE is over indexed
-# counters, recomputing nothing per request.
-FORYOU_MIN_COMMENTERS = 1
-FORYOU_MIN_REACTORS = 3
-FORYOU_GRACE_HOURS = 2
+from app.methods.moderation import find_blocked_terms
 
 
 def foryou_threshold(now) -> (Q):
-    """Entry threshold for the For You feed (see constants above)."""
+    """Entry threshold for the For You feed (constants in
+    app/constants/threads.py — momentum SORTS, this decides who ENTERS)."""
     grace_start = now - timedelta(hours=FORYOU_GRACE_HOURS)
     return (
         Q(unique_commenters_count__gte=FORYOU_MIN_COMMENTERS)
         | Q(unique_reactors_count__gte=FORYOU_MIN_REACTORS)
         | Q(create_at__gte=grace_start)
     )
-
-
-# ── For You personalization (PHASE 2) ───────────────────────────────────
-# The client sends its top tags in the POST BODY — the affinity profile,
-# which lives ONLY in its localStorage. For the server they are EPHEMERAL:
-# they live only as long as this request, like a multi-tag search — they
-# are NOT persisted, NOT associated with any mask, there is NO profile
-# table.
-#
-# The algorithm separates two things:
-#   STEP 1 (composition): the CANDIDATES are the UNION of the global top by
-#     momentum (discovery) + the posts with the user's tags (even if their
-#     base momentum is low — if they don't enter, the boost couldn't lift
-#     them). Each group bounded to FORYOU_MIX_POOL.
-#   STEP 4 (ordering): ALL candidates are sorted together by momentum_final
-#     DESC, computed AT SERVE TIME:
-#       momentum_final = base × region_boost × affinity_boost
-# Tag cap per request: with POST there is no longer a URL limit, but
-# filtering/counting against many tags is heavy in the query (Raspberry) —
-# the client sends its top ~10 and this truncates defensively.
-FORYOU_TAGS_MAX = 15
-# Max candidate pool PER GROUP: bounds memory/CPU per request on limited
-# hardware (nobody paginates beyond ~500 posts in one session).
-FORYOU_MIX_POOL = 500
-
-# ── Affinity boost (weight of YOUR tags in the ranking) ──────────────────
-# affinity_boost = 1 + K × matching_tags (capped at FORYOU_AFFINITY_MAX_TAGS)
-#   0 matching → ×1.00 | 1 → ×1.35 | 2 → ×1.70 | 3+ → ×2.05
-# Raising K = more personalization; lowering it = more subtle. Without tags
-# in the query (cold start) → ×1.0: the global top stays intact.
-FORYOU_AFFINITY_K = 0.35
-FORYOU_AFFINITY_MAX_TAGS = 3
-
-# ── Regional boost (STEP 4) ──────────────────────────────────────────────
-# momentum_final = momentum_base × 1.5 if post.region == reader's region.
-# DYNAMIC, at query time: the precomputed momentum_score (base) is NEVER
-# modified — each reader sees THEIR ranking. The region is DECLARED by the
-# FE (?region=, derived from navigator.language) and the BA only sanitizes
-# it — NO GeoIP/IP: it is a feed preference, not a security boundary.
-FORYOU_REGION_BOOST = 1.5
-
-# Fields of the For You id-first sub-queries.
-FORYOU_ROW_FIELDS = ("id", "momentum_score", "create_at", "region")
-
-# ── Close You (near me, ~10 km) ──────────────────────────────────────────
-# SAME ENGINE as For You (threshold, grace, precomputed momentum, POST
-# pagination, serializer — see __feed_querysets/__serve_feed_page); only
-# the FILTER (geohash cells instead of tags) and the BOOST (proximity
-# instead of affinity+region) change:
-#   momentum_final = momentum_base × proximity_boost
-# The reader sends its geohash cell (precision 5, fuzzed) + 8 neighbors in
-# the POST BODY — EPHEMERAL: they are never persisted (there is no map of
-# people's locations). Only POSTS store a cell (author opt-in).
-# DECREASING proximity boost per ring:
-#   boost = 1 + K × (1 − ring/n_rings)
-#   → reader's cell (ring 0): ×1.35 | edge of radius: ×1.0
-# "The closest rises" holds even when the radius is 100 km.
-CLOSEYOU_PROXIMITY_K = 0.35
-# Feed radius: the reader expands it at will (clamp 1-100, default 15).
-CLOSEYOU_RADIUS_DEFAULT_KM = 15.0
-CLOSEYOU_RADIUS_MIN_KM = 1.0
-CLOSEYOU_RADIUS_MAX_KM = 100.0
-CLOSEYOU_ROW_FIELDS = ("id", "momentum_score", "create_at", "geohash")
 
 
 def parse_closeyou_radius(raw) -> (float):
@@ -239,6 +182,14 @@ class ThreadsViewSet(GenericViewSet):
                     sub__isnull=True),
                 self.request.mask,
             )
+
+            # Shadowban blocklist: a blocked q/tag answers like a term
+            # nobody ever posted about (empty page, same contract). Same
+            # whole-word, normalized check as /search/ — read-only here.
+            if find_blocked_terms(
+                strip_accents(f"{query or ''} {tag or ''}").lower()
+            ):
+                return threads.none()
 
             if tag:
                 # EXACT tag (Thread-Tag relation) but case- and
