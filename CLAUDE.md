@@ -43,6 +43,7 @@ All models inherit `BaseModel` (`app/models/base_model.py`): UUID `id` (internal
 | `PurgeLog` | `purge_log.py` | Audit row per garbage-collector run (rows selected/deleted, storage objects removed, per-model breakdown JSON, duration, errors). Admin: view/delete only |
 | `SystemMetrics` | `system_metrics.py` | PROXY model (no table) — gives the admin an entry for the owner metrics dashboard (`templates/admin/system_metrics.html`, data from `app/methods/metrics.py::collect_metrics`, computed on demand: online-now via presence, worker RSS + system memory from `/proc`, DB latency/size, content counters, last momentum/GC runs) |
 | `TrendingTag` | `trending_tag.py` | Precomputed trending tags (name, score = Σ momentum of carrying threads). Fully rewritten on each momentum run; `/search/suggest/` only reads it |
+| `BlockedTerm` | `blocked_term.py` | Moderation blocklist (shadowban filter): `term` + derived `term_norm` (indexed). Seeded by migration `0020` (CSAM / extremism / hate terms); managed from the admin. See "Shadowban blocklist" below |
 | `LoginAttempt`, `BlackList` | `honeypot/models/` | Honeypot forensics; a post_save signal blacklists an IP after `HONEYPOT_LOGIN_TRYOUT` (default 5) attempts |
 
 Key indexes: `thread_momentum_desc_idx` (`-momentum_score, -create_at`, serves For You ordering),
@@ -174,7 +175,7 @@ Legend — **Enc**: response encrypted when `ENCRYPTED_RESPONSE=True` (global re
 | POST | `/threads/foryou/` | 〃 | For You feed; ephemeral body `{lang, region, tags}` | yes | yes | yes |
 | POST | `/threads/closeyou/` | 〃 | Close You feed; body `{geohash, radius_km}` (1–100, default 15) | yes | yes | yes |
 | GET/POST | `/reactions/` | `ReactionsViewSet` (`reactions.py`) | List catalog / react to a thread | yes | yes | yes |
-| GET | `/search/` | `SearchViewSet` (`search.py`) | Search; `?q=&type=posts\|tags\|users&ordering=&page=` (throttle 60/min) | yes | yes | yes |
+| GET | `/search/` | `SearchViewSet` (`search.py`) | Search; `?q=&type=posts\|tags\|users\|media&ordering=&page=` (throttle 60/min) | yes | yes | yes |
 | GET | `/search/suggest/` | 〃 | Autocomplete (throttle 240/min) | yes | yes | yes |
 | GET | `/users/<hash>/` | `MasksViewSet` (`masks.py`) | Mask hover-card: joined, posts/replies counts | yes | yes | yes |
 | POST | `/{gw_hash}/` (24 hex) | `GatewayView` (`gateway.py`) | Rotating gateway; dispatches the inner envelope | yes | inner view's | — |
@@ -199,11 +200,31 @@ derive it in `save()`, backfill in the migration, and index it.
 **Search tabs** (`/search/?type=`): `posts` (root threads, `text_norm__contains`, ordered by
 `-momentum_score` or `-create_at`), `tags` (grouped by name with distinct-thread counts and a
 14-day activity sparkline, cached 5 min in LocMem keyed by tag-set MD5), `users` (mask public-ID
-prefix match with annotated `posts_count`). Every search response includes
-`context.counts = {posts, tags, users}` for the three tabs regardless of the active one;
+prefix match with annotated `posts_count`), `media` (Twitter-style gallery: the active
+`ThreadFile`s of the threads the posts tab matches — a semi-join over the same flat posts filter,
+served by the trigram index + the `thread_id` FK index — ordered by parent momentum then date,
+files in upload order within a thread; each item is the thread-card media shape plus `thread`,
+the parent's full card serialized once per distinct thread of the page). Every search response
+includes `context.counts = {posts, tags, users, media}` for the four tabs regardless of the
+active one;
 `SearchPagination` reuses these precomputed counts to avoid duplicate COUNT queries. Query length:
 max 100 chars; suggest needs ≥2 chars (below that: trending tags only, read from `TrendingTag`).
 Searching `@xxxxxx` (6 hex chars) matches a mask's public ID exactly.
+
+**Shadowban blocklist** (`BlockedTerm` + `app/methods/moderation.py`): a query carrying any
+active blocked term returns exactly the no-match shape — `/search/` answers the same empty
+`{counts: 0…}` contract as an empty query, `/search/suggest/` returns `{"tags": [], "threads": []}`
+and `/threads/?q=|?tag=` an empty page — indistinguishable from "nobody ever posted that".
+Matching is **whole-word** (Python `(?<!\w)…(?!\w)` / Postgres `\y…\y`), case- and
+accent-insensitive: both the query and `term_norm` go through the same normalization contract
+above, and the DB sweep prefilters with `__contains` (trigram index) before the boundary regex.
+A blocked **main search** additionally soft-deletes (`is_active=False`) every thread and tag
+still carrying the term (`shadowban_matching`); suggest and the threads list are read-only
+(suggest fires per keystroke). Saving a `BlockedTerm` in the admin sweeps immediately via the
+`post_save` signal (`app/signals/moderation_signals.py`) and invalidates the LocMem-cached list
+(`moderation:blocked_terms`, TTL 5 min). **CAREFUL**: swept rows are later HARD-DELETED by the
+purge GC (Thread/Tag are in `PURGE_MODELS`) — a broad term permanently removes innocent content;
+keep entries specific. Blocked queries follow the privacy rule: never logged, never echoed.
 
 **For You** (`/threads/foryou/`): candidates = global top-by-momentum ∪ posts matching the user's
 tags. Entry threshold: `unique_commenters ≥ 1 OR unique_reactors ≥ 3 OR age < 2h`. Final score =

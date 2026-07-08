@@ -15,6 +15,7 @@ from app.models.purge_log import PurgeLog
 from app.models.system_metrics import SystemMetrics
 from app.models.trending_tag import TrendingTag
 from app.models.report import Report
+from app.models.blocked_term import BlockedTerm
 
 # Methods
 from app.methods import presence
@@ -330,6 +331,21 @@ class TrendingTagAdmin(BaseModelAdmin):
 
     def has_change_permission(self, request, obj=None) -> (bool):
         return False
+
+
+@admin.register(BlockedTerm)
+class BlockedTermAdmin(BaseModelAdmin):
+    """
+    Moderation blocklist (shadowban filter). This IS the management surface:
+    saving a term takes effect immediately — the post_save signal drops the
+    cached list and soft-deletes every existing thread/tag carrying the term
+    (whole-word, accent/case-insensitive). CAREFUL: soft-deleted threads are
+    later HARD-DELETED by the purge GC; adding a broad or ambiguous word
+    permanently removes innocent content.
+    """
+
+    list_display = ("term", "term_norm", "is_active", "create_at", "update_at")
+    search_fields = ("term", "term_norm")
 
 
 @admin.register(Report)
