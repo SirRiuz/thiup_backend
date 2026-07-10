@@ -405,13 +405,17 @@ class SearchViewSet(GenericViewSet):
                 TrendingTag.objects.order_by("-score").values(
                     "name", "thread_count")[:SUGGEST_TRENDING_LIMIT]
             )
-            return Response({
-                "trending": [
-                    {"type": "tag", "name": t["name"],
-                     "count": t["thread_count"]}
-                    for t in trending
-                ]
-            })
+            items = [
+                {"type": "tag", "name": t["name"], "count": t["thread_count"]}
+                for t in trending
+            ]
+            # REAL activity series for the landing sparklines — the same
+            # aggregation (and 5-min LocMem cache) the tags tab uses. The
+            # trending names are identical for every user, so this resolves
+            # to ONE cached aggregate shared app-wide, not a per-request
+            # cost.
+            self._attach_activity(items)
+            return Response({"trending": items})
 
         # Shadowban blocklist: a blocked input suggests NOTHING — the same
         # shape a term nobody posted about returns. Read-only here (no
