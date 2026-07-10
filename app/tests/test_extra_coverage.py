@@ -148,12 +148,28 @@ class MasksEndpointTest(TestCase):
         r = client.get("/me/")
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertIn("mask_id", r.data)
+        # Registration date for the profile's "date joined" line.
+        self.assertIn("joined", r.data)
+        self.assertTrue(r.data["joined"])
 
     def test_user_hovercard_and_404(self):
         mask = Mask.objects.create(hash="a" * 64, country_code="CO")
         r = client.get(f"/users/{mask.hash}/")
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertEqual(client.get("/users/deadbeef/").status_code,
+                         status.HTTP_404_NOT_FOUND)
+
+    def test_user_profile_by_public_id(self):
+        # The 6-hex PUBLIC id (the UI's mask id) resolves the same profile —
+        # /anon/<id> deep links depend on it.
+        mask = Mask.objects.create(hash="b" * 64, country_code="CO")
+        r = client.get(f"/users/{mask.hash[:6]}/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(r.data["mask_id"], mask.hash)
+        # Reactions received (0 for a fresh mask — never None/missing).
+        self.assertEqual(r.data["reactions_count"], 0)
+        # An unknown public id still 404s.
+        self.assertEqual(client.get("/users/0f0f0f/").status_code,
                          status.HTTP_404_NOT_FOUND)
 
 

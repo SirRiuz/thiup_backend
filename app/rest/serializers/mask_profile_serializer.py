@@ -19,8 +19,14 @@ class MaskProfileSerializer(serializers.Serializer):
     joined = serializers.DateTimeField(source="create_at")
     posts_count = serializers.IntegerField()
     replies_count = serializers.IntegerField()
+    # Reactions received (annotated Sum over the same thread join — None
+    # when the mask has no active threads, hence the `or 0`).
+    reactions_count = serializers.SerializerMethodField()
     # Ephemeral presence (LocMem, 60 s TTL) — additive, boolean only.
     is_online = serializers.SerializerMethodField()
+
+    def get_reactions_count(self, obj) -> int:
+        return getattr(obj, "reactions_count", 0) or 0
 
     def get_is_online(self, obj) -> bool:
         return is_online(obj.hash)

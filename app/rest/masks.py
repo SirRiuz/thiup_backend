@@ -1,5 +1,9 @@
+# Python
+import re
+
 # Django
 from django.db.models import Count, Q, Sum
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -37,9 +41,27 @@ class MasksViewSet(GenericViewSet):
     serializer_class = MaskProfileSerializer
     permission_classes = (IsClientAuthenticated,)
 
+    # The PUBLIC mask id (the 6-hex prefix shown everywhere in the UI) is
+    # also accepted as the lookup — it powers the /anon/<id> profile deep
+    # links without ever exposing the full hash in a URL. Same policy as the
+    # search's author filter (exact, complete public id only).
+    _PUBLIC_ID_RE = re.compile(r"^[0-9a-f]{6}$")
+
     def retrieve(self, request, pk) -> Response:
-        mask = get_object_or_404(
-            Mask.objects.filter(is_active=True, hash=pk).annotate(
+        key = (pk or "").strip().lower()
+        if self._PUBLIC_ID_RE.match(key):
+            # Prefix lookup (cheap: the hash index serves startswith). On the
+            # astronomically-rare prefix collision, the OLDEST mask wins —
+            # deterministic, same one the search author filter lists first.
+            lookup = Q(hash__startswith=key)
+        else:
+            lookup = Q(hash=pk)
+        # .first() (not get_object_or_404): a prefix collision must return
+        # the deterministic winner, never a MultipleObjectsReturned 500.
+        mask = (
+            Mask.objects.filter(lookup, is_active=True)
+            .order_by("create_at")
+            .annotate(
                 posts_count=Count(
                     "thread",
                     filter=Q(
@@ -57,8 +79,20 @@ class MasksViewSet(GenericViewSet):
                     ),
                     distinct=True,
                 ),
+                # Reactions RECEIVED across all their posts — the same
+                # precomputed counter /me's owner stats aggregate
+                # (unique_reactors_count; one reaction per user → distinct
+                # reactors == total reactions). Same single thread JOIN as
+                # the counts above: no extra queries, no row duplication.
+                reactions_count=Sum(
+                    "thread__unique_reactors_count",
+                    filter=Q(thread__is_active=True),
+                ),
             )
+            .first()
         )
+        if mask is None:
+            raise Http404
         serializer = MaskProfileSerializer(mask)
         return Response(serializer.data, status=HTTP_200_OK)
 
@@ -82,6 +116,9 @@ class CurrentMaskView(APIView):
             return Response({"detail": "No mask."}, status=HTTP_404_NOT_FOUND)
         return Response({
             "mask_id": mask.hash,
+            # Registration date (profile "date joined" — same source as the
+            # public profile serializer's `joined`: the mask's create_at).
+            "joined": mask.create_at,
             # Reader's region (middleware's GeoIP): the FE forwards it
             # to For You (?region=) for the regional boost. The BA
             # re-validates it against GeoIP on each request — declarative.
