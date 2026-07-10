@@ -210,6 +210,22 @@ class SearchTabsTest(TestCase):
         self.assertEqual(client.get("/search/suggest/?q=l").status_code,
                          status.HTTP_200_OK)
 
+    def test_suggest_trending_carries_activity_series(self):
+        # The landing sparklines are REAL: every trending item ships its
+        # posts-per-day series (ACTIVITY_DAYS values, chronological).
+        from app.models.trending_tag import TrendingTag
+        from app.rest.search import ACTIVITY_DAYS
+
+        TrendingTag.objects.create(
+            name="lluvia", name_norm="lluvia", thread_count=3, score=9.0)
+        r = client.get("/search/suggest/?q=")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        trending = r.data["trending"]
+        self.assertTrue(trending)
+        for item in trending:
+            self.assertIn("activity", item)
+            self.assertEqual(len(item["activity"]), ACTIVITY_DAYS)
+
     def test_query_too_long_is_rejected(self):
         r = client.get("/search/?q=" + "x" * 200)
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
