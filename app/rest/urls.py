@@ -12,6 +12,7 @@ from app.rest.search import SearchViewSet
 from app.rest.masks import MasksViewSet, CurrentMaskView
 from app.rest.ticket import TicketView
 from app.rest.config import ConfigView
+from app.rest.captcha import CaptchaVerifyView
 from app.rest.gateway import GatewayView
 
 router = routers.DefaultRouter()
@@ -31,6 +32,9 @@ urlpatterns = [
     path("config/", ConfigView.as_view()),
     # Current user (private + E2E): identity of one's own mask.
     path("me/", CurrentMaskView.as_view()),
+    # Human-pass issuer: exchanges a single-use Cap captcha token for the
+    # short-lived pass that entity-creating writes require (@human_validator).
+    path("captcha/verify/", CaptchaVerifyView.as_view()),
     path("", include(router.urls)),
     # ── GATEWAY de transporte con PATH ÚNICO POR REQUEST /{token}/ ───────
     # COMODÍN (verificar, no registrar): los paths únicos no se pueden

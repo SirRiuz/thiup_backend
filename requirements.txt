@@ -102,7 +102,9 @@ pytz==2026.2
 pyyaml==6.0.3
     # via drf-yasg
 requests==2.34.2
-    # via geoip2
+    # via
+    #   -r requirements.in
+    #   geoip2
 s3transfer==0.17.0
     # via boto3
 shortuuid==1.0.13

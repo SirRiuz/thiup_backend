@@ -11,6 +11,7 @@ from app.models.thread import Thread
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.captcha import human_validator
 from app.rest.serializers.report_serializer import ReportSerializer
 
 
@@ -29,6 +30,7 @@ class ReportsViewSet(GenericViewSet):
     throttle_classes = (ScopedRateThrottle,)
     throttle_scope = "reports"
 
+    @human_validator
     def create(self, request) -> Response:
         """
         Create or update (upsert) a report for a thread.

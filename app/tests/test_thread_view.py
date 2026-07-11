@@ -2,6 +2,7 @@
 from datetime import datetime
 
 # Django
+from django.core.cache import cache
 from django.test import Client, TransactionTestCase, override_settings
 from rest_framework import status
 
@@ -20,6 +21,12 @@ client = Client()
 class ThreadsViewTest(TransactionTestCase):
 
     reset_sequences = True
+
+    def setUp(self):
+        # The create throttle counts per IP in the LocMem cache, which
+        # outlives each test in the pytest process: clear it so creates from
+        # previous tests/files never bleed a 429 into this one.
+        cache.clear()
 
     def __get_client_token(self) -> (str):
         """Se encarga de generar un client token."""

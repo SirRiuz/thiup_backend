@@ -37,26 +37,28 @@ def _seal(plain_str):
 
 
 def gateway_post(method, path, token=None, query="", body=None,
-                 url_path=None):
-    """Emite por el GATEWAY (path ÚNICO) como el FE: genera un nonce, calcula
-    el token = HMAC(seed, nonce), mete el nonce DENTRO del sobre y hace POST a
-    /{token}/. `url_path` permite forzar un path de URL distinto (para probar
-    el mismatch token↔nonce)."""
+                 url_path=None, extra=None):
+    """Posts through the GATEWAY (per-request UNIQUE path) like the FE:
+    generates a nonce, computes token = HMAC(seed, nonce), puts the nonce
+    INSIDE the envelope and POSTs to /{token}/. `url_path` forces a different
+    URL path (to exercise the token↔nonce mismatch). `extra` merges additional
+    client kwargs (e.g. HTTP_X_HUMAN_PASS) — headers ride OUTSIDE the
+    envelope, like the ticket."""
     nonce = secrets.token_hex(16)
     inner = json.dumps({
         "method": method, "path": path, "query": query,
         "body": body, "nonce": nonce})
     data, header = _seal(inner)
     real_path = url_path if url_path is not None else f"/{derive_token(nonce)}/"
-    extra = {}
+    client_kwargs = dict(extra) if extra else {}
     if token is not None:
-        extra["HTTP_CLIENT_ASSERTION"] = token
+        client_kwargs["HTTP_CLIENT_ASSERTION"] = token
     return client.post(
         real_path,
         data=data,
         content_type="application/raw",
         HTTP_X_REQUEST_PAYLOAD=header,
-        **extra,
+        **client_kwargs,
     )
 
 

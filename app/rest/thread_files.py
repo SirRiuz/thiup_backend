@@ -20,6 +20,7 @@ from app.models.thread import Thread
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.captcha import human_validator
 from app.constants.threads import UPLOAD_CONTENT_TYPE_EXT
 from app.methods.storage_backends import get_backend, build_object_key
 from app.rest.serializers.thread_file_serializer import (
@@ -56,6 +57,7 @@ class ThreadFilesViewSet(GenericViewSet):
     permission_classes = (IsClientAuthenticated,)
 
     @action(detail=False, methods=["post"], url_path="presign")
+    @human_validator
     def presign(self, request) -> Response:
         """
         Step 1 — issue an upload URL. No thread yet: the file is uploaded before
@@ -138,6 +140,7 @@ class ThreadFilesViewSet(GenericViewSet):
         )
 
     @action(detail=False, methods=["post"], url_path="confirm")
+    @human_validator
     def confirm(self, request) -> Response:
         """
         Step 3 — at Send: verify the object exists, attach it to the thread,

@@ -5,12 +5,14 @@ from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK, HTTP_201_CREATED
 
 # Libs
+from rest_framework.throttling import ScopedRateThrottle
 from app.models.reaction_relation import (
     ReactionRelation,
     Reaction
 )
 from app.models.thread import Thread
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.captcha import human_validator
 from app.rest.serializers.reaction_serializer import (
     ReactionRelationSerializer,
     BaseReactionSerializer,
@@ -23,6 +25,14 @@ class ReactionsViewSet(GenericViewSet):
     queryset = ReactionRelation.objects.filter(is_active=True)
     serializer_class = ReactionRelationSerializer
     permission_classes = (IsClientAuthenticated, )
+
+    def get_throttles(self) -> (list):
+        # Rate-limit ONLY reacting (anti-abuse companion of the captcha
+        # human pass): the catalog list stays unthrottled.
+        if self.action == "create":
+            self.throttle_scope = "reactions_create"
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
 
     def list(self, request) -> (Response):
         """
@@ -56,6 +66,7 @@ class ReactionsViewSet(GenericViewSet):
         serializer = BaseReactionSerializer(queryset, many=True, context={"request": request})
         return Response(serializer.data, status=HTTP_200_OK)
 
+    @human_validator
     def create(self, request) -> (Response):
         """
         Create a new reaction for a thread

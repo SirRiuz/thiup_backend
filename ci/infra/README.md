@@ -310,6 +310,49 @@ run writes a `PurgeLog` row (read-only in the admin) with counts, per-model brea
 and errors. The `deploy` step re-points BOTH schedules (`--schedule` takes a
 comma-separated list) at the deployed revision.
 
+## Captcha (Cap standalone) — enabling in production
+
+The anti-bot layer (see CLAUDE.md, "Captcha (Cap) — human pass") needs the Cap
+server running next to the backend. The `cap` sidecar is ALWAYS part of the web
+task; the only switch is `CAPTCHA_PROTECT` (Django-side enforcement, SSM). To
+set it up:
+
+1. **Store**: provision a persistent managed Valkey/Redis (**must** persist and
+   use `maxmemory-policy=noeviction` — the site key lives in it). Note its TLS
+   hostname.
+2. **Stack update** with the required captcha parameters:
+   - `CapAdminKey=<strong random, ≥12 chars>`
+   - `CapRedisTlsHost=<managed host>` (adds the `cap-tls-proxy` sidecar — Bun's
+     Redis client can't do TLS+SNI, so Cap reaches the store through a
+     certificate-verified socat bridge on the task loopback)
+   - `CapRedisUrl=redis://<user>:<password>@127.0.0.1:6379` (through the proxy)
+   - `CapSiteKey`/`CapSecret`: any placeholder on the FIRST update (the
+     dashboard where keys are created only exists once cap runs) — the real
+     values are set in step 4.
+   - `CaptchaProtect` defaults to **True** (writes require the pass from day
+     one). If the FE is already serving real users BEFORE the site key exists,
+     pass `False` here and flip it in SSM at step 5 — with placeholders and
+     the flag on, every write 403s.
+3. **Tunnel route** (Zero Trust → Networks → Tunnels, same tunnel): add
+   `captcha.thiup.com` → `http://localhost:3333`. Optional but recommended:
+   a Cloudflare Access policy for the Cap admin dashboard.
+4. **Site key**: open the dashboard at the public hostname, log in with the
+   admin key, create a key (set its CORS origins to the app origin), then
+   update the SSM param `/${stack}/CAP_SITE_KEY` and the secret
+   `/${stack}/CAP_SECRET` with the real values.
+5. **Enforce**: flip `/${stack}/CAPTCHA_PROTECT` to `True` in SSM and force a
+   new deployment. Toggling it back off never needs a stack update either.
+
+Sidecar topology (awsvpc — all task containers share localhost): browser →
+tunnel → `cap:3333`; Django → `http://127.0.0.1:3333` (siteverify, set inline
+in the task def); cap → `127.0.0.1:6379` (socat) → TLS+SNI → managed store.
+The ephemeral cron tasks (momentum/purge/one-offs) also pull and briefly start
+the sidecars until the web command exits — harmless (nothing routes to them)
+but it is part of each tick's billed pull time. If the store is unreachable,
+cap crash-restarts in place (RestartPolicy) without affecting web. Memory: cap
+≈150 MB RSS + socat ≈2 MB fit inside the 512 MB task next to web (~84 MB) and
+cloudflared — watch the task's memory metric after enabling.
+
 ## Cost profile
 
 Cost is a design constraint: one user shouldn't pay for idle enterprise plumbing.

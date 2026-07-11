@@ -23,7 +23,9 @@ from app.rest.serializers.thread_serializer import \
 
 # Libs
 from rest_framework.exceptions import ValidationError
+from rest_framework.throttling import ScopedRateThrottle
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.captcha import human_validator
 from app.utils.text import strip_accents
 from app.constants.search import MAX_QUERY_LENGTH
 from app.utils.locale import normalize_language, normalize_region
@@ -134,6 +136,15 @@ class ThreadsViewSet(GenericViewSet):
     filter_backends = (filters.OrderingFilter,)
     ordering_fields = ("create_at", "reactions_count")
     ordering = ("-create_at",)
+
+    def get_throttles(self) -> (list):
+        # Rate-limit ONLY entity creation (anti-abuse companion of the
+        # captcha human pass): reads and the read-only POST feeds
+        # (foryou/closeyou) stay unthrottled.
+        if self.action == "create":
+            self.throttle_scope = "threads_create"
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
 
     def get_queryset(self) -> (QuerySet):
         now_date = timezone.localtime(timezone.now())
@@ -372,6 +383,7 @@ class ThreadsViewSet(GenericViewSet):
 
         return Response(serializer, status=HTTP_200_OK)
 
+    @human_validator
     def create(self, request) -> (Response):
         """
         Create a new thread

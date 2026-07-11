@@ -28,6 +28,17 @@ class ConfigView(APIView):
             {
                 "encrypted_response": settings.ENCRYPTED_RESPONSE,
                 "single_request_protect": settings.SINGLE_REQUEST_PROTECT,
+                # Captcha bootstrap (additive keys — the two above are a
+                # frozen contract). captcha_endpoint is the full public API
+                # endpoint for @cap.js/widget (data-cap-api-endpoint): the
+                # FE needs zero extra config. Public metadata only — the
+                # backend-only CAP_SECRET never leaves the server.
+                "captcha_protect": settings.CAPTCHA_PROTECT,
+                "captcha_endpoint": (
+                    f"{settings.CAP_PUBLIC_URL.rstrip('/')}/"
+                    f"{settings.CAP_SITE_KEY}/"
+                    if settings.CAPTCHA_PROTECT else None
+                ),
             },
             status=HTTP_200_OK,
         )
