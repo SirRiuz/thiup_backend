@@ -1,3 +1,14 @@
+# Project metadata only — Thiup is a Django app deployed via Docker, NOT a
+# pip-installable package (dependencies live in requirements.in). This table
+# exists so the license is machine-readable; there is no [build-system].
+[project]
+name = "thiup-backend"
+version = "0.1.0"
+description = "Thiup — anonymous, privacy-first social network (backend)."
+requires-python = ">=3.12"
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE.md"]
+
 [tool.ruff]
 # Lint + format in one tool (run via `make lint` / `make format` or the
 # pre-commit hook). Django migrations are generated — never linted/formatted.

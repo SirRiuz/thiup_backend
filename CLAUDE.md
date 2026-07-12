@@ -431,3 +431,8 @@ load-bearing facts:
     (`# ----`, `# ====`, box headers, etc.) to separate sections. Let the code structure speak;
     when a section genuinely needs a label, use a single short comment line (`# Backend selection.`).
     Comments should explain the *why*, be concise, and stay in English (see rule 1).
+11. **Never create branches or commit automatically.** Leave all changes UNCOMMITTED in the
+    working tree on the current branch — do not run `git checkout -b`, `git commit`, or `git push`
+    unless the user EXPLICITLY asks in that message. When work is done, stop and let the user
+    review, stage and commit. Suggesting a branch name or commit message is fine; running the
+    git commands is not.
