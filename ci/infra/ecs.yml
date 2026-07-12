@@ -670,6 +670,20 @@ Resources:
           DependsOn:
             - ContainerName: valkey
               Condition: HEALTHY
+          # Observability only (non-essential containers aren't acted on by
+          # ECS when unhealthy): surfaces a wedged cap in the Containers tab
+          # instead of burying it in logs. The image has no curl — bun probes
+          # its own HTTP port.
+          HealthCheck:
+            Command:
+              - CMD
+              - bun
+              - -e
+              - "const r = await fetch('http://127.0.0.1:3333/'); if (!r.ok) process.exit(1);"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
           Environment:
             # Cap's own listen-port knob; matches CAP_SITEVERIFY_URL above
             # and the tunnel route (localhost:3333).
