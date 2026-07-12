@@ -103,6 +103,7 @@ CORS_EXPOSE_HEADERS = ("x-response-payload",)
 CORS_ALLOW_HEADERS = default_headers + (
     'client-assertion',
     'x-request-payload',  # sobre del body cifrado del request
+    'x-human-pass',  # captcha human pass on entity-creating writes
 )
 
 # Real path of the Django admin — REQUIRED. The literal /admin/ is reserved
@@ -136,6 +137,45 @@ SINGLE_REQUEST_PROTECT = config("SINGLE_REQUEST_PROTECT", cast=bool)
 if "pytest" in sys.modules:
     ENCRYPTED_RESPONSE = True
     SINGLE_REQUEST_PROTECT = True
+
+# Captcha (Cap standalone, https://github.com/tiagozip/cap): the FE widget
+# solves an invisible proof-of-work challenge directly against the Cap server
+# and exchanges the resulting single-use token at POST /captcha/verify/ for a
+# short-lived, mask-bound "human pass" JWT. Entity-creating writes require the
+# pass (see @human_validator in app/permissions/captcha.py). The Cap server
+# itself is deployed separately — all coordinates are env-driven.
+CAPTCHA_PROTECT = config("CAPTCHA_PROTECT", cast=bool, default=False)
+# Lifetime of the human pass. Short: bounds what a bot gains from one solved
+# proof-of-work; the FE renews in the background when it expires.
+CAPTCHA_PASS_TTL_SECONDS = config("CAPTCHA_PASS_TTL", cast=int, default=600)
+# Single local knob: the Cap container binds this port (SERVER_PORT) and
+# publishes it 1:1, so both URLs below derive from it. The explicit URL
+# overrides exist for a Cap that lives elsewhere (prod). The `or` guard makes
+# a present-but-EMPTY env behave like unset (decouple skips its default then),
+# so the .env.template can ship these uncommented and blank.
+CAP_PORT = config("CAP_PORT", cast=int, default=3333)
+# Server-side base URL for the siteverify call (internal hostname is fine).
+CAP_SITEVERIFY_URL = config(
+    "CAP_SITEVERIFY_URL", default="") or f"http://cap:{CAP_PORT}"
+# Browser-facing base URL, exposed via /config/ so the widget can bootstrap.
+CAP_PUBLIC_URL = config(
+    "CAP_PUBLIC_URL", default="") or f"http://localhost:{CAP_PORT}"
+CAP_SITE_KEY = config("CAP_SITE_KEY", default="")
+# Backend-only secret — never logged, never echoed, never sent to the FE.
+CAP_SECRET = config("CAP_SECRET", default="")
+
+# Opposite pinning to the transport flags above: captcha is forced OFF under
+# pytest so the existing suite needs no pass headers; test_captcha.py pins it
+# ON per-class with @override_settings and mocks the siteverify call.
+if "pytest" in sys.modules:
+    CAPTCHA_PROTECT = False
+
+# The URLs always have a derived default; only the key pair has none.
+if CAPTCHA_PROTECT and not (CAP_SITE_KEY and CAP_SECRET):
+    raise ImproperlyConfigured(
+        "CAPTCHA_PROTECT=True requires CAP_SITE_KEY and CAP_SECRET "
+        "(create them in the Cap dashboard)."
+    )
 
 # Seed for the gateway's ROTATING PATH (/{hash}/). Dedicated to deriving the
 # path — it does NOT sign anything critical (that is API_SECRET_KEY). It also
@@ -288,6 +328,14 @@ REST_FRAMEWORK = {
         'search_suggest': config('THROTTLE_SUGGEST', default='240/min'),
         # Reports (ScopedRateThrottle, anonymous per IP): cap report abuse.
         'reports': config('THROTTLE_REPORTS', default='30/min'),
+        # Entity-creating writes (ScopedRateThrottle, anonymous per IP):
+        # bound what a bot achieves within one human-pass window. Generous
+        # for humans, hard ceiling for scripts.
+        'threads_create': config('THROTTLE_THREADS', default='10/min'),
+        'reactions_create': config('THROTTLE_REACTIONS', default='60/min'),
+        # Human-pass issuer (/captcha/verify/): renewals are ~1 per TTL per
+        # user, so this is far above legitimate traffic.
+        'captcha': config('THROTTLE_CAPTCHA', default='20/min'),
     },
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'DEFAULT_RENDERER_CLASSES': [

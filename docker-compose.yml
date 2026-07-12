@@ -96,6 +96,15 @@ services:
       - UPLOAD_PRESIGN_EXPIRES=${UPLOAD_PRESIGN_EXPIRES:-600}
       # 512 MB general hard cap (see .env.template; proxy must allow ≥ this).
       - UPLOAD_MAX_BYTES=${UPLOAD_MAX_BYTES:-536870912}
+      # Captcha (Cap standalone — the `cap` service below). Real defaults:
+      # empty values would crash the bool/int casts at startup. CAP_PORT is
+      # the single local knob — settings.py derives both Cap URLs from it
+      # (overridable with CAP_SITEVERIFY_URL / CAP_PUBLIC_URL for a remote Cap).
+      - CAPTCHA_PROTECT=${CAPTCHA_PROTECT:-False}
+      - CAPTCHA_PASS_TTL=${CAPTCHA_PASS_TTL:-600}
+      - CAP_PORT=${CAP_PORT:-3333}
+      - CAP_SITE_KEY=${CAP_SITE_KEY:-}
+      - CAP_SECRET=${CAP_SECRET:-}
     volumes:
       - .:/app:Z
       - static_volume:/app/staticfiles
@@ -197,6 +206,53 @@ services:
     networks:
       - internal
 
+  valkey:
+    # Local Redis-compatible store. Used by `cap` only — Django never
+    # touches it (the "no Redis" rule is about Django machinery).
+    image: valkey/valkey:9-alpine
+    restart: unless-stopped
+    container_name: "${APP_NAME}_valkey"
+    command: valkey-server --save 60 1 --loglevel warning --maxmemory-policy noeviction
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - internal
+
+  cap:
+    # Official Cap standalone (https://github.com/tiagozip/cap): the FE
+    # widget solves the invisible proof-of-work directly against it; the
+    # backend only calls its /siteverify (see app/methods/captcha.py).
+    # `web` deliberately does NOT depend on it — the app must boot with Cap
+    # down (the human-pass layer fails closed at request time instead).
+    # One-time setup: open http://localhost:${CAP_PORT}, log in with
+    # CAP_ADMIN_KEY, create a key and paste CAP_SITE_KEY/CAP_SECRET in .env.
+    image: tiago2/cap:latest
+    restart: unless-stopped
+    container_name: "${APP_NAME}_cap"
+    environment:
+      - ADMIN_KEY=${CAP_ADMIN_KEY:-}
+      # Cap's store: the local valkey by default; override REDIS_URL in
+      # .env to point elsewhere. Site keys live in the store, not in env —
+      # switching stores means re-creating the key.
+      - REDIS_URL=${REDIS_URL:-redis://valkey:6379}
+      # Cap's own listen-port knob: make the process bind CAP_PORT itself so
+      # the container, the published port and the startup log all agree.
+      - SERVER_PORT=${CAP_PORT:-3333}
+    ports:
+      # Browser-facing (widget + admin dashboard). Django talks to it over
+      # the internal network (http://cap:CAP_PORT — derived in settings.py).
+      - ${CAP_PORT:-3333}:${CAP_PORT:-3333}
+    depends_on:
+      valkey:
+        condition: service_healthy
+    networks:
+      - internal
+
   nginx:
     image: nginx:alpine
     container_name: "${APP_NAME}_nginx"
@@ -220,6 +276,7 @@ volumes:
   postgres_data:
   static_volume:
   media_volume:
+  valkey_data:
 
 networks:
   internal:

@@ -79,6 +79,46 @@ header carrying a short-lived JWT (HS256, signed with `API_SECRET_KEY`, TTL 300 
 `{jti, iat, exp}`) issued by `GET /ticket/` (`app/methods/tokens.py`). When off, the permission
 is a no-op.
 
+**Captcha (Cap) — human pass** — anti-bot gate on entity-creating writes, flag `CAPTCHA_PROTECT`
+(default off → the whole layer is a no-op and the API behaves exactly as before):
+- Architecture: the FE widget (`@cap.js/widget`, invisible mode) solves a SHA-256 proof-of-work
+  directly against a **Cap standalone server** (https://github.com/tiagozip/cap). Locally it is
+  the `cap` + `valkey` docker-compose services (Valkey is Cap's OWN store — Django never touches
+  it; the "no Redis" rule is about Django machinery). Locally `CAP_PORT` (default 3333) is the
+  single knob: the container binds it and settings.py derives both Cap URLs from it. In prod the
+  stack template ships cap (+ socat TLS-proxy when a managed TLS store is set) as sidecars of the
+  web task — always present; `CAPTCHA_PROTECT` in SSM is the only switch (runbook in
+  `ci/infra/README.md`); the explicit overrides
+  `CAP_SITEVERIFY_URL`/`CAP_PUBLIC_URL` (plus `CAP_SITE_KEY`/`CAP_SECRET`) let Cap live anywhere.
+  Cap's store is a self-hosted `valkey` in BOTH environments: locally the compose service
+  (plain Redis over the compose network; `REDIS_URL` overrides it), in prod a task sidecar
+  whose `/data` rides on EFS so site keys survive deploys (no external store, no credentials).
+  Django never serves challenges and never touches this store.
+- Flow: the FE exchanges Cap's single-use token ONCE at `POST /captcha/verify/`
+  (`app/rest/captcha.py`) → Django redeems it against Cap's `/siteverify`
+  (`app/methods/captcha.py::verify_captcha_token`, 3 s timeout, no retries) → issues a
+  **human pass**: a JWT signed with `API_SECRET_KEY` (reuses `encode_token`), TTL
+  `CAPTCHA_PASS_TTL` (default 600 s), payload `{jti, iat, exp, purpose: "human_pass",
+  mask: <hash>}` — **bound to the requester's mask**, so it is not shareable across IPs.
+- Enforcement: the `@human_validator` decorator (`app/permissions/captcha.py`) on the write
+  actions (threads/reactions/reports `create`, thread-files `presign`/`confirm`) validates the
+  `X-Human-Pass` header **locally** (signature + exp + purpose + mask — zero HTTP on the write
+  path). Deliberately a per-action decorator: removing the line unprotects that single endpoint.
+  `foryou`/`closeyou` (read-only POSTs) and all GETs are NOT decorated.
+- Failure semantics: missing/expired/foreign pass → 403 `{code: "CAPTCHA_FAILED"}` (FE renews in
+  the background and retries); Cap unreachable/5xx → 503 `{code: "CAPTCHA_UNAVAILABLE"}`
+  **fail-closed, renewals only** — already-issued passes keep working until they expire; flag
+  off → `/captcha/verify/` answers 404 `{code: "CAPTCHA_DISABLED"}` (gateway pattern).
+- Abuse companion: create-only per-IP throttles (`get_throttles()` overrides, scopes
+  `threads_create` 10/min, `reactions_create` 60/min, `captcha` 20/min — env-tunable) bound what
+  a bot achieves within one pass window. Reads and the feed POSTs are never throttled by these.
+- `/config/` additionally exposes `captcha_protect` and `captcha_endpoint` (the composed
+  `{CAP_PUBLIC_URL}/{CAP_SITE_KEY}/` for the widget's `data-cap-api-endpoint`; `null` when off).
+- Privacy: Cap tokens, passes and `CAP_SECRET` are never logged or echoed. The pass carries only
+  the mask hash the server already knows. CORS allows the `x-human-pass` header.
+- Boot guard: `CAPTCHA_PROTECT=True` without the three CAP_* coordinates →
+  `ImproperlyConfigured`.
+
 **Mask identity** — `MaskMiddleware` (`app/middlewares/mask.py`) sets `request.mask` on every
 request: SHA-256(client IP) → get-or-create `Mask`, country resolved via the local
 `geolite2-country.mmdb` GeoIP DB. `/health/` is exempt so it can answer when the DB is down.
@@ -161,27 +201,33 @@ Default pagination: `PageNumberPagination`, page size 25.
 Legend — **Enc**: response encrypted when `ENCRYPTED_RESPONSE=True` (global renderer).
 **Ticket**: requires `Client-assertion` JWT when `SINGLE_REQUEST_PROTECT=True`
 (`IsClientAuthenticated`). **GW**: reachable through the gateway envelope.
+**Pass**: requires the `X-Human-Pass` captcha JWT when `CAPTCHA_PROTECT=True`
+(`@human_validator` — see "Captcha (Cap) — human pass" above).
 
-| Method | Path | View (file in `app/rest/`) | Purpose | Enc | Ticket | GW |
-|---|---|---|---|---|---|---|
-| GET | `/config/` | `ConfigView` (`config.py`) | Transport flags: `{encrypted_response, single_request_protect}` | yes | no (AllowAny) | no (bootstrap) |
-| GET | `/ticket/` | `TicketView` (`ticket.py`) | Issues client-assertion JWT (anon throttle 120/min) | yes | no (AllowAny) | no (bootstrap) |
-| GET | `/health/` | `HealthCheckView` (`health.py`) | Liveness probe → 200 `{"status":"ok"}` (no DB) | yes | no (AllowAny — the ECS container health check can't send a ticket) | yes |
-| GET | `/me/` | `CurrentMaskView` (`masks.py`) | Current mask: `{mask_id, country_code}` | yes | yes | yes |
-| GET/POST | `/threads/` | `ThreadsViewSet` (`threads.py`) | List (`?q=`, `?tag=`) / create thread | yes | yes | yes |
-| GET | `/threads/<uid>/` | 〃 | Thread detail | yes | yes | yes |
-| GET | `/threads/<uid>/responses/` | 〃 | Replies of a thread | yes | yes | yes |
-| GET | `/threads/mine/` | 〃 | Threads of `request.mask` | yes | yes | yes |
-| POST | `/threads/foryou/` | 〃 | For You feed; ephemeral body `{lang, region, tags}` | yes | yes | yes |
-| POST | `/threads/closeyou/` | 〃 | Close You feed; body `{geohash, radius_km}` (1–100, default 15) | yes | yes | yes |
-| GET/POST | `/reactions/` | `ReactionsViewSet` (`reactions.py`) | List catalog / react to a thread | yes | yes | yes |
-| GET | `/search/` | `SearchViewSet` (`search.py`) | Search; `?q=&type=posts\|tags\|users\|media&ordering=&page=` (throttle 60/min) | yes | yes | yes |
-| GET | `/search/suggest/` | 〃 | Autocomplete (throttle 240/min) | yes | yes | yes |
-| GET | `/users/<hash>/` | `MasksViewSet` (`masks.py`) | Mask hover-card: joined, posts/replies counts | yes | yes | yes |
-| POST | `/{gw_hash}/` (24 hex) | `GatewayView` (`gateway.py`) | Rotating gateway; dispatches the inner envelope | yes | inner view's | — |
-| any | `/admin/` | honeypot | Decoy admin; logs and blacklists | — | — | blocked |
-| any | `/{INTERNAL_ADMIN_URL}` | Django admin | Real admin (obfuscated path) | — | staff | blocked |
-| GET | `/admin/swagger/` | drf_yasg | Schema (IsAdminUser) | — | — | blocked |
+| Method | Path | View (file in `app/rest/`) | Purpose | Enc | Ticket | Pass | GW |
+|---|---|---|---|---|---|---|---|
+| GET | `/config/` | `ConfigView` (`config.py`) | Transport flags: `{encrypted_response, single_request_protect, captcha_protect, captcha_endpoint}` | yes | no (AllowAny) | no | no (bootstrap) |
+| GET | `/ticket/` | `TicketView` (`ticket.py`) | Issues client-assertion JWT (anon throttle 120/min) | yes | no (AllowAny) | no | no (bootstrap) |
+| GET | `/health/` | `HealthCheckView` (`health.py`) | Liveness probe → 200 `{"status":"ok"}` (no DB) | yes | no (AllowAny — the ECS container health check can't send a ticket) | no | yes |
+| GET | `/me/` | `CurrentMaskView` (`masks.py`) | Current mask: `{mask_id, country_code}` | yes | yes | no | yes |
+| POST | `/captcha/verify/` | `CaptchaVerifyView` (`captcha.py`) | Exchanges a single-use Cap token for the human pass (throttle 20/min); 404 `CAPTCHA_DISABLED` when the flag is off | yes | yes | no (it MINTS the pass) | yes |
+| GET/POST | `/threads/` | `ThreadsViewSet` (`threads.py`) | List (`?q=`, `?tag=`) / create thread (create throttle 10/min) | yes | yes | POST only | yes |
+| GET | `/threads/<uid>/` | 〃 | Thread detail | yes | yes | no | yes |
+| GET | `/threads/<uid>/responses/` | 〃 | Replies of a thread | yes | yes | no | yes |
+| GET | `/threads/mine/` | 〃 | Threads of `request.mask` | yes | yes | no | yes |
+| POST | `/threads/foryou/` | 〃 | For You feed; ephemeral body `{lang, region, tags}` | yes | yes | no (read-only POST) | yes |
+| POST | `/threads/closeyou/` | 〃 | Close You feed; body `{geohash, radius_km}` (1–100, default 15) | yes | yes | no (read-only POST) | yes |
+| GET/POST | `/reactions/` | `ReactionsViewSet` (`reactions.py`) | List catalog / react to a thread (create throttle 60/min) | yes | yes | POST only | yes |
+| POST | `/reports/` | `ReportsViewSet` (`reports.py`) | Report a thread — upsert per (thread, reporter mask) (throttle 30/min) | yes | yes | yes | yes |
+| POST | `/thread-files/presign/` | `ThreadFilesViewSet` (`thread_files.py`) | Step 1 of the direct-to-storage upload: issue PUT URL + detached pending `ThreadFile` | yes | yes | yes | yes |
+| POST | `/thread-files/confirm/` | 〃 | Step 3: verify the object exists, attach to thread, activate | yes | yes | yes | yes |
+| GET | `/search/` | `SearchViewSet` (`search.py`) | Search; `?q=&type=posts\|tags\|users\|media&ordering=&page=` (throttle 60/min) | yes | yes | no | yes |
+| GET | `/search/suggest/` | 〃 | Autocomplete (throttle 240/min) | yes | yes | no | yes |
+| GET | `/users/<hash>/` | `MasksViewSet` (`masks.py`) | Mask hover-card: joined, posts/replies counts | yes | yes | no | yes |
+| POST | `/{gw_hash}/` (24 hex) | `GatewayView` (`gateway.py`) | Rotating gateway; dispatches the inner envelope | yes | inner view's | inner view's | — |
+| any | `/admin/` | honeypot | Decoy admin; logs and blacklists | — | — | — | blocked |
+| any | `/{INTERNAL_ADMIN_URL}` | Django admin | Real admin (obfuscated path) | — | staff | — | blocked |
+| GET | `/admin/swagger/` | drf_yasg | Schema (IsAdminUser) | — | — | — | blocked |
 
 `TagsViewSet` is registered at `/tags/` but currently defines no actions (stub).
 
@@ -250,7 +296,8 @@ request path; expose it as a precomputed indexed column like `momentum_score`.
   no `conftest.py` — helpers live inside the test files).
 - Files: `app/tests/test_foryou.py` (momentum, For You/Close You, search, request crypto),
   `test_gateway.py` (rotation, HMAC validation, anti-SSRF, toggles), `test_thread_view.py`
-  (CRUD/replies/search, uses `TransactionTestCase`), `test_reaction_view.py`.
+  (CRUD/replies/search, uses `TransactionTestCase`), `test_reaction_view.py`, `test_captcha.py`
+  (siteverify seam, human pass, `@human_validator` scope, create throttles).
 - Run inside Docker: `make test` — a one-off container running pytest with coverage
   (term + HTML) and the **≥70%** gate (`--cov-fail-under=70`); no running stack required
   (the local image bakes in the dev deps). Or `docker compose exec web pytest`.
@@ -258,6 +305,11 @@ request path; expose it as a precomputed indexed column like `momentum_score`.
   tests pin the flags with `@override_settings`. When writing tests that hit the API, either
   pin the flags or use the existing helpers (`encrypted_post`, `gateway_post`, `decode_body`,
   `make_mask`, `make_thread`) from `test_foryou.py` / `test_gateway.py`.
+- `CAPTCHA_PROTECT` is forced **OFF** under pytest (opposite of the transport flags) so the
+  suite needs no pass headers; `test_captcha.py` pins it ON per-class and mocks the siteverify
+  HTTP seam (`app.methods.captcha._session.post` / `app.rest.captcha.verify_captcha_token`).
+  The create throttles DO run under pytest (LocMem-backed): a test class that fires many API
+  creates from the shared client IP should `cache.clear()` in `setUp` (see `ThreadsViewTest`).
 - Convention: every behavior change ships with a test. Spanish strings in test *data* are fine
   (user content); test names, comments and docstrings are English.
 
@@ -272,9 +324,13 @@ make test
 ```
 
 - Local stack (`make up`): postgres:15 (host port **5433**), `runserver` with autoreload,
-  migration, momentum loop, nginx. Production is AWS ECS/Fargate — not docker-compose
+  migration, momentum loop, purge loop, nginx, plus the Cap captcha standalone (`cap` on host
+  port **3333** + `valkey`, its own store). Production is AWS ECS/Fargate — not docker-compose
   (see "Production infrastructure" below). Local entry point: nginx on `SERVER_PORT`
   (default 8080).
+- Captcha one-time setup (only if you turn `CAPTCHA_PROTECT` on): set `CAP_ADMIN_KEY` in `.env`,
+  `make up`, open the Cap dashboard at `http://localhost:3333`, create a key, paste
+  `CAP_SITE_KEY`/`CAP_SECRET` into `.env`. `web` boots fine with Cap down (fail-closed).
 - Useful targets (see `make help`): `make shell`, `make shell-db` (psql), `make logs-web`,
   `make add_dummy_threads`, `make recompute_momentum`, `make validate-config`,
   `make dependencies` (rebuild the web image to pick up requirements changes; the local

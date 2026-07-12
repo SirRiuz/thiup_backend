@@ -20,6 +20,8 @@ Metadata:
         Parameters: [TunnelToken]
       - Label: { default: "Application config" }
         Parameters: [DebugValue, AllowedHosts, EncryptedResponse, SingleRequestProtect, GatewaySeed, InternalAdminUrl, CorsAllowedOrigins, CsrfTrustedOrigins, SecretKey]
+      - Label: { default: "Captcha (Cap standalone)" }
+        Parameters: [CaptchaProtect, CapPublicUrl, CapSiteKey, CapSecret, CapAdminKey]
       - Label: { default: "Object storage (S3 / Cloudflare R2)" }
         Parameters: [StorageBucketName, StoragePublicDomain, StorageEndpointUrl, StorageAccessKeyId, StorageSecretAccessKey]
       - Label: { default: "Database (external PostgreSQL)" }
@@ -175,6 +177,62 @@ Parameters:
     AllowedPattern: ".+"
     ConstraintDescription: Required (the cloudflared sidecar cannot start without it).
 
+  # ---- Captcha (Cap standalone, https://github.com/tiagozip/cap) ----
+  # The FE widget solves an invisible proof-of-work against the Cap server;
+  # Django only redeems tokens via siteverify and gates entity-creating
+  # writes behind the resulting "human pass" (see CLAUDE.md, Captcha section).
+  # The cap sidecar is ALWAYS part of the web task; CaptchaProtect (below)
+  # is the only on/off switch, and it only governs Django-side enforcement.
+  CaptchaProtect:
+    Type: String
+    Default: "True"
+    AllowedValues: ["True", "False"]
+    Description: >
+      Django-side enforcement flag (CAPTCHA_PROTECT). Defaults to ON: every
+      entity-creating write requires the human pass from day one — make sure
+      the tunnel route, site key and CAP_PUBLIC_URL are real BEFORE deploying
+      the FE, or all writes will 403. Stored in SSM — toggle there + force a
+      new deployment, no stack update needed.
+
+  CapPublicUrl:
+    Type: String
+    Default: "https://captcha.thiup.com/"
+    Description: >
+      Browser-facing base URL of the Cap server (dialed by visitors'
+      browsers; exposed to the FE via /config/ as captcha_endpoint). The
+      Cloudflare Tunnel route for this hostname must point at
+      http://localhost:3333 (the cap sidecar). Editable later in SSM
+      (/${stack}/CAP_PUBLIC_URL) without a stack update.
+
+  CapSiteKey:
+    Type: String
+    AllowedPattern: ".+"
+    ConstraintDescription: Required (stored in SSM, which rejects empty values).
+    Description: >
+      REQUIRED. Site key created in the Cap dashboard (public, ships to the
+      browser). Chicken-and-egg on first deploy: the dashboard only exists
+      AFTER the cap sidecar runs — pass any placeholder, create the key, then
+      edit the SSM param /${stack}/CAP_SITE_KEY with the real value.
+
+  CapSecret:
+    Type: String
+    NoEcho: true
+    AllowedPattern: ".+"
+    ConstraintDescription: Required (Secrets Manager rejects empty values).
+    Description: >
+      REQUIRED. Secret of the Cap site key (sk-...). Backend-only: Django
+      uses it for the siteverify call. Same first-deploy note as CapSiteKey —
+      placeholder first, then edit the secret /${stack}/CAP_SECRET.
+
+  CapAdminKey:
+    Type: String
+    NoEcho: true
+    AllowedPattern: ".{12,}"
+    ConstraintDescription: Required, minimum 12 characters (cap refuses to boot with less).
+    Description: >
+      REQUIRED. Admin key of the Cap dashboard (min 12 chars). Use a strong
+      random value — the dashboard is reachable through the public hostname.
+
   # ---- External database ---- (engine is hardcoded in the task def: always postgresql)
   DatabaseHost:
     Type: String
@@ -237,6 +295,8 @@ Resources:
                   - !Ref StorageAccessKeyIdSecret
                   - !Ref StorageSecretAccessKeySecret
                   - !Ref TunnelTokenSecret
+                  - !Ref CapSecretSecret
+                  - !Ref CapAdminKeySecret
 
   # Assets live in an external S3-compatible bucket (Cloudflare R2) reached with
   # access keys, so the task role needs no storage permissions.
@@ -314,6 +374,17 @@ Resources:
   ParamCsrfTrustedOrigins:
     Type: AWS::SSM::Parameter
     Properties: { Name: !Sub "/${AWS::StackName}/CSRF_TRUSTED_ORIGINS", Type: String, Value: !Ref CsrfTrustedOrigins }
+  # Captcha config (console-editable like the rest; SSM rejects empty
+  # values, hence the required non-empty parameters above).
+  ParamCaptchaProtect:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/CAPTCHA_PROTECT", Type: String, Value: !Ref CaptchaProtect }
+  ParamCapSiteKey:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/CAP_SITE_KEY", Type: String, Value: !Ref CapSiteKey }
+  ParamCapPublicUrl:
+    Type: AWS::SSM::Parameter
+    Properties: { Name: !Sub "/${AWS::StackName}/CAP_PUBLIC_URL", Type: String, Value: !Ref CapPublicUrl }
 
   # ---- Secrets in Secrets Manager (edit the value in the console) ----
   SecretKeySecret:
@@ -341,6 +412,64 @@ Resources:
     Properties:
       Name: !Sub "/${AWS::StackName}/TUNNEL_TOKEN"
       SecretString: !Ref TunnelToken
+  CapSecretSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/CAP_SECRET"
+      SecretString: !Ref CapSecret
+  CapAdminKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${AWS::StackName}/CAP_ADMIN_KEY"
+      SecretString: !Ref CapAdminKey
+
+  # ---- Cap's store: SELF-HOSTED valkey sidecar backed by EFS ----
+  # Fargate tasks are ephemeral, but Cap's site keys live in this store: the
+  # /data dir rides on EFS so the keys survive deploys and task replacement.
+  # Sized for KBs of data — EFS cost is cents. The access point pins the
+  # valkey user (uid/gid 999) so the container can write its RDB snapshots.
+  CapStoreSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} cap store - NFS from the service tasks only"
+      VpcId: !Ref VpcId
+      # Ingress on the EFS mount targets, NOT on the tasks: the task SG
+      # keeps its zero-inbound doctrine.
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref ServiceSecurityGroup
+
+  CapStoreFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      FileSystemTags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}-cap-store" }
+
+  CapStoreMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref CapStoreFileSystem
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroups: [!Ref CapStoreSecurityGroup]
+
+  CapStoreMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref CapStoreFileSystem
+      SubnetId: !Ref PublicSubnet2
+      SecurityGroups: [!Ref CapStoreSecurityGroup]
+
+  CapStoreAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref CapStoreFileSystem
+      PosixUser: { Uid: "999", Gid: "999" }
+      RootDirectory:
+        Path: /valkey
+        CreationInfo: { OwnerUid: "999", OwnerGid: "999", Permissions: "750" }
 
   # ---- Task definition ----
   TaskDefinition:
@@ -361,6 +490,9 @@ Resources:
       - ParamStorageEndpointUrl
       - ParamCorsAllowedOrigins
       - ParamCsrfTrustedOrigins
+      - ParamCaptchaProtect
+      - ParamCapSiteKey
+      - ParamCapPublicUrl
     Properties:
       Family: !Sub "${AWS::StackName}-web"
       RequiresCompatibilities: [FARGATE]
@@ -369,6 +501,14 @@ Resources:
       Memory: !Ref TaskMemory
       ExecutionRoleArn: !GetAtt ExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
+      # EFS-backed volume for Cap's valkey store (site keys survive deploys).
+      Volumes:
+        - Name: cap-store
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref CapStoreFileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref CapStoreAccessPoint
       ContainerDefinitions:
         - Name: web
           # Bootstrap tag: the service starts on :latest (always present), then the
@@ -409,6 +549,9 @@ Resources:
             # AWS_S3_REGION_NAME defaults to "auto" (R2) in settings; bucket /
             # domain / endpoint / keys come from SSM + Secrets Manager below.
             - { Name: DATABASE_ENGINE,        Value: django.db.backends.postgresql }
+            # Cap sidecar topology (awsvpc: containers share localhost). Set
+            # unconditionally — Django only dials it when CAPTCHA_PROTECT=True.
+            - { Name: CAP_SITEVERIFY_URL,     Value: "http://127.0.0.1:3333" }
           # User-managed in the AWS console: SSM Parameter Store (config) +
           # Secrets Manager (secrets). Edit the value there, then redeploy.
           Secrets:
@@ -431,6 +574,12 @@ Resources:
             - { Name: DATABASE_PASSWORD,      ValueFrom: !Ref DatabasePasswordSecret }
             - { Name: AWS_ACCESS_KEY_ID,      ValueFrom: !Ref StorageAccessKeyIdSecret }
             - { Name: AWS_SECRET_ACCESS_KEY,  ValueFrom: !Ref StorageSecretAccessKeySecret }
+            # Captcha: enforcement flag + widget bootstrap (SSM, console-
+            # editable) and the siteverify secret (Secrets Manager).
+            - { Name: CAPTCHA_PROTECT,        ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/CAPTCHA_PROTECT" }
+            - { Name: CAP_SITE_KEY,           ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/CAP_SITE_KEY" }
+            - { Name: CAP_PUBLIC_URL,         ValueFrom: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/CAP_PUBLIC_URL" }
+            - { Name: CAP_SECRET,             ValueFrom: !Ref CapSecretSecret }
 
         # Cloudflare Tunnel connector: opens an OUTBOUND-only connection to
         # Cloudflare's edge and forwards tunnel traffic to gunicorn over the
@@ -466,6 +615,90 @@ Resources:
               awslogs-group: !Ref LogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: cloudflared
+
+        # Cap's SELF-HOSTED store: valkey with its /data on EFS (site keys
+        # must survive deploys — Fargate storage is ephemeral). Persistence
+        # knobs mirror the local compose service: RDB snapshot every 60 s,
+        # never evict. NOT essential + restarted on crash, like cloudflared.
+        - Name: valkey
+          Image: docker.io/valkey/valkey:9-alpine
+          Essential: false
+          RestartPolicy:
+            Enabled: true
+            IgnoredExitCodes: [0]
+          Command:
+            - valkey-server
+            - "--save"
+            - "60"
+            - "1"
+            - "--loglevel"
+            - warning
+            - "--maxmemory-policy"
+            - noeviction
+          MountPoints:
+            - SourceVolume: cap-store
+              ContainerPath: /data
+          # Lets cap order its start on a store that actually answers.
+          HealthCheck:
+            Command: [CMD, valkey-cli, ping]
+            Interval: 10
+            Timeout: 5
+            Retries: 5
+            StartPeriod: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: valkey
+
+        # Cap captcha standalone: serves challenge/redeem to the browser and
+        # siteverify to Django, both over the task-local loopback. Public
+        # ingress reuses the SAME tunnel connector — add a Zero Trust route:
+        # <CapPublicUrl hostname> -> http://localhost:3333. Like cloudflared:
+        # NOT essential (the ephemeral cron tasks must be able to exit) and
+        # restarted on crash. NOTE: the ephemeral ticks also pull cap+valkey
+        # and run them idle until the web command exits — harmless (nothing
+        # routes to them there) but part of each tick's billed pull time.
+        - Name: cap
+          Image: docker.io/tiago2/cap:latest
+          Essential: false
+          RestartPolicy:
+            Enabled: true
+            IgnoredExitCodes: [0]
+          # cap PINGs its store at boot and exits 1 if it isn't up yet.
+          DependsOn:
+            - ContainerName: valkey
+              Condition: HEALTHY
+          # Observability only (non-essential containers aren't acted on by
+          # ECS when unhealthy): surfaces a wedged cap in the Containers tab
+          # instead of burying it in logs. The image has no curl — bun probes
+          # its own HTTP port.
+          HealthCheck:
+            Command:
+              - CMD
+              - bun
+              - -e
+              - "const r = await fetch('http://127.0.0.1:3333/'); if (!r.ok) process.exit(1);"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          Environment:
+            # Cap's own listen-port knob; matches CAP_SITEVERIFY_URL above
+            # and the tunnel route (localhost:3333).
+            - { Name: SERVER_PORT, Value: 3333 }
+            # Task-local store (awsvpc loopback). No auth on purpose: the
+            # task SG has zero inbound — nothing outside the task can dial it.
+            - { Name: REDIS_URL, Value: "redis://127.0.0.1:6379" }
+          Secrets:
+            - { Name: ADMIN_KEY, ValueFrom: !Ref CapAdminKeySecret }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: cap
 
   # ---- ECS service (ingress via the Cloudflare Tunnel sidecar) ----
   Service:
@@ -768,7 +1001,9 @@ Outputs:
   TunnelConsole:
     Description: >
       Ingress is a Cloudflare Tunnel — the public hostname -> localhost:8000
-      routes live here (Zero Trust -> Networks -> Tunnels), not in AWS.
+      routes live here (Zero Trust -> Networks -> Tunnels), not in AWS. The
+      captcha needs a SECOND route on the same tunnel: the CapPublicUrl
+      hostname -> http://localhost:3333 (the cap sidecar).
     Value: "https://one.dash.cloudflare.com/"
 
   MomentumScheduleName:
