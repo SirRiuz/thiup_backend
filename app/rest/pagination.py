@@ -1,12 +1,11 @@
 # Django
 from django.core.paginator import Paginator
-from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.response import Response
 
 
 class CustomThreadPagination(PageNumberPagination):
-
-    def get_paginated_response(self, data) -> (Response):
+    def get_paginated_response(self, data) -> Response:
         context = data.get("context", {})
         data = data["data"]
         response = super().get_paginated_response(data)
@@ -38,7 +37,7 @@ class SearchPagination(CustomThreadPagination):
     def paginate_queryset(self, queryset, request, view=None):
         precomputed = getattr(view, "precomputed_count", None)
         if precomputed is not None:
-            self.django_paginator_class = (
-                lambda object_list, per_page: PrecomputedCountPaginator(
-                    object_list, per_page, precomputed_count=precomputed))
+            self.django_paginator_class = lambda object_list, per_page: PrecomputedCountPaginator(
+                object_list, per_page, precomputed_count=precomputed
+            )
         return super().paginate_queryset(queryset, request, view)

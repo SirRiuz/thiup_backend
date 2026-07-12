@@ -1,26 +1,26 @@
 # Python
 import os
-import time
 import platform
+import time
 from datetime import timedelta
 
 # Django
 import django
 from django.db import connection
-from django.utils import timezone
 from django.template.defaultfilters import filesizeformat
-
-# Models
-from app.models.mask import Mask
-from app.models.thread import Thread
-from app.models.media import ThreadFile
-from app.models.reaction_relation import ReactionRelation
-from app.models.report import Report
-from app.models.momentum_log import MomentumLog
-from app.models.purge_log import PurgeLog
+from django.utils import timezone
 
 # Libs
 from app.methods import presence
+
+# Models
+from app.models.mask import Mask
+from app.models.media import ThreadFile
+from app.models.momentum_log import MomentumLog
+from app.models.purge_log import PurgeLog
+from app.models.reaction_relation import ReactionRelation
+from app.models.report import Report
+from app.models.thread import Thread
 
 # Worker start time: uptime is PER GUNICORN WORKER (max_requests recycling
 # restarts workers on purpose — a short uptime here is normal, not a crash).
@@ -111,8 +111,7 @@ def collect_metrics() -> dict:
         },
         "system": {
             "memory_total": filesizeformat(sys_total) if sys_total else "n/a",
-            "memory_available": (
-                filesizeformat(sys_available) if sys_available else "n/a"),
+            "memory_available": (filesizeformat(sys_available) if sys_available else "n/a"),
             "memory_used_percent": sys_used_percent,
             "load_1m": load_1m,
             "cpu_count": os.cpu_count(),
@@ -122,18 +121,13 @@ def collect_metrics() -> dict:
             "online_now": presence.online_count(),
             "presence_ttl": presence.PRESENCE_TTL_SECONDS,
             "masks_total": Mask.objects.filter(is_active=True).count(),
-            "threads_24h": Thread.objects.filter(
-                is_active=True, create_at__gte=day_ago).count(),
-            "reactions_24h": ReactionRelation.objects.filter(
-                is_active=True, create_at__gte=day_ago).count(),
+            "threads_24h": Thread.objects.filter(is_active=True, create_at__gte=day_ago).count(),
+            "reactions_24h": ReactionRelation.objects.filter(is_active=True, create_at__gte=day_ago).count(),
         },
         "content": {
-            "threads": Thread.objects.filter(
-                is_active=True, sub__isnull=True).count(),
-            "replies": Thread.objects.filter(
-                is_active=True, sub__isnull=False).count(),
-            "reactions": ReactionRelation.objects.filter(
-                is_active=True).count(),
+            "threads": Thread.objects.filter(is_active=True, sub__isnull=True).count(),
+            "replies": Thread.objects.filter(is_active=True, sub__isnull=False).count(),
+            "reactions": ReactionRelation.objects.filter(is_active=True).count(),
             "media_files": ThreadFile.objects.filter(is_active=True).count(),
             "open_reports": Report.objects.filter(is_active=True).count(),
             "soft_deleted": Thread.objects.filter(is_active=False).count()

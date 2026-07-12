@@ -19,6 +19,7 @@ Usage:
     python scripts/check_comment_language.py        # scans app/, core/, honeypot/
 Exit code 1 if any likely-Spanish comment is found.
 """
+
 from __future__ import annotations
 
 import ast
@@ -31,15 +32,78 @@ from pathlib import Path
 # Spanish function words (accent-stripped, lowercase). A comment needs at
 # least MIN_HITS distinct matches to be flagged.
 SPANISH_WORDS = {
-    "el", "la", "los", "las", "un", "una", "unos", "unas", "del", "al",
-    "que", "con", "sin", "por", "para", "pero", "como", "mas", "segun",
-    "este", "esta", "esto", "estos", "estas", "ese", "esa", "eso", "esos",
-    "esas", "cada", "donde", "cuando", "porque", "tambien", "solo", "hace",
-    "hacer", "son", "estan", "ser", "estar", "hay", "asi", "aqui", "alli",
-    "sus", "mismo", "misma", "muy", "entre", "sobre", "hasta", "desde",
-    "cual", "cuales", "cuantos", "funcion", "aunque", "cuyo", "siguiente",
-    "tiene", "debe", "puede", "usuario", "pantalla", "campo", "hilo",
-    "hilos", "cuenta", "encola", "ejecuta", "apto",
+    "el",
+    "la",
+    "los",
+    "las",
+    "un",
+    "una",
+    "unos",
+    "unas",
+    "del",
+    "al",
+    "que",
+    "con",
+    "sin",
+    "por",
+    "para",
+    "pero",
+    "como",
+    "mas",
+    "segun",
+    "este",
+    "esta",
+    "esto",
+    "estos",
+    "estas",
+    "ese",
+    "esa",
+    "eso",
+    "esos",
+    "esas",
+    "cada",
+    "donde",
+    "cuando",
+    "porque",
+    "tambien",
+    "solo",
+    "hace",
+    "hacer",
+    "son",
+    "estan",
+    "ser",
+    "estar",
+    "hay",
+    "asi",
+    "aqui",
+    "alli",
+    "sus",
+    "mismo",
+    "misma",
+    "muy",
+    "entre",
+    "sobre",
+    "hasta",
+    "desde",
+    "cual",
+    "cuales",
+    "cuantos",
+    "funcion",
+    "aunque",
+    "cuyo",
+    "siguiente",
+    "tiene",
+    "debe",
+    "puede",
+    "usuario",
+    "pantalla",
+    "campo",
+    "hilo",
+    "hilos",
+    "cuenta",
+    "encola",
+    "ejecuta",
+    "apto",
 }
 MIN_HITS = 2
 STRONG = set("ñÑ¿¡")
@@ -51,18 +115,13 @@ SKIP_PARTS: set = set()
 
 
 def _strip_accents(text: str) -> str:
-    return "".join(
-        c for c in unicodedata.normalize("NFD", text)
-        if unicodedata.category(c) != "Mn"
-    )
+    return "".join(c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn")
 
 
 def is_spanish(text: str) -> bool:
     if any(ch in STRONG for ch in text):
         return True
-    words = "".join(
-        c if c.isalpha() else " " for c in _strip_accents(text).lower()
-    ).split()
+    words = "".join(c if c.isalpha() else " " for c in _strip_accents(text).lower()).split()
     return len({w for w in words if w in SPANISH_WORDS}) >= MIN_HITS
 
 
@@ -121,9 +180,7 @@ def main() -> int:
             continue
 
     if findings:
-        sys.stderr.write(
-            "\n✖ Likely Spanish comment(s) found. Comments must be in English.\n\n"
-        )
+        sys.stderr.write("\n✖ Likely Spanish comment(s) found. Comments must be in English.\n\n")
         for path, lineno, snippet in findings:
             sys.stderr.write(f"  {path}:{lineno}  # {snippet}\n")
         sys.stderr.write(

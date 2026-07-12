@@ -1,32 +1,29 @@
 # Django
 from django.db.models import Count
-from rest_framework.viewsets import GenericViewSet
 from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK, HTTP_201_CREATED
 
 # Libs
 from rest_framework.throttling import ScopedRateThrottle
-from app.models.reaction_relation import (
-    ReactionRelation,
-    Reaction
-)
+from rest_framework.viewsets import GenericViewSet
+
+from app.models.reaction_relation import Reaction, ReactionRelation
 from app.models.thread import Thread
-from app.permissions.client import IsClientAuthenticated
 from app.permissions.captcha import human_validator
+from app.permissions.client import IsClientAuthenticated
 from app.rest.serializers.reaction_serializer import (
-    ReactionRelationSerializer,
     BaseReactionSerializer,
-    ReactionSerializer
+    ReactionRelationSerializer,
+    ReactionSerializer,
 )
 
 
 class ReactionsViewSet(GenericViewSet):
-
     queryset = ReactionRelation.objects.filter(is_active=True)
     serializer_class = ReactionRelationSerializer
-    permission_classes = (IsClientAuthenticated, )
+    permission_classes = (IsClientAuthenticated,)
 
-    def get_throttles(self) -> (list):
+    def get_throttles(self) -> list:
         # Rate-limit ONLY reacting (anti-abuse companion of the captcha
         # human pass): the catalog list stays unthrottled.
         if self.action == "create":
@@ -34,7 +31,7 @@ class ReactionsViewSet(GenericViewSet):
             return [ScopedRateThrottle()]
         return super().get_throttles()
 
-    def list(self, request) -> (Response):
+    def list(self, request) -> Response:
         """
         Retrieve a reaction list
         ---
@@ -67,7 +64,7 @@ class ReactionsViewSet(GenericViewSet):
         return Response(serializer.data, status=HTTP_200_OK)
 
     @human_validator
-    def create(self, request) -> (Response):
+    def create(self, request) -> Response:
         """
         Create a new reaction for a thread
         ---
@@ -115,21 +112,19 @@ class ReactionsViewSet(GenericViewSet):
         # `thread` in the payload is the public uid; we resolve the instance for
         # the queries (the FKs are by UUID pk, they don't accept the uid as string).
         thread = Thread.objects.get(uid=request.data["thread"])
-        thread_reactions = Reaction.objects.filter(
-            is_active=True,
-            reactionrelation__thread=thread).\
-            annotate(reaction_count=Count(
-                'reactionrelation')).\
-            order_by(
-            '-reaction_count')
+        thread_reactions = (
+            Reaction.objects.filter(is_active=True, reactionrelation__thread=thread)
+            .annotate(reaction_count=Count("reactionrelation"))
+            .order_by("-reaction_count")
+        )
 
         my_reaction = ReactionRelationSerializer(data, context={"request": request})
-        serializer = ReactionSerializer(thread_reactions, context={
-            "thread": thread, "request": request}, many=True)
+        serializer = ReactionSerializer(thread_reactions, context={"thread": thread, "request": request}, many=True)
 
-        return Response({
-            "my_reaction": (my_reaction.data if
-                            data else None),
-
-            "reactions": serializer.data,
-        }, status=HTTP_201_CREATED)
+        return Response(
+            {
+                "my_reaction": (my_reaction.data if data else None),
+                "reactions": serializer.data,
+            },
+            status=HTTP_201_CREATED,
+        )

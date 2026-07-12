@@ -4,7 +4,6 @@ from rest_framework import serializers
 # Constants
 from app.constants.threads import UPLOAD_CONTENT_TYPE_EXT
 
-
 # Whitelist of CONFIGURATION metadata keys the client may send (compression +
 # client-side NSFW attributes). Anything outside this set is dropped before
 # persisting — we never store arbitrary client payloads, and never EXIF.
@@ -46,12 +45,15 @@ class PresignSerializer(serializers.Serializer):
     before the thread exists, bound only to the requester's mask. The thread
     relation is created later, at `confirm`."""
 
-    content_type = serializers.ChoiceField(
-        choices=sorted(UPLOAD_CONTENT_TYPE_EXT.keys()))
+    content_type = serializers.ChoiceField(choices=sorted(UPLOAD_CONTENT_TYPE_EXT.keys()))
     is_video = serializers.BooleanField(default=False)
     filename_original = serializers.CharField(
-        required=False, allow_blank=True, default="", max_length=255,
-        help_text="Original name, only kept in metadata.archivo (optional).")
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=255,
+        help_text="Original name, only kept in metadata.archivo (optional).",
+    )
 
 
 class ConfirmSerializer(serializers.Serializer):
@@ -63,7 +65,6 @@ class ConfirmSerializer(serializers.Serializer):
     is_video = serializers.BooleanField(default=False)
     width = serializers.IntegerField(min_value=0, default=0)
     height = serializers.IntegerField(min_value=0, default=0)
-    target_color = serializers.CharField(
-        required=False, allow_blank=True, default="161c1e", max_length=250)
+    target_color = serializers.CharField(required=False, allow_blank=True, default="161c1e", max_length=250)
     is_nsfw = serializers.BooleanField(default=False)
     metadata = serializers.DictField(required=False, default=dict)

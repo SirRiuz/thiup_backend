@@ -9,7 +9,6 @@ from rest_framework import status
 # Libs
 from app.methods.tokens import encode_token
 
-
 client = Client()
 
 
@@ -19,7 +18,6 @@ client = Client()
 # encrypted/ticket paths are covered in test_foryou.py.
 @override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False)
 class ThreadsViewTest(TransactionTestCase):
-
     reset_sequences = True
 
     def setUp(self):
@@ -28,7 +26,7 @@ class ThreadsViewTest(TransactionTestCase):
         # previous tests/files never bleed a 429 into this one.
         cache.clear()
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         """Se encarga de generar un client token."""
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
@@ -43,11 +41,8 @@ class ThreadsViewTest(TransactionTestCase):
         the list of threads, the system is functioning correctly.
         """
         token = self.__get_client_token()
-        response = client.get(
-            "/threads/",
-            HTTP_X_DYNAMIC_TOKEN=token
-        )
-        
+        response = client.get("/threads/", HTTP_X_DYNAMIC_TOKEN=token)
+
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_create_thread(self):
@@ -78,7 +73,7 @@ class ThreadsViewTest(TransactionTestCase):
                 },
             },
             content_type="application/json",
-            HTTP_X_DYNAMIC_TOKEN=token
+            HTTP_X_DYNAMIC_TOKEN=token,
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
@@ -109,14 +104,11 @@ class ThreadsViewTest(TransactionTestCase):
                 },
             },
             content_type="application/json",
-            HTTP_X_DYNAMIC_TOKEN=token
+            HTTP_X_DYNAMIC_TOKEN=token,
         )
 
         token = self.__get_client_token()
-        response = client.get(
-            f"/threads/{thread.data['uid']}/",
-            HTTP_X_DYNAMIC_TOKEN=token
-        )
+        response = client.get(f"/threads/{thread.data['uid']}/", HTTP_X_DYNAMIC_TOKEN=token)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -127,12 +119,8 @@ class ThreadsViewTest(TransactionTestCase):
         functions correctly.
         """
         token = self.__get_client_token()
-        response = client.get(
-            f"/threads/.../",
-            HTTP_X_DYNAMIC_TOKEN=token
-        )
-        self.assertEqual(
-            response.status_code, status.HTTP_404_NOT_FOUND)
+        response = client.get("/threads/.../", HTTP_X_DYNAMIC_TOKEN=token)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_create_thread_without_required_fields(self):
         """
@@ -142,13 +130,7 @@ class ThreadsViewTest(TransactionTestCase):
         """
         token = self.__get_client_token()
         response = client.post(
-            "/threads/",
-            {
-                "media": [],
-                "text": "..."
-            },
-            content_type="application/json",
-            HTTP_X_DYNAMIC_TOKEN=token
+            "/threads/", {"media": [], "text": "..."}, content_type="application/json", HTTP_X_DYNAMIC_TOKEN=token
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -179,13 +161,11 @@ class ThreadsViewTest(TransactionTestCase):
                 },
             },
             content_type="application/json",
-            HTTP_X_DYNAMIC_TOKEN=token
+            HTTP_X_DYNAMIC_TOKEN=token,
         )
         token = self.__get_client_token()
-        threads = client.get(
-            "/threads/?q=test",
-            HTTP_X_DYNAMIC_TOKEN=token)
-            
+        threads = client.get("/threads/?q=test", HTTP_X_DYNAMIC_TOKEN=token)
+
         self.assertTrue(bool(threads.data["count"]))
 
     def test_search_thread_by_tag(self):
@@ -215,11 +195,11 @@ class ThreadsViewTest(TransactionTestCase):
                 },
             },
             content_type="application/json",
-            HTTP_X_DYNAMIC_TOKEN=token
+            HTTP_X_DYNAMIC_TOKEN=token,
         )
         token = self.__get_client_token()
         threads = client.get("/threads/?tag=test", HTTP_X_DYNAMIC_TOKEN=token)
-        #self.__decode_response_body(threads.data)
+        # self.__decode_response_body(threads.data)
         self.assertTrue(bool(threads.data["count"]))
 
     def test_create_sub_thread(self):
@@ -268,11 +248,11 @@ class ThreadsViewTest(TransactionTestCase):
                             "depth": 0,
                             "inlineStyleRanges": [],
                             "entityRanges": [],
-                            "data": {}
+                            "data": {},
                         }
                     ],
-                    "entityMap": {}
-                }
+                    "entityMap": {},
+                },
             },
             HTTP_X_DYNAMIC_TOKEN=token,
             content_type="application/json",
@@ -308,7 +288,7 @@ class ThreadsViewTest(TransactionTestCase):
                 },
             },
             content_type="application/json",
-            HTTP_X_DYNAMIC_TOKEN=token
+            HTTP_X_DYNAMIC_TOKEN=token,
         )
         sub_thread = client.post(
             "/threads/",
@@ -325,14 +305,14 @@ class ThreadsViewTest(TransactionTestCase):
                             "depth": 0,
                             "inlineStyleRanges": [],
                             "entityRanges": [],
-                            "data": {}
+                            "data": {},
                         }
                     ],
-                    "entityMap": {}
-                }
+                    "entityMap": {},
+                },
             },
             content_type="application/json",
-            HTTP_X_DYNAMIC_TOKEN=token
+            HTTP_X_DYNAMIC_TOKEN=token,
         )
 
         response = client.get(f"/threads/{thread.data['uid']}/responses/")

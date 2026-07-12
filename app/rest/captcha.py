@@ -1,22 +1,23 @@
 # Django
 from django.conf import settings
-from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.status import (
     HTTP_200_OK,
     HTTP_403_FORBIDDEN,
     HTTP_404_NOT_FOUND,
     HTTP_503_SERVICE_UNAVAILABLE,
 )
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
+
+from app.methods.captcha import (
+    CaptchaUnavailable,
+    issue_human_pass,
+    verify_captcha_token,
+)
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
-from app.methods.captcha import (
-    verify_captcha_token,
-    issue_human_pass,
-    CaptchaUnavailable,
-)
 
 
 class CaptchaVerifyView(APIView):
@@ -44,7 +45,7 @@ class CaptchaVerifyView(APIView):
     throttle_classes = (ScopedRateThrottle,)
     throttle_scope = "captcha"
 
-    def post(self, request) -> (Response):
+    def post(self, request) -> Response:
         # Same signal pattern as the gateway when its flag is off: the
         # endpoint "does not exist" while the feature is disabled.
         if not settings.CAPTCHA_PROTECT:
@@ -53,8 +54,7 @@ class CaptchaVerifyView(APIView):
                 status=HTTP_404_NOT_FOUND,
             )
 
-        token = request.data.get("token", "") \
-            if isinstance(request.data, dict) else ""
+        token = request.data.get("token", "") if isinstance(request.data, dict) else ""
         try:
             if not verify_captcha_token(token):
                 return Response(

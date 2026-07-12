@@ -1,29 +1,29 @@
 # Django
+# Libs
+import flag
 from django.contrib import admin
-from django.utils.html import format_html
 from django.template.response import TemplateResponse
+from django.utils.html import format_html
 
-# Models
-from app.models.thread import Thread
-from app.models.media import ThreadFile
-from app.models.mask import Mask
-from app.models.reaction import Reaction
-from app.models.reaction_relation import ReactionRelation
-from app.models.tag import Tag
-from app.models.momentum_log import MomentumLog
-from app.models.purge_log import PurgeLog
-from app.models.system_metrics import SystemMetrics
-from app.models.trending_tag import TrendingTag
-from app.models.report import Report
-from app.models.blocked_term import BlockedTerm
+from app.constants.threads import UNKNOWN_MEDIA_FORMAT
 
 # Methods
 from app.methods import presence
 from app.methods.metrics import collect_metrics
+from app.models.blocked_term import BlockedTerm
+from app.models.mask import Mask
+from app.models.media import ThreadFile
+from app.models.momentum_log import MomentumLog
+from app.models.purge_log import PurgeLog
+from app.models.reaction import Reaction
+from app.models.reaction_relation import ReactionRelation
+from app.models.report import Report
+from app.models.system_metrics import SystemMetrics
+from app.models.tag import Tag
 
-# Libs
-import flag
-from app.constants.threads import UNKNOWN_MEDIA_FORMAT
+# Models
+from app.models.thread import Thread
+from app.models.trending_tag import TrendingTag
 
 
 class BaseModelAdmin(admin.ModelAdmin):
@@ -46,14 +46,11 @@ class BaseModelAdmin(admin.ModelAdmin):
         # Concatenates with each admin's own readonly fields (e.g. the
         # momentum fields in ThreadAdmin) without duplicates.
         own = tuple(super().get_readonly_fields(request, obj))
-        return own + tuple(
-            f for f in self.BASE_READONLY_FIELDS if f not in own
-        )
+        return own + tuple(f for f in self.BASE_READONLY_FIELDS if f not in own)
 
 
 @admin.register(Thread)
 class ThreadAdmin(BaseModelAdmin):
-
     list_display = (
         "id",
         "is_active",
@@ -95,7 +92,6 @@ class ThreadAdmin(BaseModelAdmin):
 
 @admin.register(ThreadFile)
 class ThreadFileAdmin(BaseModelAdmin):
-
     list_display = (
         "is_active",
         "id",
@@ -165,7 +161,6 @@ class OnlineNowFilter(admin.SimpleListFilter):
 
 @admin.register(Mask)
 class MaskAdmin(BaseModelAdmin):
-
     list_display = (
         "id",
         "is_active",
@@ -180,7 +175,7 @@ class MaskAdmin(BaseModelAdmin):
     list_filter = (OnlineNowFilter,)
 
     @admin.display(boolean=True, description="online")
-    def is_online_now(self, obj) -> (bool):
+    def is_online_now(self, obj) -> bool:
         # LocMem lookup (~1 µs per row on the 100-row page) — no DB cost.
         return presence.is_online(obj.hash)
 
@@ -243,11 +238,11 @@ class MomentumLogAdmin(BaseModelAdmin):
     list_filter = ("was_successful",)
     date_hierarchy = "create_at"
 
-    def has_add_permission(self, request) -> (bool):
+    def has_add_permission(self, request) -> bool:
         # Only the scheduled recompute_momentum run creates records.
         return False
 
-    def has_change_permission(self, request, obj=None) -> (bool):
+    def has_change_permission(self, request, obj=None) -> bool:
         # No editing: the changelist offers "View" instead of "Change".
         return False
 
@@ -269,17 +264,16 @@ class SystemMetricsAdmin(admin.ModelAdmin):
             "title": "System metrics",
             "metrics": collect_metrics(),
         }
-        return TemplateResponse(
-            request, "admin/system_metrics.html", context)
+        return TemplateResponse(request, "admin/system_metrics.html", context)
 
     # Pure dashboard: nothing to create, edit or delete here.
-    def has_add_permission(self, request) -> (bool):
+    def has_add_permission(self, request) -> bool:
         return False
 
-    def has_change_permission(self, request, obj=None) -> (bool):
+    def has_change_permission(self, request, obj=None) -> bool:
         return False
 
-    def has_delete_permission(self, request, obj=None) -> (bool):
+    def has_delete_permission(self, request, obj=None) -> bool:
         return False
 
 
@@ -304,11 +298,11 @@ class PurgeLogAdmin(BaseModelAdmin):
     list_filter = ("was_successful",)
     date_hierarchy = "create_at"
 
-    def has_add_permission(self, request) -> (bool):
+    def has_add_permission(self, request) -> bool:
         # Only the scheduled purge_inactive run creates records.
         return False
 
-    def has_change_permission(self, request, obj=None) -> (bool):
+    def has_change_permission(self, request, obj=None) -> bool:
         # No editing: the changelist offers "View" instead of "Change".
         return False
 
@@ -326,10 +320,10 @@ class TrendingTagAdmin(BaseModelAdmin):
     search_fields = ("name", "name_norm")
     ordering = ("-score",)
 
-    def has_add_permission(self, request) -> (bool):
+    def has_add_permission(self, request) -> bool:
         return False
 
-    def has_change_permission(self, request, obj=None) -> (bool):
+    def has_change_permission(self, request, obj=None) -> bool:
         return False
 
 
@@ -362,9 +356,7 @@ class ReportAdmin(BaseModelAdmin):
     and sorted first so moderation sees them at the top.
     """
 
-    list_display = (
-        "thread", "category", "is_priority", "short_reason",
-        "create_at", "update_at")
+    list_display = ("thread", "category", "is_priority", "short_reason", "create_at", "update_at")
     list_filter = ("is_priority", "category")
     search_fields = ("thread__uid",)
     # Priority (minors) first, then newest.
@@ -375,10 +367,11 @@ class ReportAdmin(BaseModelAdmin):
     def short_reason(self, obj) -> str:
         text = obj.reason or ""
         return (text[:60] + "…") if len(text) > 60 else text
+
     short_reason.short_description = "reason"
 
-    def has_add_permission(self, request) -> (bool):
+    def has_add_permission(self, request) -> bool:
         return False
 
-    def has_change_permission(self, request, obj=None) -> (bool):
+    def has_change_permission(self, request, obj=None) -> bool:
         return False

@@ -1,9 +1,10 @@
 # Django
-from rest_framework.permissions import BasePermission
 from django.conf import settings
 
 # Libs
 from jwt.exceptions import PyJWTError
+from rest_framework.permissions import BasePermission
+
 from app.methods.tokens import decode_token
 
 
@@ -19,7 +20,7 @@ class IsClientAuthenticated(BasePermission):
 
     TOKEN_TYPE = "Client-assertion"
 
-    def has_permission(self, request, view) -> (bool):
+    def has_permission(self, request, view) -> bool:
         if not settings.SINGLE_REQUEST_PROTECT:
             return True
 

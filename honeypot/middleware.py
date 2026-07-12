@@ -1,6 +1,6 @@
 # Django
-from django.utils.deprecation import MiddlewareMixin
 from django.http import HttpResponseForbidden
+from django.utils.deprecation import MiddlewareMixin
 
 # Libs
 from app.utils.client import get_client_addres
@@ -23,10 +23,5 @@ class HoneyPotMiddleware(MiddlewareMixin):
             return None
 
         self.client_ip = get_client_addres(request)
-        if (
-            BlackList.objects.filter(ip_address=self.client_ip).exists()
-            and not request.user.is_staff
-        ):
-            return HttpResponseForbidden(
-                "You are not allowed to call the website anymore."
-            )
+        if BlackList.objects.filter(ip_address=self.client_ip).exists() and not request.user.is_staff:
+            return HttpResponseForbidden("You are not allowed to call the website anymore.")

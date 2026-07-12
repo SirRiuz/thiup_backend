@@ -1,19 +1,20 @@
 # Django
-from django.urls import path, re_path, include
+from django.urls import include, path, re_path
 from rest_framework import routers
+
+from app.rest.captcha import CaptchaVerifyView
+from app.rest.config import ConfigView
+from app.rest.gateway import GatewayView
+from app.rest.masks import CurrentMaskView, MasksViewSet
+from app.rest.reactions import ReactionsViewSet
+from app.rest.reports import ReportsViewSet
+from app.rest.search import SearchViewSet
+from app.rest.tags import TagsViewSet
+from app.rest.thread_files import ThreadFilesViewSet
 
 # Views
 from app.rest.threads import ThreadsViewSet
-from app.rest.reactions import ReactionsViewSet
-from app.rest.reports import ReportsViewSet
-from app.rest.thread_files import ThreadFilesViewSet
-from app.rest.tags import TagsViewSet
-from app.rest.search import SearchViewSet
-from app.rest.masks import MasksViewSet, CurrentMaskView
 from app.rest.ticket import TicketView
-from app.rest.config import ConfigView
-from app.rest.captcha import CaptchaVerifyView
-from app.rest.gateway import GatewayView
 
 router = routers.DefaultRouter()
 router.register(r"threads", ThreadsViewSet)

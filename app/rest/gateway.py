@@ -5,21 +5,20 @@ import logging
 
 # Django
 from django.conf import settings
-from django.urls import resolve, Resolver404
 from django.http import QueryDict
-
-# REST
-from rest_framework.views import APIView
-from rest_framework.response import Response
+from django.urls import Resolver404, resolve
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
 from rest_framework.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_404_NOT_FOUND,
 )
 
+# REST
+from rest_framework.views import APIView
+
 # Libs
 from app.methods.gateway_path import token_matches
-
 
 logger = logging.getLogger(__name__)
 
@@ -61,15 +60,14 @@ class GatewayView(APIView):
     ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
     ALLOWED_VIEW_MODULE = "app.rest"
 
-    def post(self, request, gw_hash="") -> (Response):
+    def post(self, request, gw_hash="") -> Response:
         # Toggle: el gateway SOLO opera con el cifrado activo. Apagado → 404
         # IDENTIFICABLE (code=GATEWAY_DISABLED): la señal INEQUÍVOCA para que
         # el FE infiera "modo normal, usa directo". Cualquier OTRO 404 (token
         # inválido, ruta inexistente) es genérico y NO debe confundirse con
         # esta señal → el FE se queda en cifrado (fail-closed) ante esos.
         if not settings.ENCRYPTED_RESPONSE:
-            return self._reject(
-                "gateway_disabled", HTTP_404_NOT_FOUND, code="GATEWAY_DISABLED")
+            return self._reject("gateway_disabled", HTTP_404_NOT_FOUND, code="GATEWAY_DISABLED")
 
         envelope = request.data  # JSON ya descifrado por el middleware
         if not isinstance(envelope, dict):
@@ -88,8 +86,7 @@ class GatewayView(APIView):
         # ── Validación del destino (anti-SSRF, sin loggear el path) ──────
         if method not in self.ALLOWED_METHODS:
             return self._reject("method_not_allowed", HTTP_400_BAD_REQUEST)
-        if (not isinstance(path, str) or not path.startswith("/")
-                or path.startswith("//") or "://" in path):
+        if not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or "://" in path:
             return self._reject("invalid_path", HTTP_400_BAD_REQUEST)
 
         try:
@@ -100,8 +97,7 @@ class GatewayView(APIView):
         # Allowlist: SOLO vistas del propio proyecto (app.rest). Bloquea
         # admin/honeypot/swagger/estáticos y cualquier no-DRF (sin .cls).
         view_cls = getattr(match.func, "cls", None)
-        if view_cls is None or not view_cls.__module__.startswith(
-                self.ALLOWED_VIEW_MODULE):
+        if view_cls is None or not view_cls.__module__.startswith(self.ALLOWED_VIEW_MODULE):
             return self._reject("forbidden_target", HTTP_404_NOT_FOUND)
         # Guard de recursión: nunca re-despachar al propio gateway.
         if view_cls is GatewayView:
@@ -117,7 +113,7 @@ class GatewayView(APIView):
             logger.warning("gateway rejected: reason=dispatch_error")
             return self._reject("dispatch_error", HTTP_400_BAD_REQUEST)
 
-    def _rewrite_request(self, dj, method, path, query, body) -> (None):
+    def _rewrite_request(self, dj, method, path, query, body) -> None:
         """
         Reescribe el HttpRequest subyacente para que la vista destino lo vea
         como si la URL real hubiese llegado. El body interno ya está EN
@@ -147,7 +143,7 @@ class GatewayView(APIView):
         dj.META["CONTENT_TYPE"] = "application/json"
         dj.META["CONTENT_LENGTH"] = str(len(raw))
 
-    def _reject(self, reason, status, code=None) -> (Response):
+    def _reject(self, reason, status, code=None) -> Response:
         # Log SIN el path/params descifrados (privacidad): solo el motivo.
         logger.warning("gateway rejected: reason=%s", reason)
         payload = {"detail": "Gateway dispatch error."}

@@ -15,38 +15,23 @@ class MomentumLog(BaseModel):
     10 min, how long it takes and whether it failed.
     """
 
-    window_days = models.PositiveIntegerField(
-        default=0,
-        help_text="Ventana activa usada en la corrida (--days)."
-    )
+    window_days = models.PositiveIntegerField(default=0, help_text="Ventana activa usada en la corrida (--days).")
 
-    processed_count = models.PositiveIntegerField(
-        default=0,
-        help_text="Posts raíz dentro de la ventana evaluados."
-    )
+    processed_count = models.PositiveIntegerField(default=0, help_text="Posts raíz dentro de la ventana evaluados.")
 
     updated_count = models.PositiveIntegerField(
-        default=0,
-        help_text="Posts cuyos score/contadores cambiaron (bulk_update)."
+        default=0, help_text="Posts cuyos score/contadores cambiaron (bulk_update)."
     )
 
-    duration_ms = models.PositiveIntegerField(
-        default=0,
-        help_text="Duración total de la corrida en milisegundos."
-    )
+    duration_ms = models.PositiveIntegerField(default=0, help_text="Duración total de la corrida en milisegundos.")
 
-    was_successful = models.BooleanField(
-        default=True,
-        help_text="False si la corrida lanzó una excepción."
-    )
+    was_successful = models.BooleanField(default=True, help_text="False si la corrida lanzó una excepción.")
 
     error = models.TextField(
-        blank=True,
-        default="",
-        help_text="Mensaje de la excepción cuando was_successful es False."
+        blank=True, default="", help_text="Mensaje de la excepción cuando was_successful es False."
     )
 
-    def __str__(self) -> (str):
+    def __str__(self) -> str:
         status = "ok" if self.was_successful else "ERROR"
         return (
             f"{self.create_at:%Y-%m-%d %H:%M} · {status} · "

@@ -1,13 +1,14 @@
 # Python
-import os
 import logging
+import os
+
+from decouple import config
 
 # Django
 from django.conf import settings
-from django.http import JsonResponse, HttpResponseNotAllowed
-from django.views.decorators.csrf import csrf_exempt
 from django.core.exceptions import ImproperlyConfigured
-from decouple import config
+from django.http import HttpResponseNotAllowed, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 
 # Libs
 from app.methods import object_storage
@@ -190,10 +191,15 @@ def get_backend() -> StorageBackend:
                 "to the internal upload route can't be decrypted). Set "
                 "ENCRYPTED_RESPONSE=False or configure R2."
             )
-        logger.warning("Object storage not configured: using LOCAL disk storage " "(DEBUG only). Files are written to MEDIA_ROOT, not a bucket.")
+        logger.warning(
+            "Object storage not configured: using LOCAL disk storage "
+            "(DEBUG only). Files are written to MEDIA_ROOT, not a bucket."
+        )
         _backend = LocalStorageBackend()
     else:
-        raise ImproperlyConfigured("Object storage (R2) is not configured. Refusing to fall back to " "local disk outside DEBUG.")
+        raise ImproperlyConfigured(
+            "Object storage (R2) is not configured. Refusing to fall back to local disk outside DEBUG."
+        )
     return _backend
 
 
@@ -224,8 +230,7 @@ def local_upload_put(request, key):
     except (TypeError, ValueError):
         declared = 0
     if declared > settings.UPLOAD_MAX_BYTES:
-        return JsonResponse(
-            {"detail": "Uploaded object is too large."}, status=413)
+        return JsonResponse({"detail": "Uploaded object is too large."}, status=413)
 
     path = local_path(key)
     if path is None:
@@ -246,7 +251,6 @@ def local_upload_put(request, key):
             if written > settings.UPLOAD_MAX_BYTES:
                 handle.close()
                 os.remove(path)
-                return JsonResponse(
-                    {"detail": "Uploaded object is too large."}, status=413)
+                return JsonResponse({"detail": "Uploaded object is too large."}, status=413)
             handle.write(chunk)
     return JsonResponse({"status": "ok"}, status=200)

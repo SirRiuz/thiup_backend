@@ -22,8 +22,7 @@ class TagSearchSerializer(serializers.Serializer):
 
     name = serializers.CharField()
     count = serializers.IntegerField()
-    activity = serializers.ListField(
-        child=serializers.IntegerField(), required=False, default=list)
+    activity = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
 
 
 class UserSearchSerializer(serializers.Serializer):

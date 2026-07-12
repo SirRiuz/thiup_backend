@@ -304,3 +304,13 @@ image tags and optional migration rollback).
 
 Full deploy guide, parameters, and the manual GitHub-connection steps:
 **[`ci/infra/README.md`](ci/infra/README.md)**.
+
+## License
+
+Thiup is **source-available**, not OSI "open source": the code is public and you
+may read, modify and self-host it for **noncommercial** purposes, but any
+commercial use by third parties is not permitted. Licensed under the
+**PolyForm Noncommercial License 1.0.0** — see [`LICENSE.md`](LICENSE.md).
+
+Copyright holder retains all commercial rights; for a commercial license, contact
+the maintainer.

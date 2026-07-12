@@ -27,4 +27,5 @@ def create_tags(thread, tags_list):
             # name_norm feeds the autocomplete (indexed prefix,
             # accent-insensitive): lowercase + no accents.
             name_norm=strip_accents(name),
-            thread=thread)
+            thread=thread,
+        )

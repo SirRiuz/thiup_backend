@@ -1,14 +1,14 @@
 # Django
-from django.db import models
 from django.contrib.postgres.indexes import GinIndex
+from django.db import models
+
+from app.models.base_model import BaseModel
 
 # Libs
 from app.models.thread import Thread
-from app.models.base_model import BaseModel
 
 
 class Tag(BaseModel):
-
     thread = models.ForeignKey(to=Thread, on_delete=models.CASCADE)
     # db_index: tag mode filters by name (exact match) and search groups by
     # name — the index speeds up both.
@@ -33,5 +33,5 @@ class Tag(BaseModel):
             ),
         ]
 
-    def __str__(self) -> (str):
+    def __str__(self) -> str:
         return f"#{self.name}"

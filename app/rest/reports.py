@@ -1,17 +1,17 @@
 # Django
-from rest_framework.viewsets import GenericViewSet
-from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.generics import get_object_or_404
+from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK, HTTP_201_CREATED
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.viewsets import GenericViewSet
 
 # Models
 from app.models.report import Report
 from app.models.thread import Thread
+from app.permissions.captcha import human_validator
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
-from app.permissions.captcha import human_validator
 from app.rest.serializers.report_serializer import ReportSerializer
 
 
@@ -57,8 +57,7 @@ class ReportsViewSet(GenericViewSet):
         data = serializer.validated_data
 
         # Resolve the thread by its PUBLIC uid (FKs are by UUID pk internally).
-        thread = get_object_or_404(
-            Thread, uid=data["thread_id"], is_active=True)
+        thread = get_object_or_404(Thread, uid=data["thread_id"], is_active=True)
         category = data["category"]
 
         # Upsert: one report per (thread, reporter). The reporter is the
@@ -74,6 +73,4 @@ class ReportsViewSet(GenericViewSet):
         )
 
         # Minimal response — never echo the report content back.
-        return Response(
-            {"status": "ok"},
-            status=HTTP_201_CREATED if created else HTTP_200_OK)
+        return Response({"status": "ok"}, status=HTTP_201_CREATED if created else HTTP_200_OK)

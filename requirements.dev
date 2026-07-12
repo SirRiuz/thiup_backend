@@ -20,10 +20,11 @@ pytest-django>=4.8,<5.0
 pytest-cov>=4.1,<6.0
 factory-boy>=3.3,<4.0
 
-# ─── Code quality (uncomment to enable) ─────────────────────
-# black>=24.0,<26.0
-# ruff>=0.4,<1.0
-# mypy>=1.10,<2.0
+# ─── Code quality ───────────────────────────────────────────
+# Ruff = lint + format (replaces black + flake8). Config in pyproject.toml.
+ruff>=0.15,<1.0
+pre-commit>=3.7,<5.0
+# mypy>=1.10,<2.0  (uncomment to add type checking)
 
 # ─── Django dev tools (uncomment to enable) ─────────────────
 # django-debug-toolbar>=4.3,<6.0

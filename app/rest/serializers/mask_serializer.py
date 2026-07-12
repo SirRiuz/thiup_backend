@@ -1,12 +1,11 @@
 # Django
 from rest_framework import serializers
 
+# Libs
+from app.methods.presence import is_online
 
 # Models
 from app.models.mask import Mask
-
-# Libs
-from app.methods.presence import is_online
 
 
 class MaskSerializer(serializers.ModelSerializer):

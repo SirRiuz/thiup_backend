@@ -1,7 +1,7 @@
 # Python
-import re
 import math
 import random
+import re
 
 # Geohash without PostGIS: indexed text cells. Precision 5 ≈ cells of
 # ~4.9×4.9 km — COARSE enough to not reveal locations (privacy:
@@ -14,7 +14,7 @@ _BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
 _GEOHASH_RE = re.compile(r"^[0-9b-hjkmnp-z]+$")
 
 
-def normalize_geohash(raw) -> (str):
+def normalize_geohash(raw) -> str:
     """
     Sanitizes a client-declared geohash: lowercase, geohash base32
     charset, truncated to GEOHASH_PRECISION (finer = more privacy
@@ -31,7 +31,7 @@ def normalize_geohash(raw) -> (str):
 FUZZ_DEGREES = 0.01
 
 
-def fuzzed_geohash(lat, lon, precision=GEOHASH_PRECISION) -> (str):
+def fuzzed_geohash(lat, lon, precision=GEOHASH_PRECISION) -> str:
     """
     Geohash with the SAME fuzzing the client applies when creating threads —
     the dummy data stays statistically identical to the real flow and the
@@ -44,7 +44,7 @@ def fuzzed_geohash(lat, lon, precision=GEOHASH_PRECISION) -> (str):
     )
 
 
-def encode_geohash(lat, lon, precision=GEOHASH_PRECISION) -> (str):
+def encode_geohash(lat, lon, precision=GEOHASH_PRECISION) -> str:
     """
     Standard geohash encode (interleave of lon/lat bits → base32).
     In production the POST's geohash is computed by the CLIENT (the backend
@@ -99,7 +99,7 @@ _KM_PER_LAT_DEGREE = 110.574
 _KM_PER_LON_DEGREE_EQ = 111.32
 
 
-def decode_geohash_cell(geohash) -> (tuple):
+def decode_geohash_cell(geohash) -> tuple:
     """Center and size of the cell: (lat, lon, lat_size, lon_size)."""
     lat_lo, lat_hi = -90.0, 90.0
     lon_lo, lon_hi = -180.0, 180.0
@@ -131,7 +131,7 @@ def decode_geohash_cell(geohash) -> (tuple):
     )
 
 
-def cells_for_radius(center_geohash, radius_km) -> (tuple):
+def cells_for_radius(center_geohash, radius_km) -> tuple:
     """
     Grid of cells covering `radius_km` around the reader's cell,
     with ADAPTIVE precision (see constants above).

@@ -1,26 +1,25 @@
 import hashlib
 import math
 import random
-from typing import List, Optional, Tuple
 from datetime import timedelta
+from typing import List, Optional, Tuple
 
 import geonamescache
 import shortuuid
-from faker import Faker
-
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.utils import timezone
+from faker import Faker
 
+from app.methods.tags import get_tags_list
 from app.models.mask import Mask
 from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
 from app.models.thread import Thread
-from app.methods.tags import get_tags_list
-from app.utils.text import strip_accents
+from app.utils.geo import GEOHASH_PRECISION, fuzzed_geohash
 from app.utils.locale import normalize_language, normalize_region
-from app.utils.geo import fuzzed_geohash, GEOHASH_PRECISION
+from app.utils.text import strip_accents
 
 # Spanish content (the app is in Spanish; for countries of another language
 # the text stays Spanish by default — the language FIELD does reflect the
@@ -37,14 +36,50 @@ DEFAULT_REACTIONS = [
 ]
 
 HASHTAG_POOL = [
-    "#dns", "#privacy", "#security", "#tor", "#opsec", "#encryption",
-    "#censorship", "#supplychain", "#research", "#linux", "#python",
-    "#ai", "#crypto", "#hacking", "#vpn", "#raspberry", "#opensource",
-    "#politica", "#elecciones", "#economia", "#inflacion", "#trabajo",
-    "#educacion", "#salud", "#clima", "#energia", "#justicia",
-    "#periodismo", "#musica", "#cine", "#libros", "#arte", "#gaming",
-    "#futbol", "#cocina", "#cafe", "#viajes", "#memes", "#humor",
-    "#filosofia", "#historia", "#ciencia", "#espacio", "#random",
+    "#dns",
+    "#privacy",
+    "#security",
+    "#tor",
+    "#opsec",
+    "#encryption",
+    "#censorship",
+    "#supplychain",
+    "#research",
+    "#linux",
+    "#python",
+    "#ai",
+    "#crypto",
+    "#hacking",
+    "#vpn",
+    "#raspberry",
+    "#opensource",
+    "#politica",
+    "#elecciones",
+    "#economia",
+    "#inflacion",
+    "#trabajo",
+    "#educacion",
+    "#salud",
+    "#clima",
+    "#energia",
+    "#justicia",
+    "#periodismo",
+    "#musica",
+    "#cine",
+    "#libros",
+    "#arte",
+    "#gaming",
+    "#futbol",
+    "#cocina",
+    "#cafe",
+    "#viajes",
+    "#memes",
+    "#humor",
+    "#filosofia",
+    "#historia",
+    "#ciencia",
+    "#espacio",
+    "#random",
 ]
 
 # ── Barrancabermeja (where the team tests) ──────────────────────────────
@@ -73,14 +108,12 @@ BULK_BATCH = 500
 AGE_BUCKETS_HOURS = (0.5, 1.5, 4, 10, 24, 48, 96)
 
 
-def point_at(lat: float, lon: float, distance_km: float,
-             bearing_deg: float) -> Tuple[float, float]:
+def point_at(lat: float, lon: float, distance_km: float, bearing_deg: float) -> Tuple[float, float]:
     """Point at `distance_km` and bearing `bearing_deg` (equirectangular —
     good enough for <200 km)."""
     rad = math.radians(bearing_deg)
     dlat = (distance_km * math.cos(rad)) / 111.32
-    dlon = (distance_km * math.sin(rad)) / (
-        111.32 * math.cos(math.radians(lat)))
+    dlon = (distance_km * math.sin(rad)) / (111.32 * math.cos(math.radians(lat)))
     return lat + dlat, lon + dlon
 
 
@@ -111,15 +144,20 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser) -> None:
         parser.add_argument(
-            "--global-cities", type=int, default=200,
+            "--global-cities",
+            type=int,
+            default=200,
             help="Ciudades del mundo a muestrear (además de Colombia).",
         )
         parser.add_argument(
-            "--number", type=int, default=10,
+            "--number",
+            type=int,
+            default=10,
             help="Hilos extra SIN geolocalizar (For You global).",
         )
         parser.add_argument(
-            "--clear", action="store_true",
+            "--clear",
+            action="store_true",
             help="Borra TODOS los threads (y sus tags/reacciones) antes.",
         )
 
@@ -156,19 +194,18 @@ class Command(BaseCommand):
         call_command("recompute_momentum")
 
         geo_count = sum(1 for s in specs if s["geo"])
-        barranca_points = (
-            len(BARRANCA_DISTANCES_KM) * len(BARRANCA_BEARINGS)
-            + len(NEARBY_TOWNS) + 1
+        barranca_points = len(BARRANCA_DISTANCES_KM) * len(BARRANCA_BEARINGS) + len(NEARBY_TOWNS) + 1
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"\n✅ Seed geolocalizado:\n"
+                f"   {len(roots)} hilos ({geo_count} con geohash)\n"
+                f"   {comments_n} comentarios · {reactions_n} reacciones · "
+                f"{tags_n} tags\n"
+                f"   Colombia completa + {options['global_cities']} ciudades "
+                f"del mundo + {barranca_points} puntos del área de "
+                f"Barrancabermeja"
+            )
         )
-        self.stdout.write(self.style.SUCCESS(
-            f"\n✅ Seed geolocalizado:\n"
-            f"   {len(roots)} hilos ({geo_count} con geohash)\n"
-            f"   {comments_n} comentarios · {reactions_n} reacciones · "
-            f"{tags_n} tags\n"
-            f"   Colombia completa + {options['global_cities']} ciudades "
-            f"del mundo + {barranca_points} puntos del área de "
-            f"Barrancabermeja"
-        ))
 
     # ── specs ──────────────────────────────────────────────────────────
 
@@ -202,34 +239,37 @@ class Command(BaseCommand):
 
     def __barranca_specs(self) -> List[dict]:
         lat0, lon0 = BARRANCA
-        specs = [{
-            "geo": BARRANCA,
-            "place": "Barrancabermeja",
-            "language": "es",
-            "region": "CO",
-        }]
-        for km in BARRANCA_DISTANCES_KM:
-            for bearing in BARRANCA_BEARINGS:
-                specs.append({
-                    "geo": point_at(lat0, lon0, km, bearing),
-                    "place": f"a ~{km} km de Barrancabermeja",
-                    "language": "es",
-                    "region": "CO",
-                })
-        for name, lat, lon in NEARBY_TOWNS:
-            specs.append({
-                "geo": (lat, lon),
-                "place": name,
+        specs = [
+            {
+                "geo": BARRANCA,
+                "place": "Barrancabermeja",
                 "language": "es",
                 "region": "CO",
-            })
+            }
+        ]
+        for km in BARRANCA_DISTANCES_KM:
+            for bearing in BARRANCA_BEARINGS:
+                specs.append(
+                    {
+                        "geo": point_at(lat0, lon0, km, bearing),
+                        "place": f"a ~{km} km de Barrancabermeja",
+                        "language": "es",
+                        "region": "CO",
+                    }
+                )
+        for name, lat, lon in NEARBY_TOWNS:
+            specs.append(
+                {
+                    "geo": (lat, lon),
+                    "place": name,
+                    "language": "es",
+                    "region": "CO",
+                }
+            )
         return specs
 
     def __global_specs(self, count: int) -> List[dict]:
-        return [
-            {"geo": None, "place": None, "language": "es", "region": "CO"}
-            for _ in range(count)
-        ]
+        return [{"geo": None, "place": None, "language": "es", "region": "CO"} for _ in range(count)]
 
     # ── bulk creation ──────────────────────────────────────────────────
 
@@ -242,8 +282,7 @@ class Command(BaseCommand):
             tags = " " + " ".join(chosen)
         return f"{prefix}{sentence}{tags}"
 
-    def __bulk_create_roots(self, specs: List[dict],
-                            masks: List[Mask]) -> List[Thread]:
+    def __bulk_create_roots(self, specs: List[dict], masks: List[Mask]) -> List[Thread]:
         objs = []
         for spec in specs:
             text = self.__thread_text(spec["place"])
@@ -253,24 +292,26 @@ class Command(BaseCommand):
                 # SAME util and SAME fuzzing as the real client: the
                 # Close You filter captures them in exactly the same way.
                 geohash = fuzzed_geohash(lat, lon)
-            objs.append(Thread(
-                text=text,
-                content=self.__build_draftjs_content(text),
-                # bulk_create skips save(): derive text_norm here or the
-                # search (text_norm__contains) wouldn't find these threads.
-                text_norm=strip_accents(text).lower(),
-                mask=random.choice(masks),
-                language=normalize_language(spec["language"]),
-                region=normalize_region(spec["region"]),
-                geohash=geohash,
-                # bulk_create skips save(): derive geohash4 here or the
-                # large radii (>25 km) wouldn't find these threads.
-                geohash4=geohash[:GEOHASH_PRECISION - 1] if geohash else None,
-            ))
+            objs.append(
+                Thread(
+                    text=text,
+                    content=self.__build_draftjs_content(text),
+                    # bulk_create skips save(): derive text_norm here or the
+                    # search (text_norm__contains) wouldn't find these threads.
+                    text_norm=strip_accents(text).lower(),
+                    mask=random.choice(masks),
+                    language=normalize_language(spec["language"]),
+                    region=normalize_region(spec["region"]),
+                    geohash=geohash,
+                    # bulk_create skips save(): derive geohash4 here or the
+                    # large radii (>25 km) wouldn't find these threads.
+                    geohash4=geohash[: GEOHASH_PRECISION - 1] if geohash else None,
+                )
+            )
 
         created = []
         for i in range(0, len(objs), BULK_BATCH):
-            created += Thread.objects.bulk_create(objs[i:i + BULK_BATCH])
+            created += Thread.objects.bulk_create(objs[i : i + BULK_BATCH])
         return created
 
     def __spread_ages(self, roots: List[Thread]) -> None:
@@ -280,25 +321,25 @@ class Command(BaseCommand):
             hours = random.choice(AGE_BUCKETS_HOURS)
             buckets.setdefault(hours, []).append(thread.pk)
         for hours, pks in buckets.items():
-            Thread.objects.filter(pk__in=pks).update(
-                create_at=now - timedelta(hours=hours))
+            Thread.objects.filter(pk__in=pks).update(create_at=now - timedelta(hours=hours))
 
     def __bulk_create_tags(self, roots: List[Thread]) -> int:
         objs = []
         for thread in roots:
             for name in get_tags_list(thread.text):
                 clean = name.lower()
-                objs.append(Tag(
-                    name=clean,
-                    name_norm=strip_accents(clean),
-                    thread=thread,
-                ))
+                objs.append(
+                    Tag(
+                        name=clean,
+                        name_norm=strip_accents(clean),
+                        thread=thread,
+                    )
+                )
         for i in range(0, len(objs), BULK_BATCH):
-            Tag.objects.bulk_create(objs[i:i + BULK_BATCH])
+            Tag.objects.bulk_create(objs[i : i + BULK_BATCH])
         return len(objs)
 
-    def __bulk_create_comments(self, roots: List[Thread],
-                               masks: List[Mask]) -> int:
+    def __bulk_create_comments(self, roots: List[Thread], masks: List[Mask]) -> int:
         """
         DISTINCT commenters (≠ author) per thread — the signal that weighs
         in the threshold (≥1 commenter) and the momentum (×3). Most threads
@@ -306,45 +347,42 @@ class Command(BaseCommand):
         """
         objs = []
         for thread in roots:
-            commenters = random.choices(
-                (0, 1, 2, 3, 4), weights=(15, 35, 25, 15, 10))[0]
+            commenters = random.choices((0, 1, 2, 3, 4), weights=(15, 35, 25, 15, 10))[0]
             candidates = [m for m in masks if m.pk != thread.mask_id]
-            chosen = random.sample(
-                candidates, k=min(commenters, len(candidates)))
+            chosen = random.sample(candidates, k=min(commenters, len(candidates)))
             for mask in chosen:
                 text = fake.sentence(nb_words=random.randint(4, 14))
-                objs.append(Thread(
-                    text=text,
-                    content=self.__build_draftjs_content(text),
-                    text_norm=strip_accents(text).lower(),
-                    mask=mask,
-                    sub=thread,
-                    language="es",
-                    region="CO",
-                ))
+                objs.append(
+                    Thread(
+                        text=text,
+                        content=self.__build_draftjs_content(text),
+                        text_norm=strip_accents(text).lower(),
+                        mask=mask,
+                        sub=thread,
+                        language="es",
+                        region="CO",
+                    )
+                )
         for i in range(0, len(objs), BULK_BATCH):
-            Thread.objects.bulk_create(objs[i:i + BULK_BATCH])
+            Thread.objects.bulk_create(objs[i : i + BULK_BATCH])
         return len(objs)
 
-    def __bulk_create_reactions(self, roots: List[Thread],
-                                reactions: List[Reaction],
-                                masks: List[Mask]) -> int:
+    def __bulk_create_reactions(self, roots: List[Thread], reactions: List[Reaction], masks: List[Mask]) -> int:
         objs = []
         for thread in roots:
-            reactors = random.choices(
-                (0, 1, 2, 3, 4, 6, 9), weights=(10, 15, 20, 20, 15, 12, 8))[0]
+            reactors = random.choices((0, 1, 2, 3, 4, 6, 9), weights=(10, 15, 20, 20, 15, 12, 8))[0]
             candidates = [m for m in masks if m.pk != thread.mask_id]
-            chosen = random.sample(
-                candidates, k=min(reactors, len(candidates)))
+            chosen = random.sample(candidates, k=min(reactors, len(candidates)))
             for mask in chosen:
-                objs.append(ReactionRelation(
-                    thread=thread,
-                    mask=mask,
-                    reaction=random.choice(reactions),
-                ))
+                objs.append(
+                    ReactionRelation(
+                        thread=thread,
+                        mask=mask,
+                        reaction=random.choice(reactions),
+                    )
+                )
         for i in range(0, len(objs), BULK_BATCH):
-            ReactionRelation.objects.bulk_create(
-                objs[i:i + BULK_BATCH], ignore_conflicts=True)
+            ReactionRelation.objects.bulk_create(objs[i : i + BULK_BATCH], ignore_conflicts=True)
         return len(objs)
 
     # ── pools ──────────────────────────────────────────────────────────
@@ -352,36 +390,36 @@ class Command(BaseCommand):
     def __ensure_reactions_exist(self) -> List[Reaction]:
         result = []
         for data in DEFAULT_REACTIONS:
-            reaction, _ = Reaction.objects.get_or_create(
-                name=data["name"], defaults={"emoji": data["emoji"]})
+            reaction, _ = Reaction.objects.get_or_create(name=data["name"], defaults={"emoji": data["emoji"]})
             result.append(reaction)
         return result
 
     def __ensure_masks_pool(self) -> List[Mask]:
         existing = Mask.objects.count()
         if existing < MIN_MASKS_POOL:
-            Mask.objects.bulk_create([
-                Mask(
-                    hash=hashlib.sha256(
-                        f"{random.random()}-{shortuuid.uuid()}".encode()
-                    ).hexdigest(),
-                    country_code=random.choice(
-                        ["CO", "MX", "AR", "ES", "US", "BR", "FR", "JP"]),
-                )
-                for _ in range(MIN_MASKS_POOL - existing)
-            ])
-        return list(Mask.objects.all()[:MIN_MASKS_POOL * 2])
+            Mask.objects.bulk_create(
+                [
+                    Mask(
+                        hash=hashlib.sha256(f"{random.random()}-{shortuuid.uuid()}".encode()).hexdigest(),
+                        country_code=random.choice(["CO", "MX", "AR", "ES", "US", "BR", "FR", "JP"]),
+                    )
+                    for _ in range(MIN_MASKS_POOL - existing)
+                ]
+            )
+        return list(Mask.objects.all()[: MIN_MASKS_POOL * 2])
 
     def __build_draftjs_content(self, text: str) -> dict:
         return {
-            "blocks": [{
-                "key": shortuuid.uuid()[:5],
-                "data": {},
-                "text": text,
-                "type": "unstyled",
-                "depth": 0,
-                "entityRanges": [],
-                "inlineStyleRanges": [],
-            }],
+            "blocks": [
+                {
+                    "key": shortuuid.uuid()[:5],
+                    "data": {},
+                    "text": text,
+                    "type": "unstyled",
+                    "depth": 0,
+                    "entityRanges": [],
+                    "inlineStyleRanges": [],
+                }
+            ],
             "entityMap": {},
         }

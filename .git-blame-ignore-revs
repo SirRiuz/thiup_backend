@@ -1,0 +1,6 @@
+# Revisions to skip in `git blame` (bulk reformats — not real authorship).
+# Enable once locally:  git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub honors this file automatically.)
+#
+# Ruff format + import sort adoption (whole repo):
+e98b3bc027a3cfdbf3c1cd6deda1bc74ec8e22bc

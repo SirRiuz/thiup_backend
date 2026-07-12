@@ -341,6 +341,15 @@ make test
 - Python 3.12 (Docker image). `app/` directory does all the work; `media/` and `staticfiles/`
   are served by nginx via volumes.
 
+**Lint & format (Ruff).** One tool for both, config in `pyproject.toml` `[tool.ruff]`
+(line-length 120, target py312, rules `E/W/F/I`; `E501` is left to the formatter; migrations
+excluded; star-imports and test locals per-file-ignored as intentional). `make lint` checks
+(`ruff check` + `ruff format --check`, no writes — this is what CI should run); `make format`
+rewrites (`ruff check --fix` + `ruff format`). A `.pre-commit-config.yaml` runs both on commit
+(`pip install pre-commit && pre-commit install`). Ruff lives in `requirements.dev`, baked into
+the local image. The whole repo was reformatted once — that commit is in `.git-blame-ignore-revs`
+(enable: `git config blame.ignoreRevsFile .git-blame-ignore-revs`).
+
 ## Production infrastructure (AWS)
 
 One CloudFormation stack (`ci/infra/ecs.yml`) owns everything: ECS Fargate service + CodeBuild
@@ -410,7 +419,8 @@ load-bearing facts:
 5. **Privacy**: never log/persist queries, feed inputs or histories; only public identifiers are
    searchable; never leak data through logs, error messages, OG tags or titles.
 6. **Write/update tests** for every added or changed behavior; keep `make test` (≥70%
-   gate) green; pin `ENCRYPTED_RESPONSE`/`SINGLE_REQUEST_PROTECT` in API tests.
+   gate) green; pin `ENCRYPTED_RESPONSE`/`SINGLE_REQUEST_PROTECT` in API tests. Also keep
+   **`make lint` green** (Ruff — see "Lint & format" above); run `make format` before committing.
 7. **Clean migrations** for any model/index change — including backfills for derived `*_norm`
    columns and index additions/removals (see migration `0012` as the model to follow).
 8. **Don't break API contracts**: response shapes, headers, pagination and status codes are
@@ -421,3 +431,8 @@ load-bearing facts:
     (`# ----`, `# ====`, box headers, etc.) to separate sections. Let the code structure speak;
     when a section genuinely needs a label, use a single short comment line (`# Backend selection.`).
     Comments should explain the *why*, be concise, and stay in English (see rule 1).
+11. **Never create branches or commit automatically.** Leave all changes UNCOMMITTED in the
+    working tree on the current branch — do not run `git checkout -b`, `git commit`, or `git push`
+    unless the user EXPLICITLY asks in that message. When work is done, stop and let the user
+    review, stage and commit. Suggesting a branch name or commit message is fine; running the
+    git commands is not.

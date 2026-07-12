@@ -1,17 +1,17 @@
 # Django
-from django.urls import reverse
+from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.test import Client, TestCase
-from django.contrib.auth.models import User
-
-# Models
-from app.models.mask import Mask
-from app.models.thread import Thread
-from app.models.momentum_log import MomentumLog
+from django.urls import reverse
 
 # Libs
 from app.methods import presence
 from app.methods.metrics import collect_metrics
+
+# Models
+from app.models.mask import Mask
+from app.models.momentum_log import MomentumLog
+from app.models.thread import Thread
 
 
 class MetricsCollectorTest(TestCase):
@@ -22,8 +22,7 @@ class MetricsCollectorTest(TestCase):
 
     def test_snapshot_has_every_section(self):
         data = collect_metrics()
-        for section in ("process", "system", "activity", "content",
-                        "database", "jobs"):
+        for section in ("process", "system", "activity", "content", "database", "jobs"):
             self.assertIn(section, data)
         # DB round-trip really ran and is a number.
         self.assertGreaterEqual(data["database"]["latency_ms"], 0)
@@ -79,8 +78,7 @@ class OnlineMaskChangelistTest(TestCase):
     def setUp(self):
         cache.clear()
         self.client = Client()
-        self.client.force_login(
-            User.objects.create_superuser("owner", "o@o.co", "x"))
+        self.client.force_login(User.objects.create_superuser("owner", "o@o.co", "x"))
         self.url = reverse("admin:app_mask_changelist")
 
     def test_online_filter_lists_only_active_masks(self):
@@ -95,8 +93,7 @@ class OnlineMaskChangelistTest(TestCase):
         # the admin). The offline mask is filtered out.
         result_pks = {row.pk for row in response.context["cl"].result_list}
         self.assertIn(online.pk, result_pks)
-        self.assertNotIn(
-            Mask.objects.get(hash="b2" * 32).pk, result_pks)
+        self.assertNotIn(Mask.objects.get(hash="b2" * 32).pk, result_pks)
         self.assertEqual(response.context["cl"].result_count, 2)
 
     def test_without_the_filter_everyone_is_listed(self):

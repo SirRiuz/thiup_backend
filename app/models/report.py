@@ -3,8 +3,8 @@ from django.db import models
 
 # Libs
 from app.models.base_model import BaseModel
-from app.models.thread import Thread
 from app.models.mask import Mask
+from app.models.thread import Thread
 
 
 class Report(BaseModel):
@@ -36,27 +36,22 @@ class Report(BaseModel):
     REASON_MAX_LENGTH = 300
 
     thread = models.ForeignKey(
-        to=Thread,
-        on_delete=models.CASCADE,
-        related_name="reports",
-        help_text="Reported thread.")
+        to=Thread, on_delete=models.CASCADE, related_name="reports", help_text="Reported thread."
+    )
 
     # Pseudonymous reporter (Mask) — NOT a real identity (see class docstring).
     reporter = models.ForeignKey(
-        to=Mask,
-        on_delete=models.CASCADE,
-        help_text="Pseudonymous mask of the reporter (anonymity key).")
+        to=Mask, on_delete=models.CASCADE, help_text="Pseudonymous mask of the reporter (anonymity key)."
+    )
 
-    category = models.CharField(
-        max_length=32,
-        choices=CATEGORY_CHOICES,
-        db_index=True)
+    category = models.CharField(max_length=32, choices=CATEGORY_CHOICES, db_index=True)
 
     reason = models.CharField(
         max_length=REASON_MAX_LENGTH,
         blank=True,
         default="",
-        help_text="Optional free-text detail (used for the 'other' category).")
+        help_text="Optional free-text detail (used for the 'other' category).",
+    )
 
     # Flags reports that need a SEPARATE, high-priority review path. Set True
     # when category == MINORS.
@@ -68,13 +63,9 @@ class Report(BaseModel):
     class Meta:
         constraints = [
             # One report per pseudonymous user per thread → re-report = upsert.
-            models.UniqueConstraint(
-                fields=["thread", "reporter"],
-                name="unique_report_per_thread_reporter"),
+            models.UniqueConstraint(fields=["thread", "reporter"], name="unique_report_per_thread_reporter"),
         ]
         indexes = [
             # Moderation changelist: priority first, newest first.
-            models.Index(
-                fields=["is_priority", "-create_at"],
-                name="report_priority_idx"),
+            models.Index(fields=["is_priority", "-create_at"], name="report_priority_idx"),
         ]

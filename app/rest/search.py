@@ -1,58 +1,59 @@
 # Python
 import hashlib
 import re
-from datetime import datetime, time, timedelta
 from collections import defaultdict
+from datetime import datetime, time, timedelta
 
 # Django
 from django.core.cache import cache
+from django.db.models import Count, OuterRef, Q, Subquery
+from django.db.models.functions import TruncDate
+from django.db.models.query import QuerySet
 
 # Django
 from django.utils import timezone
-from django.db.models import Q, Count, OuterRef, Subquery
-from django.db.models.query import QuerySet
-from django.db.models.functions import TruncDate
-from rest_framework.response import Response
 from rest_framework.decorators import action
-from rest_framework.viewsets import GenericViewSet
-from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.response import Response
 from rest_framework.status import HTTP_400_BAD_REQUEST
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.viewsets import GenericViewSet
+
+from app.constants.search import (
+    ACTIVITY_DAYS,
+    MAX_QUERY_LENGTH,
+    MEDIA,
+    POSTS,
+    SUGGEST_MIN_CHARS,
+    SUGGEST_SNIPPET_RADIUS,
+    SUGGEST_TAGS_LIMIT,
+    SUGGEST_THREADS_LIMIT,
+    SUGGEST_TRENDING_LIMIT,
+    TAGS,
+    USERS,
+    VALID_TYPES,
+)
+from app.methods.moderation import find_blocked_terms, shadowban_matching
+from app.methods.threads import with_card_relations
+from app.models.mask import Mask
+from app.models.media import ThreadFile
+from app.models.tag import Tag
 
 # Models
 from app.models.thread import Thread
-from app.models.tag import Tag
-from app.models.mask import Mask
-from app.models.media import ThreadFile
 from app.models.trending_tag import TrendingTag
 
-# Serializers
-from app.rest.serializers.thread_serializer import ThreadSerializer
+# Libs
+from app.permissions.client import IsClientAuthenticated
+from app.rest.pagination import SearchPagination
 from app.rest.serializers.media_serializer import ThreadMediaSerializer
 from app.rest.serializers.search_serializers import (
     TagSearchSerializer,
     UserSearchSerializer,
 )
 
-# Libs
-from app.permissions.client import IsClientAuthenticated
-from app.constants.search import (
-    MAX_QUERY_LENGTH,
-    SUGGEST_MIN_CHARS,
-    POSTS,
-    TAGS,
-    USERS,
-    MEDIA,
-    VALID_TYPES,
-    ACTIVITY_DAYS,
-    SUGGEST_TAGS_LIMIT,
-    SUGGEST_THREADS_LIMIT,
-    SUGGEST_TRENDING_LIMIT,
-    SUGGEST_SNIPPET_RADIUS,
-)
+# Serializers
+from app.rest.serializers.thread_serializer import ThreadSerializer
 from app.utils.text import strip_accents
-from app.methods.threads import with_card_relations
-from app.methods.moderation import find_blocked_terms, shadowban_matching
-from app.rest.pagination import SearchPagination
 
 
 class SearchViewSet(GenericViewSet):
@@ -104,9 +105,7 @@ class SearchViewSet(GenericViewSet):
         # Rate limit anónimo por IP (scopes en DEFAULT_THROTTLE_RATES):
         # 'search_suggest' es más alto (se dispara al tipear, con debounce);
         # el resto cae en 'search'. Defensa server-side contra martilleo.
-        self.throttle_scope = (
-            "search_suggest" if self.action == "suggest" else "search"
-        )
+        self.throttle_scope = "search_suggest" if self.action == "suggest" else "search"
         return super().get_throttles()
 
     def _validate_query_length(self, raw):
@@ -128,12 +127,14 @@ class SearchViewSet(GenericViewSet):
         AND by blocklisted queries — a shadowbanned term must be
         indistinguishable from a term nobody ever posted about."""
         self.paginate_queryset(Thread.objects.none())
-        return self.get_paginated_response({
-            "data": [],
-            "context": {
-                "counts": {POSTS: 0, TAGS: 0, USERS: 0, MEDIA: 0},
-            },
-        })
+        return self.get_paginated_response(
+            {
+                "data": [],
+                "context": {
+                    "counts": {POSTS: 0, TAGS: 0, USERS: 0, MEDIA: 0},
+                },
+            }
+        )
 
     # -- Querysets per type --------------------------------------------------
 
@@ -186,9 +187,7 @@ class SearchViewSet(GenericViewSet):
         now_date = timezone.localtime(timezone.now())
         match = Q(text_norm__contains=query)
         if author_mask:
-            author_ids = list(
-                Mask.objects.filter(
-                    hash__startswith=author_mask).values_list("id", flat=True))
+            author_ids = list(Mask.objects.filter(hash__startswith=author_mask).values_list("id", flat=True))
             if author_ids:
                 match |= Q(mask_id__in=author_ids)
         return Thread.objects.filter(
@@ -206,8 +205,7 @@ class SearchViewSet(GenericViewSet):
         ese Count(distinct) solo añadía un JOIN + GROUP BY sobre TODOS los
         matches antes del LIMIT (medido: 30 ms vs 2 ms la misma página).
         `ordering` lo decide el FE (top vs latest); whitelist arriba."""
-        order = self.POST_ORDERINGS.get(
-            ordering, self.POST_ORDERINGS[self.DEFAULT_POST_ORDERING])
+        order = self.POST_ORDERINGS.get(ordering, self.POST_ORDERINGS[self.DEFAULT_POST_ORDERING])
         return with_card_relations(
             base.order_by(*order),
             getattr(self.request, "mask", None),
@@ -226,10 +224,14 @@ class SearchViewSet(GenericViewSet):
         cut is a correlated LIMIT 1 subquery on the same FK index. Ordered
         by the parent thread's relevance (precomputed momentum, date as
         tiebreaker)."""
-        first_per_thread = ThreadFile.objects.filter(
-            is_active=True,
-            thread=OuterRef("thread"),
-        ).order_by("create_at", "pk").values("pk")[:1]
+        first_per_thread = (
+            ThreadFile.objects.filter(
+                is_active=True,
+                thread=OuterRef("thread"),
+            )
+            .order_by("create_at", "pk")
+            .values("pk")[:1]
+        )
         return ThreadFile.objects.filter(
             is_active=True,
             thread__in=posts_base.order_by().values("pk"),
@@ -253,17 +255,19 @@ class SearchViewSet(GenericViewSet):
         cards = {}
         file_counts = {}
         if thread_ids:
-            threads = with_card_relations(
-                Thread.objects.filter(pk__in=thread_ids), mask)
+            threads = with_card_relations(Thread.objects.filter(pk__in=thread_ids), mask)
             cards = {
                 t.pk: ThreadSerializer(
-                    t, many=False, context={"mask": mask, "short": True},
+                    t,
+                    many=False,
+                    context={"mask": mask, "short": True},
                 ).data
                 for t in threads
             }
             file_counts = dict(
                 ThreadFile.objects.filter(
-                    is_active=True, thread_id__in=thread_ids,
+                    is_active=True,
+                    thread_id__in=thread_ids,
                 )
                 .values("thread_id")
                 .annotate(n=Count("id"))
@@ -319,8 +323,7 @@ class SearchViewSet(GenericViewSet):
         cached_activity = cache.get(cache_key)
         if cached_activity is not None:
             for tag in tags_page:
-                tag["activity"] = cached_activity.get(
-                    tag["name"], [0] * ACTIVITY_DAYS)
+                tag["activity"] = cached_activity.get(tag["name"], [0] * ACTIVITY_DAYS)
             return tags_page
         start_day = today - timedelta(days=ACTIVITY_DAYS - 1)
         # Start of the range: local midnight of the first day, as an aware
@@ -402,13 +405,9 @@ class SearchViewSet(GenericViewSet):
 
         if len(normalized) < SUGGEST_MIN_CHARS:
             trending = list(
-                TrendingTag.objects.order_by("-score").values(
-                    "name", "thread_count")[:SUGGEST_TRENDING_LIMIT]
+                TrendingTag.objects.order_by("-score").values("name", "thread_count")[:SUGGEST_TRENDING_LIMIT]
             )
-            items = [
-                {"type": "tag", "name": t["name"], "count": t["thread_count"]}
-                for t in trending
-            ]
+            items = [{"type": "tag", "name": t["name"], "count": t["thread_count"]} for t in trending]
             # REAL activity series for the landing sparklines — the same
             # aggregation (and 5-min LocMem cache) the tags tab uses. The
             # trending names are identical for every user, so this resolves
@@ -425,13 +424,12 @@ class SearchViewSet(GenericViewSet):
             return Response({"tags": [], "threads": []})
 
         # TAGS: prefix sobre la tabla de tendencias (indexada), por score.
-        tag_rows = TrendingTag.objects.filter(
-            name_norm__startswith=normalized
-        ).order_by("-score").values("name", "thread_count")[:SUGGEST_TAGS_LIMIT]
-        tags = [
-            {"type": "tag", "name": r["name"], "count": r["thread_count"]}
-            for r in tag_rows
-        ]
+        tag_rows = (
+            TrendingTag.objects.filter(name_norm__startswith=normalized)
+            .order_by("-score")
+            .values("name", "thread_count")[:SUGGEST_TAGS_LIMIT]
+        )
+        tags = [{"type": "tag", "name": r["name"], "count": r["thread_count"]} for r in tag_rows]
 
         # HILOS: contenido por momentum. MISMA normalización y MISMA columna
         # que la búsqueda principal (text_norm, strip_accents+lower en ambos
@@ -450,14 +448,12 @@ class SearchViewSet(GenericViewSet):
             .values("uid", "text")[:SUGGEST_THREADS_LIMIT]
         )
         threads = [
-            {"type": "thread", "uid": r["uid"],
-             "snippet": self.__snippet(r["text"], normalized)}
-            for r in thread_rows
+            {"type": "thread", "uid": r["uid"], "snippet": self.__snippet(r["text"], normalized)} for r in thread_rows
         ]
 
         return Response({"tags": tags, "threads": threads})
 
-    def __snippet(self, text, term) -> (str):
+    def __snippet(self, text, term) -> str:
         """Fragmento alrededor de la primera coincidencia, para mostrar el
         contexto en el dropdown. La búsqueda del match es INSENSIBLE a
         acentos/caso (strip_accents en ambos lados) pero devuelve el slice
@@ -561,7 +557,9 @@ class SearchViewSet(GenericViewSet):
                 context={"mask": request.mask, "short": True},
             ).data
 
-        return self.get_paginated_response({
-            "data": results,
-            "context": {"counts": counts},
-        })
+        return self.get_paginated_response(
+            {
+                "data": results,
+                "context": {"counts": counts},
+            }
+        )

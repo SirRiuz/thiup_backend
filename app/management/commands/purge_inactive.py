@@ -1,27 +1,27 @@
 # Python
-import time
 import logging
+import time
 from datetime import timedelta
 
 # Django
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-# Models
-from app.models.thread import Thread
-from app.models.media import ThreadFile
-from app.models.reaction_relation import ReactionRelation
-from app.models.tag import Tag
-from app.models.report import Report
-from app.models.purge_log import PurgeLog
-
-# Signals
-from app.signals.media_signals import storage_cleanup_paused
-
 # Libs
 # Module import (not the symbol): the backend is resolved at CALL time, so
 # late configuration and test patching of get_backend both take effect.
 from app.methods import storage_backends
+from app.models.media import ThreadFile
+from app.models.purge_log import PurgeLog
+from app.models.reaction_relation import ReactionRelation
+from app.models.report import Report
+from app.models.tag import Tag
+
+# Models
+from app.models.thread import Thread
+
+# Signals
+from app.signals.media_signals import storage_cleanup_paused
 
 LOGGER = logging.getLogger(__name__)
 
@@ -96,8 +96,7 @@ class Command(BaseCommand):
                 for model in PURGE_MODELS:
                     if budget <= 0:
                         break
-                    selected, deleted, keys = self._purge_model(
-                        model, cutoff, budget)
+                    selected, deleted, keys = self._purge_model(model, cutoff, budget)
                     if selected:
                         breakdown[model.__name__] = {
                             "selected": selected,
@@ -112,16 +111,11 @@ class Command(BaseCommand):
             # direct ThreadFile purges and thread-cascade casualties alike.
             # DB first, storage second: a storage hiccup leaves cheap orphaned
             # objects (logged inside delete_objects), never resurrected rows.
-            removed = (
-                storage_backends.get_backend().delete_objects(doomed_keys)
-                if doomed_keys
-                else 0
-            )
+            removed = storage_backends.get_backend().delete_objects(doomed_keys) if doomed_keys else 0
         except Exception as exc:
             duration_ms = int((time.monotonic() - started) * 1000)
             # .exception includes the full traceback in the log.
-            LOGGER.exception(
-                "purge_inactive: FAILED after %sms", duration_ms)
+            LOGGER.exception("purge_inactive: FAILED after %sms", duration_ms)
             PurgeLog.objects.create(
                 row_limit=options["limit"],
                 min_age_hours=options["min_age_hours"],
@@ -148,8 +142,7 @@ class Command(BaseCommand):
             was_successful=True,
         )
         LOGGER.info(
-            "purge_inactive: OK — %s rows selected, %s deleted with "
-            "cascades, %s/%s storage objects removed, %.2fs.",
+            "purge_inactive: OK — %s rows selected, %s deleted with cascades, %s/%s storage objects removed, %.2fs.",
             total_selected,
             total_deleted,
             removed,
@@ -175,8 +168,7 @@ class Command(BaseCommand):
         undershoot it (a row already swept by an earlier cascade in this same
         run — filter(pk__in=...) just skips the gone ones).
         """
-        expired = model.objects.filter(
-            is_active=False, update_at__lt=cutoff).order_by("update_at")
+        expired = model.objects.filter(is_active=False, update_at__lt=cutoff).order_by("update_at")
 
         # ThreadFile: pk AND file_key come from the SAME select — no second
         # query just to learn which objects to remove from storage.
@@ -216,13 +208,8 @@ class Command(BaseCommand):
         doomed_ids = list(pks)
         frontier = pks
         while frontier:
-            frontier = list(
-                Thread.objects.filter(sub_id__in=frontier)
-                .values_list("pk", flat=True)
-            )
+            frontier = list(Thread.objects.filter(sub_id__in=frontier).values_list("pk", flat=True))
             doomed_ids.extend(frontier)
         return list(
-            ThreadFile.objects.filter(thread_id__in=doomed_ids)
-            .exclude(file_key="")
-            .values_list("file_key", flat=True)
+            ThreadFile.objects.filter(thread_id__in=doomed_ids).exclude(file_key="").values_list("file_key", flat=True)
         )

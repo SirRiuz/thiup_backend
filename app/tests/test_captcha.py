@@ -1,33 +1,35 @@
 # Python
-import json
 import hashlib
-from datetime import datetime, timedelta, timezone as dt_timezone
-from unittest.mock import patch, MagicMock
+import json
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
+from unittest.mock import MagicMock, patch
+
+# Libs
+import requests
 
 # Django
 from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 from rest_framework import status
 
-# Libs
-import requests
-from app.methods.tokens import encode_token, issue_ticket
 from app.methods.captcha import (
-    verify_captcha_token,
+    PASS_PURPOSE,
+    CaptchaUnavailable,
     issue_human_pass,
     validate_human_pass,
-    CaptchaUnavailable,
-    PASS_PURPOSE,
+    verify_captcha_token,
 )
+from app.methods.tokens import encode_token, issue_ticket
 
 # Models
 from app.models.mask import Mask
 from app.models.thread import Thread
-
-# Gateway helper of the existing suite (transport flags are ON under pytest).
-from app.tests.test_gateway import gateway_post, token as client_ticket
 from app.tests.test_foryou import decode_body
 
+# Gateway helper of the existing suite (transport flags are ON under pytest).
+from app.tests.test_gateway import gateway_post
+from app.tests.test_gateway import token as client_ticket
 
 # The Django test client hits the API from 127.0.0.1, so MaskMiddleware
 # derives THIS mask for every request — passes must be minted for it.
@@ -42,12 +44,12 @@ CAP_TEST_SETTINGS = {
 }
 
 
-def client_mask() -> (Mask):
+def client_mask() -> Mask:
     mask, _ = Mask.objects.get_or_create(hash=CLIENT_MASK_HASH)
     return mask
 
 
-def valid_pass() -> (str):
+def valid_pass() -> str:
     return issue_human_pass(client_mask())
 
 
@@ -86,8 +88,7 @@ class VerifyCaptchaTokenTest(TestCase):
 
     @patch("app.methods.captcha._session.post")
     def test_4xx_is_denied_not_unavailable(self, post):
-        post.return_value = self._response(
-            status_code=400, payload={"success": False})
+        post.return_value = self._response(status_code=400, payload={"success": False})
         self.assertFalse(verify_captcha_token("cap-token"))
 
     @patch("app.methods.captcha._session.post")
@@ -109,8 +110,7 @@ class VerifyCaptchaTokenTest(TestCase):
 
     @patch("app.methods.captcha._session.post")
     def test_5xx_raises_unavailable(self, post):
-        post.return_value = self._response(
-            status_code=500, payload={"success": False})
+        post.return_value = self._response(status_code=500, payload={"success": False})
         with self.assertRaises(CaptchaUnavailable):
             verify_captcha_token("cap-token")
 
@@ -132,13 +132,11 @@ class HumanPassTest(TestCase):
         self.mask = client_mask()
 
     def test_issued_pass_validates_for_its_mask(self):
-        self.assertTrue(
-            validate_human_pass(issue_human_pass(self.mask), self.mask))
+        self.assertTrue(validate_human_pass(issue_human_pass(self.mask), self.mask))
 
     def test_pass_is_rejected_for_another_mask(self):
         other = Mask.objects.create(hash="other-mask", country_code="CO")
-        self.assertFalse(
-            validate_human_pass(issue_human_pass(other), self.mask))
+        self.assertFalse(validate_human_pass(issue_human_pass(other), self.mask))
 
     def test_ticket_jwt_is_not_a_pass(self):
         # Signed with the same key but minted for another purpose: the
@@ -147,11 +145,13 @@ class HumanPassTest(TestCase):
 
     def test_expired_pass_is_rejected(self):
         now = datetime.now(dt_timezone.utc)
-        expired = encode_token({
-            "exp": now - timedelta(seconds=10),
-            "purpose": PASS_PURPOSE,
-            "mask": self.mask.hash,
-        })
+        expired = encode_token(
+            {
+                "exp": now - timedelta(seconds=10),
+                "purpose": PASS_PURPOSE,
+                "mask": self.mask.hash,
+            }
+        )
         self.assertFalse(validate_human_pass(expired, self.mask))
 
     def test_garbage_is_rejected(self):
@@ -159,9 +159,7 @@ class HumanPassTest(TestCase):
         self.assertFalse(validate_human_pass("", self.mask))
 
 
-@override_settings(
-    ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False,
-    **CAP_TEST_SETTINGS)
+@override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False, **CAP_TEST_SETTINGS)
 class CaptchaVerifyViewTest(TestCase):
     """POST /captcha/verify/ exchanges a Cap token for the human pass."""
 
@@ -170,9 +168,7 @@ class CaptchaVerifyViewTest(TestCase):
         cache.clear()  # isolate throttle history between tests
 
     def _post(self, body):
-        return self.client.post(
-            "/captcha/verify/", data=json.dumps(body),
-            content_type="application/json")
+        return self.client.post("/captcha/verify/", data=json.dumps(body), content_type="application/json")
 
     @patch("app.rest.captcha.verify_captcha_token", return_value=True)
     def test_valid_cap_token_mints_a_working_pass(self, verify):
@@ -189,12 +185,10 @@ class CaptchaVerifyViewTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(decode_body(res)["code"], "CAPTCHA_FAILED")
 
-    @patch("app.rest.captcha.verify_captcha_token",
-           side_effect=CaptchaUnavailable())
+    @patch("app.rest.captcha.verify_captcha_token", side_effect=CaptchaUnavailable())
     def test_cap_down_is_503(self, verify):
         res = self._post({"token": "cap-token"})
-        self.assertEqual(
-            res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(res.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertEqual(decode_body(res)["code"], "CAPTCHA_UNAVAILABLE")
 
     @patch("app.rest.captcha.verify_captcha_token")
@@ -206,14 +200,12 @@ class CaptchaVerifyViewTest(TestCase):
         verify.assert_not_called()
 
 
-def make_thread() -> (Thread):
+def make_thread() -> Thread:
     author = Mask.objects.create(hash="captcha-author", country_code="CO")
     return Thread.objects.create(content={}, text="protected", mask=author)
 
 
-@override_settings(
-    ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False,
-    **CAP_TEST_SETTINGS)
+@override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False, **CAP_TEST_SETTINGS)
 class HumanValidatorScopeTest(TestCase):
     """@human_validator gates exactly the entity-creating writes."""
 
@@ -233,15 +225,12 @@ class HumanValidatorScopeTest(TestCase):
         extra = {}
         if human_pass is not None:
             extra["HTTP_X_HUMAN_PASS"] = human_pass
-        return self.client.post(
-            path, data=json.dumps(body or {}),
-            content_type="application/json", **extra)
+        return self.client.post(path, data=json.dumps(body or {}), content_type="application/json", **extra)
 
     def test_every_protected_write_requires_a_pass(self):
         for path in self.PROTECTED_WRITES:
             res = self._post(path)
-            self.assertEqual(
-                res.status_code, status.HTTP_403_FORBIDDEN, path)
+            self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN, path)
             self.assertEqual(decode_body(res)["code"], "CAPTCHA_FAILED", path)
 
     def test_valid_pass_opens_every_protected_write(self):
@@ -250,23 +239,23 @@ class HumanValidatorScopeTest(TestCase):
         human_pass = valid_pass()
         for path in self.PROTECTED_WRITES:
             res = self._post(path, human_pass=human_pass)
-            self.assertNotEqual(
-                res.status_code, status.HTTP_403_FORBIDDEN, path)
+            self.assertNotEqual(res.status_code, status.HTTP_403_FORBIDDEN, path)
 
     def test_full_happy_path_creates_the_entity(self):
         thread = make_thread()
         res = self._post(
-            "/reports/",
-            body={"thread_id": thread.uid, "category": "spam_or_deception"},
-            human_pass=valid_pass())
+            "/reports/", body={"thread_id": thread.uid, "category": "spam_or_deception"}, human_pass=valid_pass()
+        )
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
 
     def test_expired_pass_is_403(self):
-        expired = encode_token({
-            "exp": datetime.now(dt_timezone.utc) - timedelta(seconds=10),
-            "purpose": PASS_PURPOSE,
-            "mask": CLIENT_MASK_HASH,
-        })
+        expired = encode_token(
+            {
+                "exp": datetime.now(dt_timezone.utc) - timedelta(seconds=10),
+                "purpose": PASS_PURPOSE,
+                "mask": CLIENT_MASK_HASH,
+            }
+        )
         res = self._post("/reports/", human_pass=expired)
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(decode_body(res)["code"], "CAPTCHA_FAILED")
@@ -277,16 +266,14 @@ class HumanValidatorScopeTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_error_body_never_echoes_the_pass(self):
-        human_pass = issue_human_pass(
-            Mask.objects.create(hash="not-mine", country_code="CO"))
+        human_pass = issue_human_pass(Mask.objects.create(hash="not-mine", country_code="CO"))
         res = self._post("/reports/", human_pass=human_pass)
         self.assertNotIn(human_pass, res.content.decode())
 
     def test_readonly_post_feeds_need_no_pass(self):
         for path in ("/threads/foryou/", "/threads/closeyou/"):
             res = self._post(path)
-            self.assertNotEqual(
-                res.status_code, status.HTTP_403_FORBIDDEN, path)
+            self.assertNotEqual(res.status_code, status.HTTP_403_FORBIDDEN, path)
 
     def test_reads_need_no_pass(self):
         for path in ("/threads/", "/reactions/"):
@@ -306,15 +293,13 @@ class CaptchaFlagOffTest(TestCase):
         thread = make_thread()
         res = self.client.post(
             "/reports/",
-            data=json.dumps({
-                "thread_id": thread.uid, "category": "spam_or_deception"}),
-            content_type="application/json")
+            data=json.dumps({"thread_id": thread.uid, "category": "spam_or_deception"}),
+            content_type="application/json",
+        )
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
 
     def test_verify_endpoint_reports_disabled(self):
-        res = self.client.post(
-            "/captcha/verify/", data=json.dumps({"token": "x"}),
-            content_type="application/json")
+        res = self.client.post("/captcha/verify/", data=json.dumps({"token": "x"}), content_type="application/json")
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(decode_body(res)["code"], "CAPTCHA_DISABLED")
 
@@ -329,16 +314,12 @@ class CaptchaGatewayTest(TestCase):
         self.thread = make_thread()
 
     def test_pass_travels_through_the_gateway(self):
-        body = json.dumps({
-            "thread_id": self.thread.uid, "category": "spam_or_deception"})
-        res = gateway_post(
-            "POST", "/reports/", client_ticket(), body=body,
-            extra={"HTTP_X_HUMAN_PASS": valid_pass()})
+        body = json.dumps({"thread_id": self.thread.uid, "category": "spam_or_deception"})
+        res = gateway_post("POST", "/reports/", client_ticket(), body=body, extra={"HTTP_X_HUMAN_PASS": valid_pass()})
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
 
     def test_gateway_write_without_pass_is_403(self):
-        body = json.dumps({
-            "thread_id": self.thread.uid, "category": "spam_or_deception"})
+        body = json.dumps({"thread_id": self.thread.uid, "category": "spam_or_deception"})
         res = gateway_post("POST", "/reports/", client_ticket(), body=body)
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(decode_body(res)["code"], "CAPTCHA_FAILED")
@@ -363,20 +344,14 @@ class CreateThrottleTest(TestCase):
         # serializer runs, so the scope counts these all the same.
         statuses = []
         for _ in range(11):
-            res = self.client.post(
-                "/threads/", data=json.dumps({}),
-                content_type="application/json")
+            res = self.client.post("/threads/", data=json.dumps({}), content_type="application/json")
             statuses.append(res.status_code)
-        self.assertNotIn(
-            status.HTTP_429_TOO_MANY_REQUESTS, statuses[:10])
-        self.assertEqual(
-            statuses[10], status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertNotIn(status.HTTP_429_TOO_MANY_REQUESTS, statuses[:10])
+        self.assertEqual(statuses[10], status.HTTP_429_TOO_MANY_REQUESTS)
 
     def test_reads_are_not_throttled_by_the_create_scope(self):
         for _ in range(11):
-            self.client.post(
-                "/threads/", data=json.dumps({}),
-                content_type="application/json")
+            self.client.post("/threads/", data=json.dumps({}), content_type="application/json")
         res = self.client.get("/threads/")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
 

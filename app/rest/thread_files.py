@@ -3,29 +3,30 @@ import secrets
 
 # Django
 from django.conf import settings
-from rest_framework.viewsets import GenericViewSet
 from rest_framework.decorators import action
-from rest_framework.response import Response
 from rest_framework.generics import get_object_or_404
+from rest_framework.response import Response
 from rest_framework.status import (
     HTTP_200_OK,
     HTTP_201_CREATED,
     HTTP_400_BAD_REQUEST,
     HTTP_413_REQUEST_ENTITY_TOO_LARGE,
 )
+from rest_framework.viewsets import GenericViewSet
+
+from app.constants.threads import UPLOAD_CONTENT_TYPE_EXT
+from app.methods.storage_backends import build_object_key, get_backend
 
 # Models
 from app.models.media import ThreadFile
 from app.models.thread import Thread
+from app.permissions.captcha import human_validator
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
-from app.permissions.captcha import human_validator
-from app.constants.threads import UPLOAD_CONTENT_TYPE_EXT
-from app.methods.storage_backends import get_backend, build_object_key
 from app.rest.serializers.thread_file_serializer import (
-    PresignSerializer,
     ConfirmSerializer,
+    PresignSerializer,
     clean_metadata,
 )
 

@@ -43,10 +43,12 @@ def human_validator(view_method):
         if settings.CAPTCHA_PROTECT:
             token = request.headers.get(PASS_HEADER, "")
             if not validate_human_pass(token, request.mask):
-                raise PermissionDenied({
-                    "detail": "Captcha verification failed.",
-                    "code": "CAPTCHA_FAILED",
-                })
+                raise PermissionDenied(
+                    {
+                        "detail": "Captcha verification failed.",
+                        "code": "CAPTCHA_FAILED",
+                    }
+                )
         return view_method(self, request, *args, **kwargs)
 
     return wrapper

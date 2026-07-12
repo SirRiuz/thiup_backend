@@ -43,9 +43,8 @@ class BlockedTerm(BaseModel):
     def save(self, *args, **kwargs):
         # Collapse inner whitespace too: a double space in a phrase would
         # silently never match (text_norm keeps single spaces).
-        self.term_norm = " ".join(
-            strip_accents(self.term or "").lower().split())
+        self.term_norm = " ".join(strip_accents(self.term or "").lower().split())
         super().save(*args, **kwargs)
 
-    def __str__(self) -> (str):
+    def __str__(self) -> str:
         return self.term

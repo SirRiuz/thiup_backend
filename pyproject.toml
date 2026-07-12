@@ -1,3 +1,46 @@
+# Project metadata only — Thiup is a Django app deployed via Docker, NOT a
+# pip-installable package (dependencies live in requirements.in). This table
+# exists so the license is machine-readable; there is no [build-system].
+[project]
+name = "thiup-backend"
+version = "0.1.0"
+description = "Thiup — anonymous, privacy-first social network (backend)."
+requires-python = ">=3.12"
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE.md"]
+
+[tool.ruff]
+# Lint + format in one tool (run via `make lint` / `make format` or the
+# pre-commit hook). Django migrations are generated — never linted/formatted.
+line-length = 120
+target-version = "py312"
+extend-exclude = ["*/migrations/*"]
+
+[tool.ruff.lint]
+# E/W (pycodestyle) + F (pyflakes) are the baseline; I (isort) adds import
+# sorting. Keep this set achievable — widen deliberately, not all at once.
+select = ["E", "W", "F", "I"]
+# Line length is enforced by the FORMATTER (line-length above); the E501
+# linter rule only nags about strings/URLs the formatter can't wrap.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Package re-exports: unused imports in __init__ are intentional (e.g. the
+# star-imported signals package).
+"__init__.py" = ["F401"]
+# Intentional `from … import *` (DRF status codes, honeypot views) — the
+# star import is a deliberate idiom here, not a smell to autofix.
+"app/rest/tags.py" = ["F403", "F405"]
+"app/rest/threads.py" = ["F403", "F405"]
+"honeypot/urls.py" = ["F403", "F405"]
+# Tests routinely bind values they don't reference (fixtures created for
+# their side effect) and use lambda helpers — noise to enforce there.
+"app/tests/*" = ["F841", "E731"]
+
+[tool.ruff.format]
+# Black-compatible: double quotes, trailing commas, at line-length 120.
+quote-style = "double"
+
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "core.settings"
 python_files = ["test_*.py", "*_test.py", "tests.py"]

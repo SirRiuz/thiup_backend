@@ -24,10 +24,7 @@ def blocked_terms() -> list:
         # the model lazily avoids app-registry order issues.
         from app.models.blocked_term import BlockedTerm
 
-        terms = list(
-            BlockedTerm.objects.filter(is_active=True)
-            .values_list("term_norm", flat=True)
-        )
+        terms = list(BlockedTerm.objects.filter(is_active=True).values_list("term_norm", flat=True))
         cache.set(BLOCKED_TERMS_CACHE_KEY, terms, BLOCKED_TERMS_CACHE_TTL)
     return terms
 
@@ -45,10 +42,7 @@ def find_blocked_terms(normalized_text) -> list:
     a term must not shadowban an innocent word that merely contains it.
     """
     text = normalized_text or ""
-    return [
-        term for term in blocked_terms()
-        if term and re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text)
-    ]
+    return [term for term in blocked_terms() if term and re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text)]
 
 
 def shadowban_matching(terms) -> int:
@@ -62,8 +56,8 @@ def shadowban_matching(terms) -> int:
     threads deactivated. Rows deactivated here are LATER hard-deleted by
     `purge_inactive` — this is removal, not just hiding.
     """
-    from app.models.thread import Thread
     from app.models.tag import Tag
+    from app.models.thread import Thread
 
     now = timezone.now()
     banned = 0

@@ -5,7 +5,7 @@ import hashlib
 from django.core.cache import cache
 
 
-def check_token(token) -> (bool):
+def check_token(token) -> bool:
     """
     Verifies if the token is already saved in the storage.
     """
