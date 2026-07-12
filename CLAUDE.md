@@ -90,8 +90,10 @@ is a no-op.
   web task — always present; `CAPTCHA_PROTECT` in SSM is the only switch (runbook in
   `ci/infra/README.md`); the explicit overrides
   `CAP_SITEVERIFY_URL`/`CAP_PUBLIC_URL` (plus `CAP_SITE_KEY`/`CAP_SECRET`) let Cap live anywhere.
-  Bun's Redis client cannot do TLS+SNI, so a managed store is reached through the socat bridge
-  (`cap-tls-proxy` locally and in the task def). Django never serves challenges.
+  Cap's store is a self-hosted `valkey` in BOTH environments: locally the compose service
+  (plain Redis over the compose network; `REDIS_URL` overrides it), in prod a task sidecar
+  whose `/data` rides on EFS so site keys survive deploys (no external store, no credentials).
+  Django never serves challenges and never touches this store.
 - Flow: the FE exchanges Cap's single-use token ONCE at `POST /captcha/verify/`
   (`app/rest/captcha.py`) → Django redeems it against Cap's `/siteverify`
   (`app/methods/captcha.py::verify_captcha_token`, 3 s timeout, no retries) → issues a

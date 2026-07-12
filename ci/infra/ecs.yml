@@ -21,7 +21,7 @@ Metadata:
       - Label: { default: "Application config" }
         Parameters: [DebugValue, AllowedHosts, EncryptedResponse, SingleRequestProtect, GatewaySeed, InternalAdminUrl, CorsAllowedOrigins, CsrfTrustedOrigins, SecretKey]
       - Label: { default: "Captcha (Cap standalone)" }
-        Parameters: [CaptchaProtect, CapPublicUrl, CapSiteKey, CapSecret, CapAdminKey, CapRedisUrl, CapRedisTlsHost, CapRedisTlsPort]
+        Parameters: [CaptchaProtect, CapPublicUrl, CapSiteKey, CapSecret, CapAdminKey]
       - Label: { default: "Object storage (S3 / Cloudflare R2)" }
         Parameters: [StorageBucketName, StoragePublicDomain, StorageEndpointUrl, StorageAccessKeyId, StorageSecretAccessKey]
       - Label: { default: "Database (external PostgreSQL)" }
@@ -233,33 +233,6 @@ Parameters:
       REQUIRED. Admin key of the Cap dashboard (min 12 chars). Use a strong
       random value — the dashboard is reachable through the public hostname.
 
-  CapRedisUrl:
-    Type: String
-    NoEcho: true
-    AllowedPattern: ".+"
-    ConstraintDescription: Required (Secrets Manager rejects empty values).
-    Description: >
-      REQUIRED. Store URL Cap connects to (contains the password -> Secrets
-      Manager). With a TLS+SNI managed provider set it THROUGH the local
-      proxy: redis://<user>:<password>@127.0.0.1:6379 and fill
-      CapRedisTlsHost (Bun's Redis client cannot send SNI — see
-      cap-tls-proxy below). The store MUST persist and use
-      maxmemory-policy=noeviction: the site key lives there.
-
-  CapRedisTlsHost:
-    Type: String
-    Default: ""
-    Description: >
-      Hostname of the managed TLS Valkey/Redis (e.g.
-      xxx.cloud.layerbase.dev). Non-empty -> the cap-tls-proxy sidecar is
-      added and opens the verified TLS+SNI connection outward. Empty -> no
-      proxy (CapRedisUrl must then be directly reachable without TLS+SNI).
-
-  CapRedisTlsPort:
-    Type: String
-    Default: "6379"
-    Description: TLS port of the managed store (only used with CapRedisTlsHost).
-
   # ---- External database ---- (engine is hardcoded in the task def: always postgresql)
   DatabaseHost:
     Type: String
@@ -277,11 +250,6 @@ Parameters:
   DatabasePort:
     Type: String
     Default: "5432"
-
-# --- Conditions ---
-Conditions:
-  # The TLS+SNI proxy only exists when a managed TLS host is configured.
-  CapProxyCond: !Not [!Equals [!Ref CapRedisTlsHost, ""]]
 
 # --- Resources ---
 Resources:
@@ -329,7 +297,6 @@ Resources:
                   - !Ref TunnelTokenSecret
                   - !Ref CapSecretSecret
                   - !Ref CapAdminKeySecret
-                  - !Ref CapRedisUrlSecret
 
   # Assets live in an external S3-compatible bucket (Cloudflare R2) reached with
   # access keys, so the task role needs no storage permissions.
@@ -455,12 +422,54 @@ Resources:
     Properties:
       Name: !Sub "/${AWS::StackName}/CAP_ADMIN_KEY"
       SecretString: !Ref CapAdminKey
-  # Full store URL (it embeds the password, so the whole thing is a secret).
-  CapRedisUrlSecret:
-    Type: AWS::SecretsManager::Secret
+
+  # ---- Cap's store: SELF-HOSTED valkey sidecar backed by EFS ----
+  # Fargate tasks are ephemeral, but Cap's site keys live in this store: the
+  # /data dir rides on EFS so the keys survive deploys and task replacement.
+  # Sized for KBs of data — EFS cost is cents. The access point pins the
+  # valkey user (uid/gid 999) so the container can write its RDB snapshots.
+  CapStoreSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      Name: !Sub "/${AWS::StackName}/CAP_REDIS_URL"
-      SecretString: !Ref CapRedisUrl
+      GroupDescription: !Sub "${AWS::StackName} cap store - NFS from the service tasks only"
+      VpcId: !Ref VpcId
+      # Ingress on the EFS mount targets, NOT on the tasks: the task SG
+      # keeps its zero-inbound doctrine.
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref ServiceSecurityGroup
+
+  CapStoreFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      FileSystemTags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}-cap-store" }
+
+  CapStoreMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref CapStoreFileSystem
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroups: [!Ref CapStoreSecurityGroup]
+
+  CapStoreMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref CapStoreFileSystem
+      SubnetId: !Ref PublicSubnet2
+      SecurityGroups: [!Ref CapStoreSecurityGroup]
+
+  CapStoreAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref CapStoreFileSystem
+      PosixUser: { Uid: "999", Gid: "999" }
+      RootDirectory:
+        Path: /valkey
+        CreationInfo: { OwnerUid: "999", OwnerGid: "999", Permissions: "750" }
 
   # ---- Task definition ----
   TaskDefinition:
@@ -492,6 +501,14 @@ Resources:
       Memory: !Ref TaskMemory
       ExecutionRoleArn: !GetAtt ExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
+      # EFS-backed volume for Cap's valkey store (site keys survive deploys).
+      Volumes:
+        - Name: cap-store
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref CapStoreFileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref CapStoreAccessPoint
       ContainerDefinitions:
         - Name: web
           # Bootstrap tag: the service starts on :latest (always present), then the
@@ -599,58 +616,75 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: cloudflared
 
+        # Cap's SELF-HOSTED store: valkey with its /data on EFS (site keys
+        # must survive deploys — Fargate storage is ephemeral). Persistence
+        # knobs mirror the local compose service: RDB snapshot every 60 s,
+        # never evict. NOT essential + restarted on crash, like cloudflared.
+        - Name: valkey
+          Image: docker.io/valkey/valkey:9-alpine
+          Essential: false
+          RestartPolicy:
+            Enabled: true
+            IgnoredExitCodes: [0]
+          Command:
+            - valkey-server
+            - "--save"
+            - "60"
+            - "1"
+            - "--loglevel"
+            - warning
+            - "--maxmemory-policy"
+            - noeviction
+          MountPoints:
+            - SourceVolume: cap-store
+              ContainerPath: /data
+          # Lets cap order its start on a store that actually answers.
+          HealthCheck:
+            Command: [CMD, valkey-cli, ping]
+            Interval: 10
+            Timeout: 5
+            Retries: 5
+            StartPeriod: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: valkey
+
         # Cap captcha standalone: serves challenge/redeem to the browser and
         # siteverify to Django, both over the task-local loopback. Public
         # ingress reuses the SAME tunnel connector — add a Zero Trust route:
         # <CapPublicUrl hostname> -> http://localhost:3333. Like cloudflared:
         # NOT essential (the ephemeral cron tasks must be able to exit) and
-        # restarted on crash. NOTE: the ephemeral ticks also pull this image
-        # and briefly run it until the web command exits — harmless (nothing
-        # routes to it there) but part of each tick's billed pull time.
+        # restarted on crash. NOTE: the ephemeral ticks also pull cap+valkey
+        # and run them idle until the web command exits — harmless (nothing
+        # routes to them there) but part of each tick's billed pull time.
         - Name: cap
           Image: docker.io/tiago2/cap:latest
           Essential: false
           RestartPolicy:
             Enabled: true
             IgnoredExitCodes: [0]
+          # cap PINGs its store at boot and exits 1 if it isn't up yet.
+          DependsOn:
+            - ContainerName: valkey
+              Condition: HEALTHY
           Environment:
             # Cap's own listen-port knob; matches CAP_SITEVERIFY_URL above
             # and the tunnel route (localhost:3333).
             - { Name: SERVER_PORT, Value: 3333 }
+            # Task-local store (awsvpc loopback). No auth on purpose: the
+            # task SG has zero inbound — nothing outside the task can dial it.
+            - { Name: REDIS_URL, Value: "redis://127.0.0.1:6379" }
           Secrets:
             - { Name: ADMIN_KEY, ValueFrom: !Ref CapAdminKeySecret }
-            - { Name: REDIS_URL, ValueFrom: !Ref CapRedisUrlSecret }
           LogConfiguration:
             LogDriver: awslogs
             Options:
               awslogs-group: !Ref LogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: cap
-
-        # TLS+SNI bridge for a MANAGED Cap store (CapRedisTlsHost non-empty):
-        # Bun's Redis client (inside the cap image) does not send SNI, so
-        # providers that route TLS by SNI reset its handshake (ECONNRESET).
-        # socat speaks plain Redis to cap on the loopback and opens the
-        # certificate-verified TLS connection outward. Same pattern as the
-        # local docker-compose `cap-tls-proxy` service.
-        - !If
-          - CapProxyCond
-          - Name: cap-tls-proxy
-            Image: docker.io/alpine/socat:latest
-            Essential: false
-            RestartPolicy:
-              Enabled: true
-              IgnoredExitCodes: [0]
-            Command:
-              - "TCP-LISTEN:6379,fork,reuseaddr"
-              - !Sub "OPENSSL:${CapRedisTlsHost}:${CapRedisTlsPort},snihost=${CapRedisTlsHost},verify=1,cafile=/etc/ssl/certs/ca-certificates.crt"
-            LogConfiguration:
-              LogDriver: awslogs
-              Options:
-                awslogs-group: !Ref LogGroup
-                awslogs-region: !Ref AWS::Region
-                awslogs-stream-prefix: cap-tls-proxy
-          - !Ref AWS::NoValue
 
   # ---- ECS service (ingress via the Cloudflare Tunnel sidecar) ----
   Service:

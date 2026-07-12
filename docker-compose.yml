@@ -207,9 +207,8 @@ services:
       - internal
 
   valkey:
-    # Cap's OWN challenge/token store (a Redis fork). It belongs to the cap
-    # container, NOT to Django — the project's "no Redis" rule is about
-    # Django async machinery, and the backend never touches this.
+    # Local Redis-compatible store. Used by `cap` only — Django never
+    # touches it (the "no Redis" rule is about Django machinery).
     image: valkey/valkey:9-alpine
     restart: unless-stopped
     container_name: "${APP_NAME}_valkey"
@@ -221,23 +220,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-    networks:
-      - internal
-
-  cap-tls-proxy:
-    # TLS+SNI bridge for an EXTERNAL Cap store. Bun's RedisClient (used
-    # inside the cap image) does not send SNI, so providers that terminate
-    # TLS behind an SNI router reset the handshake (ECONNRESET). This socat
-    # speaks plain Redis to `cap` on the internal network and opens the
-    # verified TLS connection outward. Started only with the
-    # `cap-external-store` profile (COMPOSE_PROFILES in .env).
-    image: alpine/socat
-    restart: unless-stopped
-    container_name: "${APP_NAME}_cap_tls_proxy"
-    profiles: ["cap-external-store"]
-    command: >-
-      TCP-LISTEN:6379,fork,reuseaddr
-      OPENSSL:${CAP_REDIS_TLS_HOST:-}:${CAP_REDIS_TLS_PORT:-6379},snihost=${CAP_REDIS_TLS_HOST:-},verify=1,cafile=/etc/ssl/certs/ca-certificates.crt
     networks:
       - internal
 
@@ -254,12 +236,10 @@ services:
     container_name: "${APP_NAME}_cap"
     environment:
       - ADMIN_KEY=${CAP_ADMIN_KEY:-}
-      # Cap's challenge/token/analytics store. Default: the local `valkey`
-      # sidecar below. Set CAP_REDIS_URL (e.g. rediss://user:pass@host) to
-      # point at a managed/external instance — the local valkey then just
-      # idles. NOTE: site keys live in this store; switching stores means
-      # creating the key again (or migrating) and updating CAP_SITE_KEY/SECRET.
-      - REDIS_URL=${CAP_REDIS_URL:-redis://valkey:6379}
+      # Cap's store: the local valkey by default; override REDIS_URL in
+      # .env to point elsewhere. Site keys live in the store, not in env —
+      # switching stores means re-creating the key.
+      - REDIS_URL=${REDIS_URL:-redis://valkey:6379}
       # Cap's own listen-port knob: make the process bind CAP_PORT itself so
       # the container, the published port and the startup log all agree.
       - SERVER_PORT=${CAP_PORT:-3333}
