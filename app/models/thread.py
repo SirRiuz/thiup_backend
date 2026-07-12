@@ -1,18 +1,17 @@
 # Django
+from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 from django.utils import timezone
-from django.contrib.postgres.indexes import GinIndex
 
 # Libs
 from app.models.base_model import BaseModel
-from app.utils.text import strip_accents
 
 # Models
 from app.models.mask import Mask
+from app.utils.text import strip_accents
 
 
 class Thread(BaseModel):
-
     content = models.JSONField("Content of the thread")
     text = models.TextField(help_text="Text of the thread.")
     # Normalized text (lowercase, no accents) — same convention as
@@ -23,29 +22,13 @@ class Thread(BaseModel):
     # UPPER(UNACCENT(text)) LIKE ..., an expression no index could serve
     # (measured: Seq Scan over the whole table on every search/count).
     text_norm = models.TextField(
-        default="",
-        blank=True,
-        editable=False,
-        help_text="Derived: lowercase, accent-stripped text (search index)."
+        default="", blank=True, editable=False, help_text="Derived: lowercase, accent-stripped text (search index)."
     )
-    visibility = models.BooleanField(
-        default=True,
-        help_text="This thread can be indexed by the feed."
-    )
+    visibility = models.BooleanField(default=True, help_text="This thread can be indexed by the feed.")
 
-    expire_date = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="Add an expiration date to the thread"
-    )
+    expire_date = models.DateTimeField(null=True, blank=True, help_text="Add an expiration date to the thread")
 
-    sub = models.ForeignKey(
-        to="self",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        help_text="Parent thread"
-    )
+    sub = models.ForeignKey(to="self", on_delete=models.CASCADE, null=True, blank=True, help_text="Parent thread")
 
     mask = models.ForeignKey(to=Mask, on_delete=models.CASCADE, null=True)
 
@@ -58,7 +41,7 @@ class Thread(BaseModel):
         max_length=8,
         default="es",
         db_index=True,
-        help_text="Creator's language from navigator.language (For You filter)."
+        help_text="Creator's language from navigator.language (For You filter).",
     )
 
     # Thread region — the country code from the creator's locale
@@ -70,7 +53,7 @@ class Thread(BaseModel):
         max_length=50,
         default="",
         blank=True,
-        help_text="Creator's country code from navigator.language (For You boost)."
+        help_text="Creator's country code from navigator.language (For You boost).",
     )
 
     # Thread geohash (precision 5 ≈ ~5 km cell) — ONLY if the author
@@ -83,7 +66,7 @@ class Thread(BaseModel):
         null=True,
         blank=True,
         db_index=True,
-        help_text="Author's coarse geohash cell, opt-in (Close You feed)."
+        help_text="Author's coarse geohash cell, opt-in (Close You feed).",
     )
 
     # Precision-4 geohash prefix (~39 km/cell), ALWAYS derived in
@@ -95,7 +78,7 @@ class Thread(BaseModel):
         null=True,
         blank=True,
         db_index=True,
-        help_text="Derived 4-char geohash prefix (Close You wide radius)."
+        help_text="Derived 4-char geohash prefix (Close You wide radius).",
     )
 
     # ── Momentum engine (For You) ────────────────────────────────────────
@@ -110,21 +93,15 @@ class Thread(BaseModel):
     #
     # Golden rule: each signal counts DISTINCT MASKS and excludes the author.
     momentum_score = models.FloatField(
-        default=0,
-        db_index=True,
-        help_text="Precomputed momentum score (For You ordering)."
+        default=0, db_index=True, help_text="Precomputed momentum score (For You ordering)."
     )
 
     unique_reactors_count = models.PositiveIntegerField(
-        default=0,
-        db_index=True,
-        help_text="Distinct masks that reacted, excluding the author."
+        default=0, db_index=True, help_text="Distinct masks that reacted, excluding the author."
     )
 
     unique_commenters_count = models.PositiveIntegerField(
-        default=0,
-        db_index=True,
-        help_text="Distinct masks that commented, excluding the author."
+        default=0, db_index=True, help_text="Distinct masks that commented, excluding the author."
     )
 
     def save(self, *args, **kwargs):
@@ -133,6 +110,7 @@ class Thread(BaseModel):
         # compares exact and indexed: language='es'). The default for
         # language is "es" (same as legacy).
         from app.utils.locale import normalize_language, normalize_region
+
         self.language = normalize_language(self.language)
         self.region = normalize_region(self.region)
         # geohash4 is ALWAYS derived from geohash (never written directly):
@@ -142,7 +120,7 @@ class Thread(BaseModel):
         self.text_norm = strip_accents(self.text or "").lower()
         super().save(*args, **kwargs)
 
-    def is_new(self) -> (bool):
+    def is_new(self) -> bool:
         hours = (timezone.now() - self.create_at).total_seconds() // 3600
         return hours <= 48
 
@@ -171,7 +149,7 @@ class Thread(BaseModel):
             ),
         ]
 
-    def __str__(self) -> (str):
+    def __str__(self) -> str:
         # uid + start of the text: readable in the admin and in FKs.
         snippet = (self.text or "")[:40]
         return f"{self.uid} · {snippet}"

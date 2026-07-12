@@ -1,11 +1,8 @@
 # Django
-from django.utils import timezone
+from django.db.models import Count, DateField, ExpressionWrapper, F, IntegerField, OuterRef, Subquery
+from django.db.models.functions import Coalesce
 from django.db.models.query import QuerySet
-from django.db.models.functions import Coalesce
-from django.db.models import Count, OuterRef, Subquery
-from django.db.models.functions import Coalesce
-from django.db.models import F, ExpressionWrapper, IntegerField, DateField, Count
-
+from django.utils import timezone
 
 # Models
 from app.models.thread import Thread
@@ -15,23 +12,25 @@ def get_ranked_thread() -> QuerySet[Thread]:
     """
     Add relevance points to each thread
     """
-    threads = Thread.objects.filter(is_active=True).annotate(
-        reaction_count=Count("reactionrelation__thread__id"),
-        days_since_creation=ExpressionWrapper(
-            timezone.now() - F('create_at__date'), 
-            output_field=DateField()
+    threads = (
+        Thread.objects.filter(is_active=True)
+        .annotate(
+            reaction_count=Count("reactionrelation__thread__id"),
+            days_since_creation=ExpressionWrapper(timezone.now() - F("create_at__date"), output_field=DateField()),
         )
-    ).annotate(
-        days_since_creation=ExpressionWrapper(
-            F("days_since_creation__day"), 
-            output_field=IntegerField()
-        ),
-        sub_threads_count=Coalesce(Subquery(Thread.objects.filter(
-            sub=OuterRef("pk")).values("sub").annotate(
-                count=Count("id")).values("count")[:1]), 0),
-
-        index=((F("reaction_count") * .4 + F("sub_threads_count")
-                * .6) - F("days_since_creation") * .3)
+        .annotate(
+            days_since_creation=ExpressionWrapper(F("days_since_creation__day"), output_field=IntegerField()),
+            sub_threads_count=Coalesce(
+                Subquery(
+                    Thread.objects.filter(sub=OuterRef("pk"))
+                    .values("sub")
+                    .annotate(count=Count("id"))
+                    .values("count")[:1]
+                ),
+                0,
+            ),
+            index=((F("reaction_count") * 0.4 + F("sub_threads_count") * 0.6) - F("days_since_creation") * 0.3),
+        )
     )
 
     return threads
@@ -54,13 +53,13 @@ def with_card_relations(queryset, request_mask) -> QuerySet[Thread]:
     Measured result: the feed goes from ~194 queries to a constant number.
     """
     # Local import to avoid cycles (reactions imports threads).
-    from app.models.media import ThreadFile
-    from app.models.reaction_relation import ReactionRelation
     from django.db.models import Prefetch
 
+    from app.models.media import ThreadFile
+    from app.models.reaction_relation import ReactionRelation
+
     return (
-        queryset
-        .select_related("mask", "sub")
+        queryset.select_related("mask", "sub")
         .annotate(
             responses_count_db=Coalesce(
                 Subquery(
@@ -81,16 +80,12 @@ def with_card_relations(queryset, request_mask) -> QuerySet[Thread]:
             ),
             Prefetch(
                 "reactionrelation_set",
-                queryset=ReactionRelation.objects.filter(
-                    is_active=True
-                ).select_related("reaction"),
+                queryset=ReactionRelation.objects.filter(is_active=True).select_related("reaction"),
                 to_attr="prefetched_reactions",
             ),
             Prefetch(
                 "reactionrelation_set",
-                queryset=ReactionRelation.objects.filter(
-                    is_active=True, mask=request_mask
-                ).select_related("reaction"),
+                queryset=ReactionRelation.objects.filter(is_active=True, mask=request_mask).select_related("reaction"),
                 to_attr="my_reaction_relations",
             ),
         )

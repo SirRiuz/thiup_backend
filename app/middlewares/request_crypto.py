@@ -1,33 +1,30 @@
 # Python
+import base64
 import io
 import json
-import base64
 import logging
-
-# Django
-from django.conf import settings
-from django.http import JsonResponse
-from django.urls import resolve, Resolver404
 
 # Libs
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
+# Django
+from django.conf import settings
+from django.http import JsonResponse
+from django.urls import Resolver404, resolve
 
 logger = logging.getLogger(__name__)
 
 
-def _decrypt_request(key_b64, ciphertext_b64, iv_b64) -> (str):
+def _decrypt_request(key_b64, ciphertext_b64, iv_b64) -> str:
     """
     Descifra AES-CBC y QUITA el padding PKCS7 — espejo exacto del
     `encryptor` (que hace pad()). Nota: kdf.decryptor NO desempaqueta el
     padding (bug latente, estaba sin uso); aquí se hace bien para que el
     JSON quede limpio.
     """
-    cipher = AES.new(
-        base64.b64decode(key_b64), AES.MODE_CBC, base64.b64decode(iv_b64))
-    plain = unpad(cipher.decrypt(base64.b64decode(ciphertext_b64)),
-                  AES.block_size)
+    cipher = AES.new(base64.b64decode(key_b64), AES.MODE_CBC, base64.b64decode(iv_b64))
+    plain = unpad(cipher.decrypt(base64.b64decode(ciphertext_b64)), AES.block_size)
     return plain.decode("utf-8")
 
 
@@ -81,7 +78,7 @@ class RequestDecryptMiddleware:
                 return error
         return self.get_response(request)
 
-    def _is_exempt(self, request) -> (bool):
+    def _is_exempt(self, request) -> bool:
         # Bootstrap API endpoints: cheap prefix check.
         if any(request.path.startswith(p) for p in self.EXEMPT_PREFIXES):
             return True
@@ -106,13 +103,11 @@ class RequestDecryptMiddleware:
             # Log de diagnóstico SIN contenido del body (privacidad): solo
             # el motivo técnico y la ruta. Confirma "llegó texto plano".
             logger.warning(
-                "request_crypto rejected: reason=plaintext_on_protected_endpoint "
-                "method=%s path=%s",
-                request.method, request.path,
+                "request_crypto rejected: reason=plaintext_on_protected_endpoint method=%s path=%s",
+                request.method,
+                request.path,
             )
-            return JsonResponse(
-                {"detail": "Encrypted request body required."}, status=400
-            )
+            return JsonResponse({"detail": "Encrypted request body required."}, status=400)
 
         # Distinguimos las dos fallas del sobre para diagnóstico (sin tocar
         # la respuesta al cliente, que sigue siendo un 400 genérico).
@@ -127,26 +122,22 @@ class RequestDecryptMiddleware:
             # Sobre presente pero indescifrable: clave/iv/ciphertext corruptos
             # o doble cifrado. NO se loggea contenido, solo el motivo.
             logger.warning(
-                "request_crypto rejected: reason=envelope_decrypt_failed "
-                "method=%s path=%s",
-                request.method, request.path,
+                "request_crypto rejected: reason=envelope_decrypt_failed method=%s path=%s",
+                request.method,
+                request.path,
             )
-            return JsonResponse(
-                {"detail": "Malformed encrypted request body."}, status=400
-            )
+            return JsonResponse({"detail": "Malformed encrypted request body."}, status=400)
 
         try:
             # Validar que es JSON (descarta basura sin filtrar contenido).
             json.loads(plain)
         except Exception:
             logger.warning(
-                "request_crypto rejected: reason=decrypted_not_json "
-                "method=%s path=%s",
-                request.method, request.path,
+                "request_crypto rejected: reason=decrypted_not_json method=%s path=%s",
+                request.method,
+                request.path,
             )
-            return JsonResponse(
-                {"detail": "Malformed encrypted request body."}, status=400
-            )
+            return JsonResponse({"detail": "Malformed encrypted request body."}, status=400)
 
         # Reemplazar el body por el JSON plano para que DRF lo parsee
         # normal — las vistas no se enteran del cifrado.

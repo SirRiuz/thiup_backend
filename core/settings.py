@@ -9,16 +9,18 @@ https://docs.djangoproject.com/en/4.1/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.1/ref/settings/
 """
+
 # Python
+import hashlib
+import hmac
 import os
 import sys
-import hmac
-import hashlib
 from pathlib import Path
+
+from corsheaders.defaults import default_headers
 
 # Libs
 from decouple import config
-from corsheaders.defaults import default_headers
 from django.core.exceptions import ImproperlyConfigured
 
 
@@ -101,9 +103,9 @@ CORS_ALLOWED_ORIGINS = env_list(
 
 CORS_EXPOSE_HEADERS = ("x-response-payload",)
 CORS_ALLOW_HEADERS = default_headers + (
-    'client-assertion',
-    'x-request-payload',  # sobre del body cifrado del request
-    'x-human-pass',  # captcha human pass on entity-creating writes
+    "client-assertion",
+    "x-request-payload",  # sobre del body cifrado del request
+    "x-human-pass",  # captcha human pass on entity-creating writes
 )
 
 # Real path of the Django admin — REQUIRED. The literal /admin/ is reserved
@@ -155,11 +157,9 @@ CAPTCHA_PASS_TTL_SECONDS = config("CAPTCHA_PASS_TTL", cast=int, default=600)
 # so the .env.template can ship these uncommented and blank.
 CAP_PORT = config("CAP_PORT", cast=int, default=3333)
 # Server-side base URL for the siteverify call (internal hostname is fine).
-CAP_SITEVERIFY_URL = config(
-    "CAP_SITEVERIFY_URL", default="") or f"http://cap:{CAP_PORT}"
+CAP_SITEVERIFY_URL = config("CAP_SITEVERIFY_URL", default="") or f"http://cap:{CAP_PORT}"
 # Browser-facing base URL, exposed via /config/ so the widget can bootstrap.
-CAP_PUBLIC_URL = config(
-    "CAP_PUBLIC_URL", default="") or f"http://localhost:{CAP_PORT}"
+CAP_PUBLIC_URL = config("CAP_PUBLIC_URL", default="") or f"http://localhost:{CAP_PORT}"
 CAP_SITE_KEY = config("CAP_SITE_KEY", default="")
 # Backend-only secret — never logged, never echoed, never sent to the FE.
 CAP_SECRET = config("CAP_SECRET", default="")
@@ -173,8 +173,7 @@ if "pytest" in sys.modules:
 # The URLs always have a derived default; only the key pair has none.
 if CAPTCHA_PROTECT and not (CAP_SITE_KEY and CAP_SECRET):
     raise ImproperlyConfigured(
-        "CAPTCHA_PROTECT=True requires CAP_SITE_KEY and CAP_SECRET "
-        "(create them in the Cap dashboard)."
+        "CAPTCHA_PROTECT=True requires CAP_SITE_KEY and CAP_SECRET (create them in the Cap dashboard)."
     )
 
 # Seed for the gateway's ROTATING PATH (/{hash}/). Dedicated to deriving the
@@ -220,11 +219,7 @@ PROJECT_APPS = [
     "honeypot",
 ]
 
-EXTERNAL_APPS = [
-    "corsheaders",
-    "drf_yasg",
-    "storages"
-]
+EXTERNAL_APPS = ["corsheaders", "drf_yasg", "storages"]
 
 DJANGO_APPS = [
     "django.contrib.admin",
@@ -236,7 +231,7 @@ DJANGO_APPS = [
     # Required for the __unaccent lookup and the UnaccentExtension migration
     # (accent-insensitive search on PostgreSQL).
     "django.contrib.postgres",
-    "rest_framework"
+    "rest_framework",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + EXTERNAL_APPS + PROJECT_APPS
@@ -259,7 +254,7 @@ MIDDLEWARE = [
     "honeypot.middleware.HoneyPotMiddleware",
 ]
 
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # ── Anti-fingerprinting (defense-in-depth — does NOT replace real
 # security: E2E, auth and the obfuscated admin remain the foundation) ───
@@ -281,9 +276,7 @@ ROOT_URLCONF = "core.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [
-            "templates"
-        ],
+        "DIRS": ["templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -316,31 +309,30 @@ DATABASES = {
 }
 
 REST_FRAMEWORK = {
-    'PAGE_SIZE': 25,
+    "PAGE_SIZE": 25,
     # Rate limit for the ticket issuer (/ticket/, AnonRateThrottle):
     # server-side defense against bootstrap abuse, since it is AllowAny.
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': '120/min',
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "120/min",
         # Búsqueda y autocomplete (ScopedRateThrottle, anónimo por IP).
         # suggest más alto: se dispara al tipear (con debounce en el FE).
         # Ajustables sin tocar código.
-        'search': config('THROTTLE_SEARCH', default='60/min'),
-        'search_suggest': config('THROTTLE_SUGGEST', default='240/min'),
+        "search": config("THROTTLE_SEARCH", default="60/min"),
+        "search_suggest": config("THROTTLE_SUGGEST", default="240/min"),
         # Reports (ScopedRateThrottle, anonymous per IP): cap report abuse.
-        'reports': config('THROTTLE_REPORTS', default='30/min'),
+        "reports": config("THROTTLE_REPORTS", default="30/min"),
         # Entity-creating writes (ScopedRateThrottle, anonymous per IP):
         # bound what a bot achieves within one human-pass window. Generous
         # for humans, hard ceiling for scripts.
-        'threads_create': config('THROTTLE_THREADS', default='10/min'),
-        'reactions_create': config('THROTTLE_REACTIONS', default='60/min'),
+        "threads_create": config("THROTTLE_THREADS", default="10/min"),
+        "reactions_create": config("THROTTLE_REACTIONS", default="60/min"),
         # Human-pass issuer (/captcha/verify/): renewals are ~1 per TTL per
         # user, so this is far above legitimate traffic.
-        'captcha': config('THROTTLE_CAPTCHA', default='20/min'),
+        "captcha": config("THROTTLE_CAPTCHA", default="20/min"),
     },
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'DEFAULT_RENDERER_CLASSES': [
-        'app.renders.encoder.EncodeRenderer' if ENCRYPTED_RESPONSE \
-            else 'rest_framework.renderers.JSONRenderer',
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_RENDERER_CLASSES": [
+        "app.renders.encoder.EncodeRenderer" if ENCRYPTED_RESPONSE else "rest_framework.renderers.JSONRenderer",
     ],
 }
 
@@ -394,12 +386,10 @@ UPLOAD_MAX_BYTES = config("UPLOAD_MAX_BYTES", cast=int, default=512 * 1024 * 102
 # Keep large file uploads OFF the heap: anything past this small threshold is
 # streamed to a temp file on disk by Django (matters for the local debug upload
 # view; the R2 path never streams through Django). RAM is limited (~512 MB).
-FILE_UPLOAD_MAX_MEMORY_SIZE = config(
-    "FILE_UPLOAD_MAX_MEMORY_SIZE", cast=int, default=2 * 1024 * 1024)
+FILE_UPLOAD_MAX_MEMORY_SIZE = config("FILE_UPLOAD_MAX_MEMORY_SIZE", cast=int, default=2 * 1024 * 1024)
 # Non-file request body cap (form fields / JSON). Uploaded file parts are NOT
 # counted against this — they spill to disk per the setting above.
-DATA_UPLOAD_MAX_MEMORY_SIZE = config(
-    "DATA_UPLOAD_MAX_MEMORY_SIZE", cast=int, default=5 * 1024 * 1024)
+DATA_UPLOAD_MAX_MEMORY_SIZE = config("DATA_UPLOAD_MAX_MEMORY_SIZE", cast=int, default=5 * 1024 * 1024)
 # Object-key layout: "<prefix>/<shard>/.../<token>.<ext>", sharded by the first
 # chars of the random token. Hardcoded (not env): purely organizational —
 # security comes from the long random token, not the path.
@@ -438,8 +428,8 @@ if USE_AWS_STORAGE:
         response_checksum_validation="when_required",
     )
 
-    STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
-    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+    STATICFILES_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
+    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
 else:
     # Local media: emit absolute URLs so consumers (frontend, emails, admin)
     # see the same shape they get from S3/R2. Origin comes from MEDIA_BASE_URL.

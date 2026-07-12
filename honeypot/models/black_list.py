@@ -1,15 +1,15 @@
 # Django
 from django.db import models
-from django.utils.translation import gettext_lazy as _
-from django.db.models.signals import post_save, post_delete
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
+from django.utils.translation import gettext_lazy as _
 
 # Models
 from app.models.base_model import BaseModel
-from honeypot.models.login_attempt import LoginAttempt
 
 # Libs
 from honeypot.app_settings import HONEYPOT_LOGIN_TRYOUT
+from honeypot.models.login_attempt import LoginAttempt
 
 
 class BlackList(BaseModel):

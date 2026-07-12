@@ -7,7 +7,7 @@ from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad
 
 
-def encryptor(plain_text) -> (tuple):
+def encryptor(plain_text) -> tuple:
     """
     It is responsible for encrypting the data.
     """
@@ -17,14 +17,10 @@ def encryptor(plain_text) -> (tuple):
     cipher_text = cipher.encrypt(pad(data, AES.block_size))
     iv = cipher.iv
 
-    return (
-        base64.b64encode(key).decode(),
-        base64.b64encode(cipher_text).decode(),
-        base64.b64encode(iv).decode()
-    )
+    return (base64.b64encode(key).decode(), base64.b64encode(cipher_text).decode(), base64.b64encode(iv).decode())
 
 
-def decryptor(key, data, iv) -> (str):
+def decryptor(key, data, iv) -> str:
     """
     It is responsible for decrypting the data.
     """

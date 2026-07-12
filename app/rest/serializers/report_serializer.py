@@ -10,10 +10,5 @@ class ReportSerializer(serializers.Serializer):
     it is derived server-side from the request's pseudonymous mask."""
 
     thread_id = serializers.CharField(max_length=12)
-    category = serializers.ChoiceField(
-        choices=[choice[0] for choice in Report.CATEGORY_CHOICES])
-    reason = serializers.CharField(
-        required=False,
-        allow_blank=True,
-        default="",
-        max_length=Report.REASON_MAX_LENGTH)
+    category = serializers.ChoiceField(choices=[choice[0] for choice in Report.CATEGORY_CHOICES])
+    reason = serializers.CharField(required=False, allow_blank=True, default="", max_length=Report.REASON_MAX_LENGTH)

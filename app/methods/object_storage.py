@@ -1,14 +1,14 @@
 # Python
 import logging
 
-# Django
-from django.conf import settings
-from decouple import config
-
 # Libs
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from decouple import config
+
+# Django
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 

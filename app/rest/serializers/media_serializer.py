@@ -1,11 +1,11 @@
 # Django
 from rest_framework import serializers
 
-# Models
-from app.models.media import ThreadFile
-
 # Libs
 from app.methods.storage_backends import get_backend
+
+# Models
+from app.models.media import ThreadFile
 
 
 class ThreadMediaSerializer(serializers.ModelSerializer):

@@ -5,13 +5,12 @@ from datetime import datetime
 from django.test import Client, TransactionTestCase, override_settings
 from rest_framework import status
 
-# Models
-from app.models.reaction import Reaction
-from app.models.reaction_relation import ReactionRelation
-
 # Libs
 from app.methods.tokens import encode_token
 
+# Models
+from app.models.reaction import Reaction
+from app.models.reaction_relation import ReactionRelation
 
 # New reaction set (6) — internal id in `name`, emoji is presentation.
 NEW_REACTIONS = [
@@ -32,7 +31,6 @@ client = Client()
 # encrypted/ticket paths are covered in test_foryou.py.
 @override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False)
 class ThreadsViewTest(TransactionTestCase):
-
     reset_sequences = True
 
     def setUp(self):
@@ -43,7 +41,7 @@ class ThreadsViewTest(TransactionTestCase):
         for name, emoji in NEW_REACTIONS:
             Reaction.objects.create(name=name, emoji=emoji)
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         """Se encarga de generar un client token."""
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
@@ -54,13 +52,9 @@ class ThreadsViewTest(TransactionTestCase):
         the list of reactions, it is functioning correctly.
         """
         token = self.__get_client_token()
-        response = client.get(
-            "/reactions/",
-            HTTP_X_DYNAMIC_TOKEN=token)
+        response = client.get("/reactions/", HTTP_X_DYNAMIC_TOKEN=token)
 
-        self.assertEqual(
-            response.status_code,
-            status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_asing_reaction_to_thread(self):
         """
@@ -68,9 +62,7 @@ class ThreadsViewTest(TransactionTestCase):
         to a thread, everything is functioning correctly.
         """
         token = self.__get_client_token()
-        reaction = Reaction.objects.filter(
-            is_active=True).\
-                order_by("?").first()
+        reaction = Reaction.objects.filter(is_active=True).order_by("?").first()
 
         thread = client.post(
             "/threads/",
@@ -99,17 +91,12 @@ class ThreadsViewTest(TransactionTestCase):
         token = self.__get_client_token()
         reaction = client.post(
             "/reactions/",
-            {
-                "reaction": reaction.id,
-                "thread": thread.data["uid"]
-            },
+            {"reaction": reaction.id, "thread": thread.data["uid"]},
             HTTP_X_DYNAMIC_TOKEN=token,
-            content_type="application/json"
+            content_type="application/json",
         )
 
-        self.assertEqual(
-            reaction.status_code,
-            status.HTTP_201_CREATED)
+        self.assertEqual(reaction.status_code, status.HTTP_201_CREATED)
 
     def test_asing_and_delete_reaction_to_thread(self):
         """
@@ -117,9 +104,7 @@ class ThreadsViewTest(TransactionTestCase):
         from a thread.
         """
         token = self.__get_client_token()
-        reaction = Reaction.objects.filter(
-            is_active=True).\
-                order_by("?").first()
+        reaction = Reaction.objects.filter(is_active=True).order_by("?").first()
 
         thread = client.post(
             "/threads/",
@@ -144,34 +129,26 @@ class ThreadsViewTest(TransactionTestCase):
             HTTP_X_DYNAMIC_TOKEN=token,
             content_type="application/json",
         )
-        
+
         token = self.__get_client_token()
         response = client.post(
             "/reactions/",
-            {
-                "reaction": reaction.id,
-                "thread": thread.data["uid"]
-            },
+            {"reaction": reaction.id, "thread": thread.data["uid"]},
             HTTP_X_DYNAMIC_TOKEN=token,
-            content_type="application/json"
+            content_type="application/json",
         )
 
         token = self.__get_client_token()
         response = client.post(
             "/reactions/",
-            {
-                "reaction": reaction.id,
-                "thread": thread.data["uid"]
-            },
+            {"reaction": reaction.id, "thread": thread.data["uid"]},
             HTTP_X_DYNAMIC_TOKEN=token,
-            content_type="application/json"
+            content_type="application/json",
         )
 
-        self.assertEqual(
-            response.status_code,
-            status.HTTP_201_CREATED)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
-    def __make_thread(self) -> (str):
+    def __make_thread(self) -> str:
         """Create a thread and return its uid."""
         token = self.__get_client_token()
         thread = client.post(

@@ -1,15 +1,16 @@
 # Python
-import uuid
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
-
-# Django
-from django.conf import settings
 
 # Libs
 import requests
+
+# Django
+from django.conf import settings
 from jwt.exceptions import PyJWTError
-from app.methods.tokens import encode_token, decode_token
+
+from app.methods.tokens import decode_token, encode_token
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class CaptchaUnavailable(Exception):
     """The Cap standalone server could not be reached or answered 5xx."""
 
 
-def verify_captcha_token(token) -> (bool):
+def verify_captcha_token(token) -> bool:
     """
     Redeem a single-use Cap token against the standalone siteverify
     endpoint. Returns True only on an explicit {"success": true}; Cap
@@ -41,10 +42,7 @@ def verify_captcha_token(token) -> (bool):
     if not token:
         return False
 
-    url = (
-        f"{settings.CAP_SITEVERIFY_URL.rstrip('/')}"
-        f"/{settings.CAP_SITE_KEY}/siteverify"
-    )
+    url = f"{settings.CAP_SITEVERIFY_URL.rstrip('/')}/{settings.CAP_SITE_KEY}/siteverify"
     try:
         response = _session.post(
             url,
@@ -66,7 +64,7 @@ def verify_captcha_token(token) -> (bool):
         return False
 
 
-def issue_human_pass(mask) -> (str):
+def issue_human_pass(mask) -> str:
     """
     Mint the short-lived human pass granted by one solved captcha. Bound
     to the requester's mask so it cannot be shared across IPs; expiry is
@@ -77,15 +75,14 @@ def issue_human_pass(mask) -> (str):
         {
             "jti": uuid.uuid4().hex,
             "iat": now,
-            "exp": now + timedelta(
-                seconds=settings.CAPTCHA_PASS_TTL_SECONDS),
+            "exp": now + timedelta(seconds=settings.CAPTCHA_PASS_TTL_SECONDS),
             "purpose": PASS_PURPOSE,
             "mask": mask.hash,
         }
     )
 
 
-def validate_human_pass(token, mask) -> (bool):
+def validate_human_pass(token, mask) -> bool:
     """
     Check signature + expiry (decode_token raises on both) and that the
     pass was minted as a human pass for THIS mask — a /ticket/ JWT or a
@@ -95,7 +92,4 @@ def validate_human_pass(token, mask) -> (bool):
         payload = decode_token(token)
     except PyJWTError:
         return False
-    return (
-        payload.get("purpose") == PASS_PURPOSE
-        and payload.get("mask") == mask.hash
-    )
+    return payload.get("purpose") == PASS_PURPOSE and payload.get("mask") == mask.hash

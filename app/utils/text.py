@@ -10,7 +10,4 @@ def strip_accents(text) -> str:
     query value. By normalizing both sides, an accented or unaccented search
     term (in any case, together with icontains) returns the same results.
     """
-    return "".join(
-        c for c in unicodedata.normalize("NFKD", text or "")
-        if not unicodedata.combining(c)
-    )
+    return "".join(c for c in unicodedata.normalize("NFKD", text or "") if not unicodedata.combining(c))

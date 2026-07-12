@@ -1,10 +1,9 @@
 # Python
-import hmac
 import hashlib
+import hmac
 
 # Django
 from django.conf import settings
-
 
 # Longitud del token truncado (hex → url-safe). 24 hex = 96 bits. DEBE
 # coincidir con el slice del frontend. El patrón comodín de urls.py captura
@@ -12,7 +11,7 @@ from django.conf import settings
 TOKEN_LEN = 24
 
 
-def derive_token(nonce) -> (str):
+def derive_token(nonce) -> str:
     """
     token = HMAC-SHA256(key=GATEWAY_SEED, msg=nonce) truncado, hex.
 
@@ -33,7 +32,7 @@ def derive_token(nonce) -> (str):
     ).hexdigest()[:TOKEN_LEN]
 
 
-def token_matches(token, nonce) -> (bool):
+def token_matches(token, nonce) -> bool:
     """
     ¿El {token} de la URL corresponde al nonce del sobre? Comparación en
     TIEMPO CONSTANTE (hmac.compare_digest) para no filtrar información por

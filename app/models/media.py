@@ -33,14 +33,12 @@ class ThreadFile(BaseModel):
     # as soon as compression + NSFW finish, before pressing Send). It stays
     # detached (thread=NULL, is_active=False) until `confirm` attaches it to the
     # thread created at Send.
-    thread = models.ForeignKey(
-        "app.Thread", on_delete=models.CASCADE, null=True, blank=True)
+    thread = models.ForeignKey("app.Thread", on_delete=models.CASCADE, null=True, blank=True)
 
     # Uploader's pseudonymous mask, set at presign. Binds a pending (detached)
     # upload to its owner so `confirm` can only attach files the same mask
     # uploaded, to threads the same mask owns.
-    mask = models.ForeignKey(
-        "app.Mask", on_delete=models.CASCADE, null=True, blank=True)
+    mask = models.ForeignKey("app.Mask", on_delete=models.CASCADE, null=True, blank=True)
 
     # NSFW flag from the CLIENT-SIDE detector (bypassable — informational only;
     # server-side moderation is a future step). Indexed so it can be used to

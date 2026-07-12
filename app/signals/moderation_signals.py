@@ -1,12 +1,12 @@
 # Django
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
-from django.db.models.signals import post_save, post_delete
-
-# Models
-from app.models.blocked_term import BlockedTerm
 
 # Methods
 from app.methods.moderation import invalidate_blocked_terms, shadowban_matching
+
+# Models
+from app.models.blocked_term import BlockedTerm
 
 TERM_SAVED_UID = "blockedterm_saved_sweep"
 TERM_DELETED_UID = "blockedterm_deleted_invalidate"

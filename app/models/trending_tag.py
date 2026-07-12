@@ -34,5 +34,5 @@ class TrendingTag(BaseModel):
             models.Index(fields=["-score"], name="trendingtag_score_desc_idx"),
         ]
 
-    def __str__(self) -> (str):
+    def __str__(self) -> str:
         return f"#{self.name} ({self.score:.2f})"

@@ -1,11 +1,11 @@
 # Python
 import uuid
 
-# Django
-from django.db import models
-
 # Libs
 import shortuuid
+
+# Django
+from django.db import models
 
 
 def generate_uid() -> str:

@@ -1,27 +1,27 @@
 # Django
-from django.contrib import admin
-from django.urls import path, re_path, include
 from django.conf import settings
 from django.conf.urls.static import static
-from rest_framework import permissions
+from django.contrib import admin
+from django.urls import include, path, re_path
+from drf_yasg import openapi
 
 # Libs
 from drf_yasg.views import get_schema_view
-from drf_yasg import openapi
+from rest_framework import permissions
+
+from app.methods.storage_backends import (
+    LOCAL_UPLOAD_ROUTE,
+    local_backend_active,
+    local_upload_put,
+)
 
 # Views
 from app.rest.health import HealthCheckView
-from app.methods.storage_backends import (
-    local_backend_active,
-    local_upload_put,
-    LOCAL_UPLOAD_ROUTE,
-)
-
 
 schema_view = get_schema_view(
     openapi.Info(
         title="Thriup Rest API",
-        default_version='v1',
+        default_version="v1",
         description="Descripción de tu API",
         terms_of_service="https://www.tuapi.com/terms/",
         contact=openapi.Contact(email="contacto@tuapi.com"),
@@ -32,7 +32,7 @@ schema_view = get_schema_view(
 )
 
 urlpatterns = [
-    path('admin/swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
+    path("admin/swagger/", schema_view.with_ui("swagger", cache_timeout=0), name="schema-swagger-ui"),
     # Decoy /admin/ — django-honeypot logs scanners and serves a fake login.
     path("admin/", include("honeypot.urls")),
     # Real admin lives at INTERNAL_ADMIN_URL (set in .env).
@@ -50,6 +50,5 @@ urlpatterns = [
 # schema — registered only in that mode so it never exists in production.
 if local_backend_active():
     urlpatterns += [
-        re_path(
-            rf"^{LOCAL_UPLOAD_ROUTE}/(?P<key>.+)$", local_upload_put),
+        re_path(rf"^{LOCAL_UPLOAD_ROUTE}/(?P<key>.+)$", local_upload_put),
     ]

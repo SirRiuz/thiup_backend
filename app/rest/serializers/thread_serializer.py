@@ -1,25 +1,25 @@
 # Django
-from rest_framework import serializers
 from django.db.models import Count
+from rest_framework import serializers
+
+from app.methods.tags import create_tags, get_tags_list
+from app.models.media import ThreadFile
+from app.models.reaction import Reaction
+from app.models.reaction_relation import ReactionRelation
 
 # Models
 from app.models.thread import Thread
-from app.models.media import ThreadFile
-from app.models.reaction_relation import ReactionRelation
-from app.models.reaction import Reaction
+from app.rest.serializers.mask_serializer import MaskSerializer
+from app.rest.serializers.media_serializer import ThreadMediaSerializer
 
 # Serializers
 from app.rest.serializers.reaction_serializer import ReactionSerializer
-from app.rest.serializers.media_serializer import ThreadMediaSerializer
 
 # Libs
 from app.utils.time import format_short_time
-from app.methods.tags import create_tags, get_tags_list
-from app.rest.serializers.mask_serializer import MaskSerializer
 
 
 class ThreadSerializer(serializers.ModelSerializer):
-
     content = serializers.JSONField(required=True)
     sub = serializers.SlugRelatedField(
         slug_field="uid",

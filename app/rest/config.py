@@ -1,9 +1,9 @@
 # Django
 from django.conf import settings
-from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK
-from rest_framework.permissions import AllowAny
+from rest_framework.views import APIView
 
 
 class ConfigView(APIView):
@@ -23,7 +23,7 @@ class ConfigView(APIView):
 
     permission_classes = (AllowAny,)
 
-    def get(self, request) -> (Response):
+    def get(self, request) -> Response:
         return Response(
             {
                 "encrypted_response": settings.ENCRYPTED_RESPONSE,
@@ -35,9 +35,9 @@ class ConfigView(APIView):
                 # backend-only CAP_SECRET never leaves the server.
                 "captcha_protect": settings.CAPTCHA_PROTECT,
                 "captcha_endpoint": (
-                    f"{settings.CAP_PUBLIC_URL.rstrip('/')}/"
-                    f"{settings.CAP_SITE_KEY}/"
-                    if settings.CAPTCHA_PROTECT else None
+                    f"{settings.CAP_PUBLIC_URL.rstrip('/')}/{settings.CAP_SITE_KEY}/"
+                    if settings.CAPTCHA_PROTECT
+                    else None
                 ),
             },
             status=HTTP_200_OK,

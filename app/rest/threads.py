@@ -1,61 +1,61 @@
 # Python
 from datetime import timedelta
 
+from django.db.models import Count, F, Q
+from django.db.models.query import QuerySet
+from django.shortcuts import get_object_or_404
+
 # Django
 from django.utils import timezone
-from django.db.models import Q, F, Count
-from django.shortcuts import get_object_or_404
-from django.db.models.query import QuerySet
 from rest_framework import filters
-from rest_framework.response import Response
 from rest_framework.decorators import action
-from rest_framework.viewsets import GenericViewSet
-from rest_framework.response import Response
-from rest_framework.status import *
-
-# Models
-from app.models.thread import Thread
-from app.models.tag import Tag
-
-# Serailizers
-from app.rest.serializers.thread_serializer import \
-    ThreadSerializer
 
 # Libs
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+from rest_framework.status import *
 from rest_framework.throttling import ScopedRateThrottle
-from app.permissions.client import IsClientAuthenticated
-from app.permissions.captcha import human_validator
-from app.utils.text import strip_accents
+from rest_framework.viewsets import GenericViewSet
+
 from app.constants.search import MAX_QUERY_LENGTH
-from app.utils.locale import normalize_language, normalize_region
 from app.constants.threads import (
-    FORYOU_MIN_COMMENTERS,
-    FORYOU_MIN_REACTORS,
-    FORYOU_GRACE_HOURS,
-    FORYOU_TAGS_MAX,
-    FORYOU_MIX_POOL,
-    FORYOU_AFFINITY_K,
-    FORYOU_AFFINITY_MAX_TAGS,
-    FORYOU_REGION_BOOST,
-    FORYOU_ROW_FIELDS,
     CLOSEYOU_PROXIMITY_K,
     CLOSEYOU_RADIUS_DEFAULT_KM,
-    CLOSEYOU_RADIUS_MIN_KM,
     CLOSEYOU_RADIUS_MAX_KM,
+    CLOSEYOU_RADIUS_MIN_KM,
     CLOSEYOU_ROW_FIELDS,
+    FORYOU_AFFINITY_K,
+    FORYOU_AFFINITY_MAX_TAGS,
+    FORYOU_GRACE_HOURS,
+    FORYOU_MIN_COMMENTERS,
+    FORYOU_MIN_REACTORS,
+    FORYOU_MIX_POOL,
+    FORYOU_REGION_BOOST,
+    FORYOU_ROW_FIELDS,
+    FORYOU_TAGS_MAX,
 )
-from app.utils.geo import (
-    normalize_geohash,
-    cells_for_radius,
-    GEOHASH_PRECISION,
-)
-from app.rest.pagination import CustomThreadPagination
-from app.methods.threads import get_ranked_thread, with_card_relations
 from app.methods.moderation import find_blocked_terms
+from app.methods.threads import get_ranked_thread, with_card_relations
+from app.models.tag import Tag
+
+# Models
+from app.models.thread import Thread
+from app.permissions.captcha import human_validator
+from app.permissions.client import IsClientAuthenticated
+from app.rest.pagination import CustomThreadPagination
+
+# Serailizers
+from app.rest.serializers.thread_serializer import ThreadSerializer
+from app.utils.geo import (
+    GEOHASH_PRECISION,
+    cells_for_radius,
+    normalize_geohash,
+)
+from app.utils.locale import normalize_language, normalize_region
+from app.utils.text import strip_accents
 
 
-def foryou_threshold(now) -> (Q):
+def foryou_threshold(now) -> Q:
     """Entry threshold for the For You feed (constants in
     app/constants/threads.py — momentum SORTS, this decides who ENTERS)."""
     grace_start = now - timedelta(hours=FORYOU_GRACE_HOURS)
@@ -66,18 +66,16 @@ def foryou_threshold(now) -> (Q):
     )
 
 
-def parse_closeyou_radius(raw) -> (float):
+def parse_closeyou_radius(raw) -> float:
     """Clamp the declared radius: 1-100 km; invalid/absent → 15."""
     try:
         radius = float(raw)
     except (TypeError, ValueError):
         return CLOSEYOU_RADIUS_DEFAULT_KM
-    return max(CLOSEYOU_RADIUS_MIN_KM,
-               min(CLOSEYOU_RADIUS_MAX_KM, radius))
+    return max(CLOSEYOU_RADIUS_MIN_KM, min(CLOSEYOU_RADIUS_MAX_KM, radius))
 
 
-def foryou_final_momentum(momentum, post_region, user_region,
-                          matched_tags) -> (float):
+def foryou_final_momentum(momentum, post_region, user_region, matched_tags) -> float:
     """
     momentum_final = base × region_boost × affinity_boost — computed AT
     SERVE TIME (the boosts depend on the user; the precomputed base
@@ -91,12 +89,11 @@ def foryou_final_momentum(momentum, post_region, user_region,
     if user_region and post_region == user_region:
         final *= FORYOU_REGION_BOOST
     if matched_tags:
-        final *= 1 + FORYOU_AFFINITY_K * min(
-            matched_tags, FORYOU_AFFINITY_MAX_TAGS)
+        final *= 1 + FORYOU_AFFINITY_K * min(matched_tags, FORYOU_AFFINITY_MAX_TAGS)
     return final
 
 
-def rank_foryou_rows(rows, user_region, tag_counts=None) -> (list):
+def rank_foryou_rows(rows, user_region, tag_counts=None) -> list:
     """
     STEP 4 — SORT: momentum_final DESC (tie-break by date) over the
     BOUNDED set of candidates. Each row is (id, momentum_score,
@@ -107,15 +104,14 @@ def rank_foryou_rows(rows, user_region, tag_counts=None) -> (list):
     def sort_key(row):
         thread_id, momentum, created, region = row
         return (
-            foryou_final_momentum(
-                momentum, region, user_region, counts.get(thread_id, 0)),
+            foryou_final_momentum(momentum, region, user_region, counts.get(thread_id, 0)),
             created,
         )
 
     return [row[0] for row in sorted(rows, key=sort_key, reverse=True)]
 
 
-def union_foryou_candidates(tagged_rows, global_rows) -> (list):
+def union_foryou_candidates(tagged_rows, global_rows) -> list:
     """
     STEP 1 — CANDIDATES: union of the global top (discovery) + posts with
     the user's tags (they enter even if their base momentum is low: the
@@ -128,16 +124,15 @@ def union_foryou_candidates(tagged_rows, global_rows) -> (list):
 
 
 class ThreadsViewSet(GenericViewSet):
-
     queryset = Thread.objects.filter(is_active=True, visibility=True)
     pagination_class = CustomThreadPagination
     serializer_class = ThreadSerializer
-    permission_classes = (IsClientAuthenticated, )
+    permission_classes = (IsClientAuthenticated,)
     filter_backends = (filters.OrderingFilter,)
     ordering_fields = ("create_at", "reactions_count")
     ordering = ("-create_at",)
 
-    def get_throttles(self) -> (list):
+    def get_throttles(self) -> list:
         # Rate-limit ONLY entity creation (anti-abuse companion of the
         # captcha human pass): reads and the read-only POST feeds
         # (foryou/closeyou) stay unthrottled.
@@ -146,12 +141,10 @@ class ThreadsViewSet(GenericViewSet):
             return [ScopedRateThrottle()]
         return super().get_throttles()
 
-    def get_queryset(self) -> (QuerySet):
+    def get_queryset(self) -> QuerySet:
         now_date = timezone.localtime(timezone.now())
-        queryset = super().get_queryset().filter(
-            Q(expire_date__gte=now_date)|
-            Q(expire_date__isnull=True),
-            is_active=True
+        queryset = (
+            super().get_queryset().filter(Q(expire_date__gte=now_date) | Q(expire_date__isnull=True), is_active=True)
         )
 
         # reactions_count only exists for ?ordering=(-)reactions_count
@@ -177,29 +170,20 @@ class ThreadsViewSet(GenericViewSet):
             tag = self.request.GET.get("tag")
             # Defensa server-side (DoS por cómputo): rechazar q/tag sobre
             # el tope ANTES de filtrar — 400 limpio, sin eco del payload.
-            if (query and len(query) > MAX_QUERY_LENGTH) or (
-                tag and len(tag) > MAX_QUERY_LENGTH
-            ):
-                raise ValidationError(
-                    {"detail": f"Query exceeds {MAX_QUERY_LENGTH} characters."}
-                )
+            if (query and len(query) > MAX_QUERY_LENGTH) or (tag and len(tag) > MAX_QUERY_LENGTH):
+                raise ValidationError({"detail": f"Query exceeds {MAX_QUERY_LENGTH} characters."})
             # with_card_relations: preloads mask/media/reactions and
             # annotates responses_count — eliminates the serializer's N+1 in
             # the lists.
             threads = with_card_relations(
-                queryset.filter(
-                    visibility=True,
-                    is_active=True,
-                    sub__isnull=True),
+                queryset.filter(visibility=True, is_active=True, sub__isnull=True),
                 self.request.mask,
             )
 
             # Shadowban blocklist: a blocked q/tag answers like a term
             # nobody ever posted about (empty page, same contract). Same
             # whole-word, normalized check as /search/ — read-only here.
-            if find_blocked_terms(
-                strip_accents(f"{query or ''} {tag or ''}").lower()
-            ):
+            if find_blocked_terms(strip_accents(f"{query or ''} {tag or ''}").lower()):
                 return threads.none()
 
             if tag:
@@ -208,22 +192,18 @@ class ThreadsViewSet(GenericViewSet):
                 # finds #perú. distinct(): a post with the same hashtag
                 # repeated creates several Tag rows and the join would
                 # duplicate the thread.
-                return threads.filter(
-                    tag__name__unaccent__iexact=strip_accents(tag)
-                ).distinct().order_by("-create_at")
+                return threads.filter(tag__name__unaccent__iexact=strip_accents(tag)).distinct().order_by("-create_at")
 
             if query:
                 # icontains + unaccent on both sides (field and query):
                 # case- and accent-insensitive, same as /search/.
-                return threads.filter(
-                    text__unaccent__icontains=strip_accents(query)
-                ).order_by("-create_at")
+                return threads.filter(text__unaccent__icontains=strip_accents(query)).order_by("-create_at")
 
             return threads.order_by("-create_at")
 
         return queryset
 
-    def list(self, request) -> (Response):
+    def list(self, request) -> Response:
         """
         Gets a paged list of threads
         ---
@@ -287,16 +267,12 @@ class ThreadsViewSet(GenericViewSet):
         """
         queryset = self.filter_queryset(self.get_queryset())
         pages = self.paginate_queryset(queryset)
-        serializer = self.get_serializer(
-            pages,
-            many=True,
-            context=({"mask": request.mask, "short": True}))
+        serializer = self.get_serializer(pages, many=True, context=({"mask": request.mask, "short": True}))
 
-        return self.get_paginated_response(({
-            "data": serializer.data}))
+        return self.get_paginated_response(({"data": serializer.data}))
 
     @action(detail=False, methods=["GET"])
-    def mine(self, request) -> (Response):
+    def mine(self, request) -> Response:
         """
         GET /threads/mine/ — the threads created by the AUTHENTICATED user.
 
@@ -319,15 +295,11 @@ class ThreadsViewSet(GenericViewSet):
         ).order_by("-create_at")
 
         pages = self.paginate_queryset(threads)
-        serializer = self.get_serializer(
-            pages,
-            many=True,
-            context=({"mask": request.mask, "short": True}))
+        serializer = self.get_serializer(pages, many=True, context=({"mask": request.mask, "short": True}))
 
-        return self.get_paginated_response(({
-            "data": serializer.data}))
+        return self.get_paginated_response(({"data": serializer.data}))
 
-    def retrieve(self, request, pk) -> (Response):
+    def retrieve(self, request, pk) -> Response:
         """
         Retrieve the infromation of the thread
         ---
@@ -377,14 +349,12 @@ class ThreadsViewSet(GenericViewSet):
             500 - An error occurred on the server.
         """
         thread = get_object_or_404(self.get_queryset())
-        serializer = self.get_serializer(
-            thread, many=False, context=({
-                "mask": request.mask})).data
+        serializer = self.get_serializer(thread, many=False, context=({"mask": request.mask})).data
 
         return Response(serializer, status=HTTP_200_OK)
 
     @human_validator
-    def create(self, request) -> (Response):
+    def create(self, request) -> Response:
         """
         Create a new thread
         ---
@@ -446,15 +416,10 @@ class ThreadsViewSet(GenericViewSet):
             500 - An error occurred on the server.
         """
         sub_tread = request.data.get("sub")
-        text = request.data.get("text")
         if sub_tread:
-            sub_tread = get_object_or_404(
-                Thread.objects.filter(uid=sub_tread)).uid
+            sub_tread = get_object_or_404(Thread.objects.filter(uid=sub_tread)).uid
 
-        serializer = self.get_serializer(data=request.data, context=({
-            "mask": request.mask,
-            "show_responses": True
-        }))
+        serializer = self.get_serializer(data=request.data, context=({"mask": request.mask, "show_responses": True}))
         serializer.is_valid(raise_exception=True)
         # Language/region DECLARED by the FE (navigator.language) — the
         # backend only normalizes and persists, no GeoIP. language feeds
@@ -472,7 +437,7 @@ class ThreadsViewSet(GenericViewSet):
         return Response(serializer.data, status=HTTP_201_CREATED)
 
     @action(detail=False, methods=["POST"])
-    def foryou(self, request) -> (Response):
+    def foryou(self, request) -> Response:
         """
         For You feed (POST): the feed params travel in the BODY — the tags
         reveal interests and in GET they ended up in the access logs of
@@ -513,7 +478,7 @@ class ThreadsViewSet(GenericViewSet):
         return self.__foryou_response(request, threshold, tags, region, lang)
 
     @action(detail=False, methods=["POST"])
-    def closeyou(self, request) -> (Response):
+    def closeyou(self, request) -> Response:
         """
         Close You (near me, ~10 km): SAME ENGINE as For You (threshold +
         grace + precomputed momentum + POST pagination + serializer —
@@ -542,14 +507,11 @@ class ThreadsViewSet(GenericViewSet):
         body = request.data if isinstance(request.data, dict) else {}
         # Compat: clients that still send cells[] → the first is the center.
         raw_center = body.get("geohash") or (
-            (body.get("cells") or [None])[0]
-            if isinstance(body.get("cells"), (list, tuple)) else None
+            (body.get("cells") or [None])[0] if isinstance(body.get("cells"), (list, tuple)) else None
         )
         center = normalize_geohash(raw_center)
         if not center:
-            return Response(
-                {"detail": "geohash (reader cell) required."},
-                status=HTTP_400_BAD_REQUEST)
+            return Response({"detail": "geohash (reader cell) required."}, status=HTTP_400_BAD_REQUEST)
 
         radius_km = parse_closeyou_radius(body.get("radius_km"))
         ring_by_cell, precision = cells_for_radius(center, radius_km)
@@ -564,22 +526,18 @@ class ThreadsViewSet(GenericViewSet):
         else:
             area_filter = Q(geohash4__in=cells)
 
-        rows = list(
-            qualifying.filter(area_filter)
-            .order_by(*order)
-            .values_list(*CLOSEYOU_ROW_FIELDS)[:FORYOU_MIX_POOL]
-        )
+        rows = list(qualifying.filter(area_filter).order_by(*order).values_list(*CLOSEYOU_ROW_FIELDS)[:FORYOU_MIX_POOL])
 
         # Decreasing proximity boost: post → cell → normalized distance
         # (0=center, 1=edge) → boost, all in memory O(candidates), no N+1.
-        def proximity_final(momentum, geohash) -> (float):
-            key = geohash if precision == GEOHASH_PRECISION \
-                else (geohash or "")[:GEOHASH_PRECISION - 1]
+        def proximity_final(momentum, geohash) -> float:
+            key = geohash if precision == GEOHASH_PRECISION else (geohash or "")[: GEOHASH_PRECISION - 1]
             ring = ring_by_cell.get(key, 1.0)
             return momentum * (1 + CLOSEYOU_PROXIMITY_K * (1 - ring))
 
         ordered_ids = [
-            row[0] for row in sorted(
+            row[0]
+            for row in sorted(
                 rows,
                 key=lambda r: (proximity_final(r[1], r[3]), r[2]),
                 reverse=True,
@@ -593,11 +551,10 @@ class ThreadsViewSet(GenericViewSet):
             request,
             ordered_ids,
             filler_qs=visible.filter(area_filter),
-            momentum_final_fn=lambda t: proximity_final(
-                t.momentum_score, t.geohash),
+            momentum_final_fn=lambda t: proximity_final(t.momentum_score, t.geohash),
         )
 
-    def __parse_foryou_tags(self, body) -> (list):
+    def __parse_foryou_tags(self, body) -> list:
         """
         Normalizes the tags from the BODY — accepts a JSON list (["a","b"])
         or a comma-separated string ("a,b") — same as how Tags are stored
@@ -607,8 +564,7 @@ class ThreadsViewSet(GenericViewSet):
         associated with the request's mask.
         """
         raw = body.get("tags", "")
-        pieces = raw if isinstance(raw, (list, tuple)) \
-            else str(raw or "").split(",")
+        pieces = raw if isinstance(raw, (list, tuple)) else str(raw or "").split(",")
         tags = []
         for piece in pieces:
             clean = strip_accents(str(piece).strip().lstrip("#").lower())
@@ -622,7 +578,7 @@ class ThreadsViewSet(GenericViewSet):
     # + rich queryset + momentum_final + serializer (__serve_feed_page).
     # Each feed only contributes its candidate FILTER and its boost function.
 
-    def __feed_querysets(self) -> (tuple):
+    def __feed_querysets(self) -> tuple:
         """(visible, qualifying): the feed universe + entry threshold with
         grace window — identical for For You and Close You."""
         now_date = timezone.localtime(timezone.now())
@@ -634,8 +590,7 @@ class ThreadsViewSet(GenericViewSet):
         )
         return visible, visible.filter(foryou_threshold(timezone.now()))
 
-    def __serve_feed_page(self, request, ordered_ids, filler_qs,
-                          momentum_final_fn) -> (Response):
+    def __serve_feed_page(self, request, ordered_ids, filler_qs, momentum_final_fn) -> Response:
         """
         Shared serving engine: newest FALLBACK (over filler_qs — global in
         For You, local in Close You), pagination of the id list, rich
@@ -645,13 +600,11 @@ class ThreadsViewSet(GenericViewSet):
         page_size = self.paginator.get_page_size(request)
         if len(ordered_ids) < page_size and filler_qs is not None:
             seen = set(ordered_ids)
-            filler = filler_qs.order_by("-create_at").values_list(
-                "id", flat=True)[:FORYOU_MIX_POOL]
+            filler = filler_qs.order_by("-create_at").values_list("id", flat=True)[:FORYOU_MIX_POOL]
             ordered_ids += [i for i in filler if i not in seen]
 
         page_ids = self.paginate_queryset(ordered_ids)
-        threads = with_card_relations(
-            Thread.objects.filter(id__in=page_ids), request.mask)
+        threads = with_card_relations(Thread.objects.filter(id__in=page_ids), request.mask)
         by_id = {t.id: t for t in threads}
         page = [by_id[i] for i in page_ids if i in by_id]
 
@@ -660,15 +613,11 @@ class ThreadsViewSet(GenericViewSet):
         for thread in page:
             thread.momentum_final = momentum_final_fn(thread)
 
-        serializer = self.get_serializer(
-            page,
-            many=True,
-            context=({"mask": request.mask, "short": True}))
+        serializer = self.get_serializer(page, many=True, context=({"mask": request.mask, "short": True}))
 
-        return self.get_paginated_response(({
-            "data": serializer.data}))
+        return self.get_paginated_response(({"data": serializer.data}))
 
-    def __foryou_response(self, request, threshold, tags, region, lang) -> (Response):
+    def __foryou_response(self, request, threshold, tags, region, lang) -> Response:
         """
         Builds the For You — global or personalized — with the id-first
         technique: sub-queries of ONLY lightweight tuples ordered by base
@@ -688,17 +637,14 @@ class ThreadsViewSet(GenericViewSet):
         visible, base_qualifying = self.__feed_querysets()
         order = ("-momentum_score", "-create_at")
 
-        def build_candidates(qualifying) -> (tuple):
+        def build_candidates(qualifying) -> tuple:
             # Global candidates (discovery / cold start): top-N by index.
             # The tuples (id, momentum, create_at, region) allow boost +
             # re-rank of the union in Python without more queries. Note:
             # ENTRY to the pool is by base momentum; the boost reorders
             # within the pool (deliberate approximation — exact for every
             # post in the top-500, cheap for the Raspberry).
-            global_rows = list(
-                qualifying.order_by(*order)
-                .values_list(*FORYOU_ROW_FIELDS)[:FORYOU_MIX_POOL]
-            )
+            global_rows = list(qualifying.order_by(*order).values_list(*FORYOU_ROW_FIELDS)[:FORYOU_MIX_POOL])
 
             if not tags:
                 return rank_foryou_rows(global_rows, region), {}
@@ -709,14 +655,13 @@ class ThreadsViewSet(GenericViewSet):
             # deduplicated in Python (dict.fromkeys preserves order) instead
             # of DISTINCT, which in Postgres clashes with the ORDER BY of
             # non-selected columns.
-            tagged_raw = qualifying.filter(
-                tag__name_norm__in=tags
-            ).order_by(*order).values_list(
-                *FORYOU_ROW_FIELDS)[:FORYOU_MIX_POOL * 2]
-            tagged_rows = list(
-                dict.fromkeys(tagged_raw))[:FORYOU_MIX_POOL]
-            candidate_rows = union_foryou_candidates(
-                tagged_rows, global_rows)
+            tagged_raw = (
+                qualifying.filter(tag__name_norm__in=tags)
+                .order_by(*order)
+                .values_list(*FORYOU_ROW_FIELDS)[: FORYOU_MIX_POOL * 2]
+            )
+            tagged_rows = list(dict.fromkeys(tagged_raw))[:FORYOU_MIX_POOL]
+            candidate_rows = union_foryou_candidates(tagged_rows, global_rows)
 
             # matching_tags per candidate: ONE bounded query (only the pool
             # ids), COUNT(DISTINCT name_norm) — no N+1. Ephemeral: lives only
@@ -725,19 +670,16 @@ class ThreadsViewSet(GenericViewSet):
                 Tag.objects.filter(
                     thread_id__in=[row[0] for row in candidate_rows],
                     name_norm__in=tags,
-                ).values("thread_id").annotate(
-                    c=Count("name_norm", distinct=True)
-                ).values_list("thread_id", "c")
+                )
+                .values("thread_id")
+                .annotate(c=Count("name_norm", distinct=True))
+                .values_list("thread_id", "c")
             )
-            return rank_foryou_rows(
-                candidate_rows, region, tag_counts), tag_counts
+            return rank_foryou_rows(candidate_rows, region, tag_counts), tag_counts
 
         # STEP 2: hard filter by language (indexed language) if the FE
         # declared it; without ?lang= it does not filter (old clients).
-        qualifying = (
-            base_qualifying.filter(language=lang)
-            if lang else base_qualifying
-        )
+        qualifying = base_qualifying.filter(language=lang) if lang else base_qualifying
         ordered_ids, tag_counts = build_candidates(qualifying)
         page_size = self.paginator.get_page_size(request)
 
@@ -754,12 +696,12 @@ class ThreadsViewSet(GenericViewSet):
             ordered_ids,
             filler_qs=visible,
             momentum_final_fn=lambda t: foryou_final_momentum(
-                t.momentum_score, t.region, region,
-                tag_counts.get(t.id, 0)),
+                t.momentum_score, t.region, region, tag_counts.get(t.id, 0)
+            ),
         )
 
     @action(detail=True, methods=["GET"])
-    def responses(self, request, pk) -> (Response):
+    def responses(self, request, pk) -> Response:
         """
         Get responses of the thread
         ---
@@ -836,9 +778,7 @@ class ThreadsViewSet(GenericViewSet):
             500 - An error occurred on the server.
         """
         thread = get_object_or_404(self.get_queryset())
-        head_serializer = self.get_serializer(
-            thread, many=False, context=({
-                "mask": request.mask}))
+        head_serializer = self.get_serializer(thread, many=False, context=({"mask": request.mask}))
 
         responses = with_card_relations(
             get_ranked_thread().filter(is_active=True, sub=thread),
@@ -859,12 +799,8 @@ class ThreadsViewSet(GenericViewSet):
         pages = self.paginate_queryset(responses)
         # op_mask = the thread author's mask, so each reply can compute is_op
         # (reply author == OP) LOCALLY to this thread, as a boolean only.
-        serializer = self.get_serializer(pages, many=True, context=({
-            "mask": request.mask,
-            "op_mask": thread.mask,
-            "show_responses": True}))
+        serializer = self.get_serializer(
+            pages, many=True, context=({"mask": request.mask, "op_mask": thread.mask, "show_responses": True})
+        )
 
-        return self.get_paginated_response(({
-            "data": serializer.data,
-            "context": {"head": head_serializer.data}
-        }))
+        return self.get_paginated_response(({"data": serializer.data, "context": {"head": head_serializer.data}}))

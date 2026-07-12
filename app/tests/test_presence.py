@@ -5,16 +5,15 @@ import hashlib
 from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 
+# Libs
+from app.methods import presence
+
 # Models
 from app.models.mask import Mask
 from app.models.thread import Thread
 
-# Libs
-from app.methods import presence
-
 # Helpers
 from app.tests.test_thread_files import decode_body
-
 
 client = Client()
 

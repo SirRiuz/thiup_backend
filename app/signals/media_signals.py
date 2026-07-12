@@ -2,9 +2,10 @@
 import logging
 from contextlib import contextmanager
 
+from django.db.models.signals import post_delete
+
 # Django
 from django.dispatch import receiver
-from django.db.models.signals import post_delete
 
 # Models
 from app.models.media import ThreadFile
@@ -24,8 +25,7 @@ def storage_cleanup_paused():
     never fast-delete the queryset. Ad-hoc deletes (admin, API) keep the
     per-row signal.
     """
-    post_delete.disconnect(
-        sender=ThreadFile, dispatch_uid=STORAGE_CLEANUP_UID)
+    post_delete.disconnect(sender=ThreadFile, dispatch_uid=STORAGE_CLEANUP_UID)
     try:
         yield
     finally:
@@ -59,8 +59,7 @@ def delete_storage_object(sender, instance, **kwargs):
         get_backend().delete_object(instance.file_key)
     except Exception:
         logger.warning(
-            "ThreadFile %s deleted but its storage object could not be "
-            "removed (key=%s) — clean it up manually.",
+            "ThreadFile %s deleted but its storage object could not be removed (key=%s) — clean it up manually.",
             instance.uid,
             instance.file_key,
         )

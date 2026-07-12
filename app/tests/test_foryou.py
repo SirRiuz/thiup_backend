@@ -1,28 +1,28 @@
 # Python
-import json
 import base64
+import json
 from datetime import datetime, timedelta
-
-# Django
-from django.test import Client, TestCase, SimpleTestCase, override_settings
-from django.core.management import call_command
-from django.utils import timezone
-from rest_framework import status
 
 # Libs
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
+from django.core.management import call_command
+
+# Django
+from django.test import Client, SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
+from rest_framework import status
+
 from app.methods.tokens import encode_token
 
 # Models
 from app.models.mask import Mask
-from app.models.thread import Thread
 from app.models.media import ThreadFile
 from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
+from app.models.thread import Thread
 from app.rest.serializers.thread_serializer import ThreadSerializer
-
 
 client = Client()
 
@@ -53,15 +53,17 @@ def encrypted_post(url, body, token):
     que ENCRYPTED_RESPONSE=True exige bodies cifrados en endpoints no
     exentos. Espejo del encrypt() del frontend."""
     import json as _json
+
     from Crypto.Cipher import AES as _AES
     from Crypto.Random import get_random_bytes as _rb
     from Crypto.Util.Padding import pad as _pad
+
     plain = body if isinstance(body, str) else _json.dumps(body)
     key, iv = _rb(16), _rb(16)
     ct = _AES.new(key, _AES.MODE_CBC, iv).encrypt(_pad(plain.encode(), 16))
-    header = base64.b64encode(
-        f"{base64.b64encode(key).decode()}:{base64.b64encode(iv).decode()}"
-        .encode()).decode()[::-1]
+    header = base64.b64encode(f"{base64.b64encode(key).decode()}:{base64.b64encode(iv).decode()}".encode()).decode()[
+        ::-1
+    ]
     return client.post(
         url,
         data=base64.b64encode(ct).decode()[::-1],
@@ -71,17 +73,15 @@ def encrypted_post(url, body, token):
     )
 
 
-def make_mask(tag) -> (Mask):
+def make_mask(tag) -> Mask:
     return Mask.objects.create(hash=f"hash-{tag}", country_code="CO")
 
 
-def make_thread(mask, age_hours=0, sub=None, text="test") -> (Thread):
+def make_thread(mask, age_hours=0, sub=None, text="test") -> Thread:
     """Creates a thread and forces its age (create_at is auto_now_add)."""
-    thread = Thread.objects.create(
-        content={}, text=text, mask=mask, sub=sub)
+    thread = Thread.objects.create(content={}, text=text, mask=mask, sub=sub)
     if age_hours:
-        Thread.objects.filter(pk=thread.pk).update(
-            create_at=timezone.now() - timedelta(hours=age_hours))
+        Thread.objects.filter(pk=thread.pk).update(create_at=timezone.now() - timedelta(hours=age_hours))
         thread.refresh_from_db()
     return thread
 
@@ -94,12 +94,10 @@ class RecomputeMomentumTest(TestCase):
         self.user_b = make_mask("b")
         self.user_c = make_mask("c")
         # `love` is seeded by migration 0015; reuse it instead of recreating.
-        self.reaction, _ = Reaction.objects.get_or_create(
-            name="love", defaults={"emoji": "❤️"})
+        self.reaction, _ = Reaction.objects.get_or_create(name="love", defaults={"emoji": "❤️"})
 
     def react(self, thread, mask):
-        ReactionRelation.objects.create(
-            thread=thread, mask=mask, reaction=self.reaction)
+        ReactionRelation.objects.create(thread=thread, mask=mask, reaction=self.reaction)
 
     def test_counting_rules_and_formula(self):
         """
@@ -178,10 +176,13 @@ class RecomputeMomentumTest(TestCase):
 
         call_command("recompute_momentum")
         thread.refresh_from_db()
-        self.assertEqual(first, (
-            thread.unique_reactors_count,
-            thread.unique_commenters_count,
-        ))
+        self.assertEqual(
+            first,
+            (
+                thread.unique_reactors_count,
+                thread.unique_commenters_count,
+            ),
+        )
 
     def test_each_run_writes_a_momentum_log(self):
         """Each run leaves its record in the MomentumLog log."""
@@ -211,17 +212,19 @@ class ForYouViewTest(TestCase):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
         # `love` is seeded by migration 0015; reuse it instead of recreating.
-        self.reaction, _ = Reaction.objects.get_or_create(
-            name="love", defaults={"emoji": "❤️"})
+        self.reaction, _ = Reaction.objects.get_or_create(name="love", defaults={"emoji": "❤️"})
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
 
     def get_foryou(self):
         # POST: the feed params go in the body (privacy: out of the URL
         # logs); empty body = cold start.
-        response = encrypted_post("/threads/foryou/", {}, self.__get_client_token(),
+        response = encrypted_post(
+            "/threads/foryou/",
+            {},
+            self.__get_client_token(),
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         return decode_body(response)
@@ -246,11 +249,8 @@ class ForYouViewTest(TestCase):
         self.assertIsNotNone(page1["next"])
 
         # GET → 405 (the transport is now POST)
-        response = client.get(
-            "/threads/foryou/",
-            HTTP_CLIENT_ASSERTION=self.__get_client_token())
-        self.assertEqual(
-            response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        response = client.get("/threads/foryou/", HTTP_CLIENT_ASSERTION=self.__get_client_token())
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def test_threshold_and_momentum_ordering(self):
         """
@@ -318,7 +318,7 @@ class ForYouPersonalizedTest(TestCase):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
 
@@ -345,13 +345,8 @@ class ForYouPersonalizedTest(TestCase):
         """
         # 10 tagged (12h) and 10 untagged (6h → more momentum). Both groups
         # fit within their quotas (350/150): all 20 are candidates.
-        tagged = [
-            self.__make_qualifying(f"gato {i} #cats", 12, tag="cats")
-            for i in range(10)
-        ]
-        untagged = [
-            self.__make_qualifying(f"global {i}", 6) for i in range(10)
-        ]
+        tagged = [self.__make_qualifying(f"gato {i} #cats", 12, tag="cats") for i in range(10)]
+        untagged = [self.__make_qualifying(f"global {i}", 6) for i in range(10)]
 
         call_command("recompute_momentum")
         body = self.get_foryou(tags="cats")
@@ -430,12 +425,15 @@ class ForYouRegionBoostTest(TestCase):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
 
     def get_foryou(self, body=None):
-        response = encrypted_post("/threads/foryou/", body or {}, self.__get_client_token(),
+        response = encrypted_post(
+            "/threads/foryou/",
+            body or {},
+            self.__get_client_token(),
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         return decode_body(response)
@@ -463,8 +461,7 @@ class ForYouRegionBoostTest(TestCase):
         # Precondition: without boost, foreign dominates.
         self.assertGreater(foreign.momentum_score, local.momentum_score)
         # And with the ×1.5 boost local beats it (the test scenario).
-        self.assertGreater(
-            local.momentum_score * 1.5, foreign.momentum_score)
+        self.assertGreater(local.momentum_score * 1.5, foreign.momentum_score)
 
         # No region → order by base: foreign first.
         body = self.get_foryou()
@@ -481,16 +478,10 @@ class ForYouRegionBoostTest(TestCase):
         # base × 1.5 ONLY for the post from my region (query-time). The DB
         # is never mutated by the boost.
         by_uid = {p["uid"]: p for p in body["results"]}
-        self.assertAlmostEqual(
-            by_uid[local.uid]["momentum_score"],
-            local.momentum_score, places=6)
-        self.assertAlmostEqual(
-            by_uid[local.uid]["momentum_final"],
-            local.momentum_score * 1.5, places=6)
+        self.assertAlmostEqual(by_uid[local.uid]["momentum_score"], local.momentum_score, places=6)
+        self.assertAlmostEqual(by_uid[local.uid]["momentum_final"], local.momentum_score * 1.5, places=6)
         # Region different from mine → final == base (no increase).
-        self.assertAlmostEqual(
-            by_uid[foreign.uid]["momentum_final"],
-            foreign.momentum_score, places=6)
+        self.assertAlmostEqual(by_uid[foreign.uid]["momentum_final"], foreign.momentum_score, places=6)
         local.refresh_from_db()
         self.assertAlmostEqual(
             local.momentum_score,
@@ -519,7 +510,7 @@ class ForYouRegionBoostTest(TestCase):
 class ThreadLocaleCreationTest(TestCase):
     """The thread is tagged with language/region declared by the FE."""
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
 
@@ -530,7 +521,10 @@ class ThreadLocaleCreationTest(TestCase):
             "content": {"blocks": [], "entityMap": {}},
             **extra,
         }
-        response = encrypted_post("/threads/", body, self.__get_client_token(),
+        response = encrypted_post(
+            "/threads/",
+            body,
+            self.__get_client_token(),
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         return Thread.objects.get(uid=decode_body(response)["uid"])
@@ -578,12 +572,15 @@ class ForYouLanguageFilterTest(TestCase):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
 
     def get_foryou(self, body=None):
-        response = encrypted_post("/threads/foryou/", body or {}, self.__get_client_token(),
+        response = encrypted_post(
+            "/threads/foryou/",
+            body or {},
+            self.__get_client_token(),
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         return decode_body(response)
@@ -597,10 +594,7 @@ class ForYouLanguageFilterTest(TestCase):
 
     def test_hard_filter_when_enough_content(self):
         """With enough content in the language, the rest do NOT enter."""
-        en_posts = [
-            self.__make_lang_post(f"english {i}", "en")
-            for i in range(self.PAGE_SIZE + 1)
-        ]
+        en_posts = [self.__make_lang_post(f"english {i}", "en") for i in range(self.PAGE_SIZE + 1)]
         es_post = self.__make_lang_post("hola", "es")
 
         call_command("recompute_momentum")
@@ -656,12 +650,15 @@ class ForYouAffinityBoostTest(TestCase):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
 
     def get_foryou(self, body=None):
-        response = encrypted_post("/threads/foryou/", body or {}, self.__get_client_token(),
+        response = encrypted_post(
+            "/threads/foryou/",
+            body or {},
+            self.__get_client_token(),
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         return decode_body(response)
@@ -681,19 +678,15 @@ class ForYouAffinityBoostTest(TestCase):
         """
         # base: untagged(6h)=0.1326 > tagged(10h)=0.0722
         untagged = self.__make_post("global fuerte", 6)
-        tagged3 = self.__make_post(
-            "match total #cats #dogs #birds", 10,
-            tag_names=("cats", "dogs", "birds"))
-        tagged1 = self.__make_post(
-            "match parcial #cats", 10, tag_names=("cats",))
+        tagged3 = self.__make_post("match total #cats #dogs #birds", 10, tag_names=("cats", "dogs", "birds"))
+        tagged1 = self.__make_post("match parcial #cats", 10, tag_names=("cats",))
 
         call_command("recompute_momentum")
         body = self.get_foryou({"tags": ["cats", "dogs", "birds"]})
 
         uids = [p["uid"] for p in body["results"]]
         # tagged3: 0.0722×2.05=0.148 > untagged 0.1326 > tagged1 ×1.35=0.097
-        self.assertEqual(
-            uids[:3], [tagged3.uid, untagged.uid, tagged1.uid])
+        self.assertEqual(uids[:3], [tagged3.uid, untagged.uid, tagged1.uid])
 
         by_uid = {p["uid"]: p for p in body["results"]}
         ratio = lambda p: p["momentum_final"] / p["momentum_score"]
@@ -704,17 +697,13 @@ class ForYouAffinityBoostTest(TestCase):
     def test_affinity_boost_caps_at_three_matches(self):
         """5 matching tags → same cap as 3 (×2.05)."""
         names = ("a1", "b2", "c3", "d4", "e5")
-        post = self.__make_post(
-            "todos los tags " + " ".join(f"#{n}" for n in names),
-            6, tag_names=names)
+        post = self.__make_post("todos los tags " + " ".join(f"#{n}" for n in names), 6, tag_names=names)
 
         call_command("recompute_momentum")
         body = self.get_foryou({"tags": list(names)})
 
         match = next(p for p in body["results"] if p["uid"] == post.uid)
-        self.assertAlmostEqual(
-            match["momentum_final"] / match["momentum_score"],
-            2.05, places=6)
+        self.assertAlmostEqual(match["momentum_final"] / match["momentum_score"], 2.05, places=6)
 
     def test_low_momentum_tagged_post_enters_candidates(self):
         """
@@ -741,21 +730,24 @@ class CloseYouViewTest(TestCase):
 
     def setUp(self):
         from app.utils.geo import encode_geohash
+
         self.author = make_mask("author")
         self.user_b = make_mask("b")
         # Medellín, from coordinates (real geography, no assumptions).
         self.CENTER = encode_geohash(6.2442, -75.5812)
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
 
     def post_closeyou(self, body, expected=status.HTTP_200_OK):
-        response = encrypted_post("/threads/closeyou/", body, self.__get_client_token(),
+        response = encrypted_post(
+            "/threads/closeyou/",
+            body,
+            self.__get_client_token(),
         )
         self.assertEqual(response.status_code, expected)
-        return decode_body(response) if expected == status.HTTP_200_OK \
-            else None
+        return decode_body(response) if expected == status.HTTP_200_OK else None
 
     def __make_geo(self, text, age_hours, geohash, qualifying=True):
         thread = make_thread(self.author, age_hours=age_hours, text=text)
@@ -776,9 +768,7 @@ class CloseYouViewTest(TestCase):
         ring_by_cell, precision = cells_for_radius(self.CENTER, 15)
         self.assertEqual(precision, 5)
         # An intermediate cell of the grid (neither the center nor the edge).
-        mid_cell, mid_ring = next(
-            (cell, ring) for cell, ring in ring_by_cell.items()
-            if 0 < ring < 1)
+        mid_cell, mid_ring = next((cell, ring) for cell, ring in ring_by_cell.items() if 0 < ring < 1)
 
         center_post = self.__make_geo("centro", 6, self.CENTER)
         mid_post = self.__make_geo("intermedio", 7, mid_cell)
@@ -794,12 +784,10 @@ class CloseYouViewTest(TestCase):
 
         by_uid = {p["uid"]: p for p in body["results"]}
         ratio = lambda p: p["momentum_final"] / p["momentum_score"]
-        self.assertAlmostEqual(ratio(by_uid[center_post.uid]), 1.35,
-                               places=6)
+        self.assertAlmostEqual(ratio(by_uid[center_post.uid]), 1.35, places=6)
         # expected boost of the intermediate cell, from its real distance.
         expected_mid = 1 + 0.35 * (1 - mid_ring)
-        self.assertAlmostEqual(ratio(by_uid[mid_post.uid]), expected_mid,
-                               places=6)
+        self.assertAlmostEqual(ratio(by_uid[mid_post.uid]), expected_mid, places=6)
         self.assertLess(ratio(by_uid[mid_post.uid]), 1.35)
 
     def test_radius_expansion_includes_farther_posts(self):
@@ -816,11 +804,9 @@ class CloseYouViewTest(TestCase):
         call_command("recompute_momentum")
 
         body = self.post_closeyou({"geohash": self.CENTER})
-        self.assertNotIn(
-            nearby.uid, [p["uid"] for p in body["results"]])
+        self.assertNotIn(nearby.uid, [p["uid"] for p in body["results"]])
 
-        body = self.post_closeyou(
-            {"geohash": self.CENTER, "radius_km": 100})
+        body = self.post_closeyou({"geohash": self.CENTER, "radius_km": 100})
         self.assertIn(nearby.uid, [p["uid"] for p in body["results"]])
 
     def test_radius_clamp_and_default(self):
@@ -838,8 +824,7 @@ class CloseYouViewTest(TestCase):
         from app.utils.geo import cells_for_radius
 
         for radius in (1, 15, 25, 26, 50, 100):
-            ring_by_cell, precision = cells_for_radius(
-                self.CENTER, radius)
+            ring_by_cell, precision = cells_for_radius(self.CENTER, radius)
             self.assertLessEqual(len(ring_by_cell), 169)
             self.assertEqual(precision, 5 if radius <= 25 else 4)
 
@@ -848,8 +833,7 @@ class CloseYouViewTest(TestCase):
         The fallback fills with LOCAL newest (no threshold) — but NEVER
         with posts from another area nor without geolocation.
         """
-        local_quiet = self.__make_geo(
-            "local sin ruido", 30, self.CENTER, qualifying=False)
+        local_quiet = self.__make_geo("local sin ruido", 30, self.CENTER, qualifying=False)
         global_post = make_thread(self.author, age_hours=5, text="global")
         make_thread(self.user_b, sub=global_post)
 
@@ -864,8 +848,7 @@ class CloseYouViewTest(TestCase):
         """Without geohash (or garbage) → 400. Legacy cells[] still accepted.
         The reader's cells are ephemeral: nothing new is persisted."""
         self.post_closeyou({}, expected=status.HTTP_400_BAD_REQUEST)
-        self.post_closeyou(
-            {"geohash": "<x>!"}, expected=status.HTTP_400_BAD_REQUEST)
+        self.post_closeyou({"geohash": "<x>!"}, expected=status.HTTP_400_BAD_REQUEST)
 
         self.__make_geo("uno", 5, self.CENTER)
         call_command("recompute_momentum")
@@ -885,7 +868,7 @@ class SearchTopOrderingTest(TestCase):
         self.author = make_mask("author")
         self.user_b = make_mask("b")
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         payload = {"timestamp": datetime.now().__str__()}
         return encode_token(payload)
 
@@ -930,8 +913,9 @@ class SearchByMaskTest(TestCase):
     """Buscar el id público de una máscara incluye los hilos de ese autor
     en top/latest — solo coincidencia EXACTA del id público (hash[0:6])."""
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         from datetime import datetime as _dt
+
         return encode_token({"timestamp": _dt.now().__str__()})
 
     def search(self, q, ordering="-momentum_score"):
@@ -944,10 +928,8 @@ class SearchByMaskTest(TestCase):
 
     def setUp(self):
         # Máscaras con hash conocido (los 6 primeros = id público).
-        self.author = Mask.objects.create(
-            hash="abcdef" + "0" * 58, country_code="CO")
-        self.other = Mask.objects.create(
-            hash="999999" + "1" * 58, country_code="CO")
+        self.author = Mask.objects.create(hash="abcdef" + "0" * 58, country_code="CO")
+        self.other = Mask.objects.create(hash="999999" + "1" * 58, country_code="CO")
         # Hilo del autor SIN el término en el texto (solo matchea por autor).
         self.by_author = make_thread(self.author, age_hours=5, text="hola sin palabra clave")
         # Hilo de otro autor que SÍ contiene "abcdef" en el texto.
@@ -1007,7 +989,7 @@ class SearchMediaTest(TestCase):
         self.author = make_mask("author")
         self.viewer = make_mask("viewer")
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         return encode_token({"timestamp": datetime.now().__str__()})
 
     def search(self, q, search_type="media"):
@@ -1083,18 +1065,21 @@ class SearchMediaTest(TestCase):
         self.assertEqual(empty_body["counts"]["media"], 0)
         self.assertEqual(empty_body["results"], [])
 
+
 class RequestCryptoTest(TestCase):
     """Middleware de descifrado de request + endpoint /config/."""
 
     def __token(self):
         from datetime import datetime as _dt
+
         return encode_token({"timestamp": _dt.now().__str__()})
 
     def test_encrypted_body_reaches_view_as_plain(self):
         # Crear hilo con body CIFRADO → la vista lo procesa (201).
         author = make_mask("enc")
         body = {
-            "media": [], "text": "cuerpo cifrado",
+            "media": [],
+            "text": "cuerpo cifrado",
             "content": {"blocks": [], "entityMap": {}},
         }
         before = Thread.objects.count()
@@ -1104,18 +1089,18 @@ class RequestCryptoTest(TestCase):
 
     def test_plain_body_rejected_when_flag_on(self):
         # Enforcement: body en claro en endpoint no exento → 400.
-        r = client.post(
-            "/threads/foryou/", {}, content_type="application/json",
-            HTTP_CLIENT_ASSERTION=self.__token())
+        r = client.post("/threads/foryou/", {}, content_type="application/json", HTTP_CLIENT_ASSERTION=self.__token())
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_malformed_envelope_rejected(self):
         # Sobre cifrado basura → 400 limpio (sin filtrar nada).
         r = client.post(
-            "/threads/foryou/", data="not-real-ciphertext",
+            "/threads/foryou/",
+            data="not-real-ciphertext",
             content_type="application/raw",
             HTTP_X_REQUEST_PAYLOAD="garbage",
-            HTTP_CLIENT_ASSERTION=self.__token())
+            HTTP_CLIENT_ASSERTION=self.__token(),
+        )
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
 
     @override_settings(ENCRYPTED_RESPONSE=False)
@@ -1126,7 +1111,8 @@ class RequestCryptoTest(TestCase):
             "/threads/",
             {"media": [], "text": "plano", "content": {"blocks": [], "entityMap": {}}},
             content_type="application/json",
-            HTTP_CLIENT_ASSERTION=self.__token())
+            HTTP_CLIENT_ASSERTION=self.__token(),
+        )
         self.assertEqual(r.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Thread.objects.count(), before + 1)
 
@@ -1134,43 +1120,41 @@ class RequestCryptoTest(TestCase):
         # /config/ devuelve los flags. El render sigue el flag (cifrado aquí,
         # ENCRYPTED_RESPONSE=True en el test env).
         from django.conf import settings
+
         r = client.get("/config/", HTTP_CLIENT_ASSERTION=self.__token())
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         data = decode_body(r)
         self.assertEqual(data["encrypted_response"], settings.ENCRYPTED_RESPONSE)
-        self.assertEqual(
-            data["single_request_protect"], settings.SINGLE_REQUEST_PROTECT)
+        self.assertEqual(data["single_request_protect"], settings.SINGLE_REQUEST_PROTECT)
         # Metadata PÚBLICA: legible SIN ticket (AllowAny) → el bootstrap la
         # lee directa para conocer el flag antes de fijar el transporte.
-        self.assertEqual(client.get("/config/").status_code,
-                         status.HTTP_200_OK)
+        self.assertEqual(client.get("/config/").status_code, status.HTTP_200_OK)
 
     def test_honeypot_admin_exempt_from_encryption(self):
         # Honeypot (/admin/): HTML server-rendered, manda formularios en claro.
         # NO debe exigir body cifrado → el POST llega a la vista, no al 400 del
         # middleware ("Encrypted request body required").
         r = client.post(
-            "/admin/login/",
-            {"email": "scanner@evil.test", "password": "x"},
-            HTTP_CLIENT_ASSERTION=self.__token())
+            "/admin/login/", {"email": "scanner@evil.test", "password": "x"}, HTTP_CLIENT_ASSERTION=self.__token()
+        )
         self.assertNotEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_real_admin_exempt_from_encryption(self):
         # Admin real (ruta ofuscada de settings.INTERNAL_ADMIN_URL): el POST de
         # login en claro llega a la vista de admin (no al 400 del middleware).
         from django.conf import settings
+
         r = client.post(
             f"/{settings.INTERNAL_ADMIN_URL}login/",
             {"username": "x", "password": "y"},
-            HTTP_CLIENT_ASSERTION=self.__token())
+            HTTP_CLIENT_ASSERTION=self.__token(),
+        )
         self.assertNotEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_api_not_exempted_by_admin_rule(self):
         # La exención es SOLO admin+honeypot: un endpoint de API con body en
         # claro sigue rechazado con 400 (la exención no se filtró a la API).
-        r = client.post(
-            "/threads/foryou/", {}, content_type="application/json",
-            HTTP_CLIENT_ASSERTION=self.__token())
+        r = client.post("/threads/foryou/", {}, content_type="application/json", HTTP_CLIENT_ASSERTION=self.__token())
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
 
 
@@ -1180,17 +1164,16 @@ class SecretDerivationTest(SimpleTestCase):
     @staticmethod
     def _derive(secret_key: str) -> str:
         # Mirror of core/settings.py: HMAC-SHA256 with a fixed context label.
-        import hmac
         import hashlib
-        return hmac.new(
-            secret_key.encode(), b"thiup-api-secret", hashlib.sha256
-        ).hexdigest()
+        import hmac
+
+        return hmac.new(secret_key.encode(), b"thiup-api-secret", hashlib.sha256).hexdigest()
 
     def test_api_secret_key_is_derived_from_secret_key(self):
         # The value the app signs tickets with is the derivation, not an env var.
         from django.conf import settings
-        self.assertEqual(
-            settings.API_SECRET_KEY, self._derive(settings.SECRET_KEY))
+
+        self.assertEqual(settings.API_SECRET_KEY, self._derive(settings.SECRET_KEY))
 
     def test_derivation_is_deterministic_and_key_dependent(self):
         # Same SECRET_KEY -> same key (issued tickets keep verifying across
@@ -1202,9 +1185,9 @@ class SecretDerivationTest(SimpleTestCase):
         # GATEWAY_SEED is PUBLIC obfuscation: it must NOT be derived from the
         # secret, so it never equals the derived key.
         from django.conf import settings
+
         self.assertNotEqual(settings.GATEWAY_SEED, settings.API_SECRET_KEY)
-        self.assertNotEqual(
-            settings.GATEWAY_SEED, self._derive(settings.SECRET_KEY))
+        self.assertNotEqual(settings.GATEWAY_SEED, self._derive(settings.SECRET_KEY))
 
 
 class ThreadDetailsSerializationTest(TestCase):
@@ -1234,9 +1217,9 @@ class ThreadDetailsSerializationTest(TestCase):
 
         data = ThreadSerializer(thread, context={"mask": author}).data
 
-        self.assertEqual(data["uid"], thread.uid)          # public thread id
-        self.assertEqual(data["responses_count"], 1)        # replies count
-        self.assertIn("reactions", data)                    # total derivable on FE
+        self.assertEqual(data["uid"], thread.uid)  # public thread id
+        self.assertEqual(data["responses_count"], 1)  # replies count
+        self.assertIn("reactions", data)  # total derivable on FE
 
 
 class IdentityFlagsTest(TestCase):
@@ -1272,7 +1255,7 @@ class IdentityFlagsTest(TestCase):
         op_data = ThreadSerializer(op_reply, context=ctx).data
         other_data = ThreadSerializer(other_reply, context=ctx).data
 
-        self.assertTrue(op_data["is_op"])      # author's reply → OP
+        self.assertTrue(op_data["is_op"])  # author's reply → OP
         self.assertFalse(other_data["is_op"])  # someone else's reply → not OP
 
     def test_flags_are_plain_booleans_no_author_identity_leaked(self):
@@ -1280,8 +1263,7 @@ class IdentityFlagsTest(TestCase):
         beyond the existing pseudonymous mask."""
         thread = make_thread(self.author, text="root")
         reply = make_thread(self.author, sub=thread, text="op reply")
-        data = ThreadSerializer(
-            reply, context={"mask": self.other, "op_mask": thread.mask}).data
+        data = ThreadSerializer(reply, context={"mask": self.other, "op_mask": thread.mask}).data
 
         self.assertIsInstance(data["is_mine"], bool)
         self.assertIsInstance(data["is_op"], bool)
@@ -1302,6 +1284,7 @@ class OwnerStatsTest(TestCase):
 
     def test_counts_threads_reactions_and_replies(self):
         from app.rest.masks import CurrentMaskView
+
         author = make_mask("author")
         # Two root threads + one reply BY the author (reply also counts toward
         # reactions/replies received on their content, but NOT toward "threads").
@@ -1314,12 +1297,13 @@ class OwnerStatsTest(TestCase):
 
         stats = CurrentMaskView._owner_stats(author)
 
-        self.assertEqual(stats["threads"], 2)            # only root threads
+        self.assertEqual(stats["threads"], 2)  # only root threads
         self.assertEqual(stats["reactions"], 3 + 1 + 4)  # summed across all
         self.assertEqual(stats["replies"], 2 + 0 + 1)
 
     def test_stats_are_per_owner_not_global(self):
         from app.rest.masks import CurrentMaskView
+
         author = make_mask("author")
         other = make_mask("other")
         mine = make_thread(author, text="mine")
@@ -1328,16 +1312,14 @@ class OwnerStatsTest(TestCase):
         self._set_counters(theirs, reactors=9, commenters=7)
 
         # Each owner only sees their own totals — never the other's.
-        self.assertEqual(CurrentMaskView._owner_stats(author),
-                         {"threads": 1, "reactions": 5, "replies": 2})
-        self.assertEqual(CurrentMaskView._owner_stats(other),
-                         {"threads": 1, "reactions": 9, "replies": 7})
+        self.assertEqual(CurrentMaskView._owner_stats(author), {"threads": 1, "reactions": 5, "replies": 2})
+        self.assertEqual(CurrentMaskView._owner_stats(other), {"threads": 1, "reactions": 9, "replies": 7})
 
     def test_zero_when_no_threads(self):
         from app.rest.masks import CurrentMaskView
+
         empty = make_mask("empty")
-        self.assertEqual(CurrentMaskView._owner_stats(empty),
-                         {"threads": 0, "reactions": 0, "replies": 0})
+        self.assertEqual(CurrentMaskView._owner_stats(empty), {"threads": 0, "reactions": 0, "replies": 0})
 
 
 class SearchShadowbanTest(TestCase):
@@ -1346,13 +1328,15 @@ class SearchShadowbanTest(TestCase):
 
     def setUp(self):
         from django.core.cache import cache
+
         from app.models.blocked_term import BlockedTerm
+
         # Drop the blocked-terms LocMem cache left by other tests.
         cache.clear()
         self.author = make_mask("author")
         BlockedTerm.objects.create(term="palabraprohibida")
 
-    def __get_client_token(self) -> (str):
+    def __get_client_token(self) -> str:
         return encode_token({"timestamp": datetime.now().__str__()})
 
     def search(self, q, search_type="posts"):
@@ -1369,14 +1353,12 @@ class SearchShadowbanTest(TestCase):
         body = self.search("palabraprohibida")
         self.assertEqual(body["count"], 0)
         self.assertEqual(body["results"], [])
-        self.assertEqual(
-            body["counts"], {"posts": 0, "tags": 0, "users": 0, "media": 0})
+        self.assertEqual(body["counts"], {"posts": 0, "tags": 0, "users": 0, "media": 0})
 
     def test_blocked_query_shadowbans_whole_word_matches_only(self):
         hit = make_thread(self.author, text="difunde palabraprohibida aqui")
         # Contains the term only as a SUBSTRING of a longer word → innocent.
-        inner = make_thread(
-            self.author, text="palabraprohibidasufijo no es la palabra")
+        inner = make_thread(self.author, text="palabraprohibidasufijo no es la palabra")
         clean = make_thread(self.author, text="texto normal")
 
         self.search("busco palabraprohibida ya")
@@ -1393,8 +1375,7 @@ class SearchShadowbanTest(TestCase):
         # bypass it (both sides normalize with strip_accents + lower).
         body = self.search("PEDOFILÍA")
         self.assertEqual(body["count"], 0)
-        self.assertEqual(
-            body["counts"], {"posts": 0, "tags": 0, "users": 0, "media": 0})
+        self.assertEqual(body["counts"], {"posts": 0, "tags": 0, "users": 0, "media": 0})
 
     def test_clean_queries_are_unaffected(self):
         visible = make_thread(self.author, text="la lluvia de hoy")
@@ -1414,13 +1395,11 @@ class SearchShadowbanTest(TestCase):
 
     def test_threads_list_q_and_tag_are_blocked_too(self):
         thread = make_thread(self.author, text="difunde palabraprohibida")
-        Tag.objects.create(
-            thread=thread, name="palabraprohibida",
-            name_norm="palabraprohibida")
-        for params in ({"q": "palabraprohibida"},
-                       {"tag": "palabraprohibida"}):
+        Tag.objects.create(thread=thread, name="palabraprohibida", name_norm="palabraprohibida")
+        for params in ({"q": "palabraprohibida"}, {"tag": "palabraprohibida"}):
             r = client.get(
-                "/threads/", params,
+                "/threads/",
+                params,
                 HTTP_CLIENT_ASSERTION=self.__get_client_token(),
             )
             self.assertEqual(r.status_code, status.HTTP_200_OK)
@@ -1433,15 +1412,16 @@ class BlockedTermSweepTest(TestCase):
 
     def setUp(self):
         from django.core.cache import cache
+
         cache.clear()
         self.mask = make_mask("sweeper")
 
     def test_saving_a_term_sweeps_existing_threads_and_tags(self):
         from app.models.blocked_term import BlockedTerm
+
         pre = make_thread(self.mask, text="contenido con terminonuevo aqui")
         tagged = make_thread(self.mask, text="texto limpio")
-        tag = Tag.objects.create(
-            thread=tagged, name="terminonuevo", name_norm="terminonuevo")
+        tag = Tag.objects.create(thread=tagged, name="terminonuevo", name_norm="terminonuevo")
 
         BlockedTerm.objects.create(term="Terminonuevo")
 
@@ -1455,5 +1435,6 @@ class BlockedTermSweepTest(TestCase):
 
     def test_term_norm_is_derived_like_the_search_pipeline(self):
         from app.models.blocked_term import BlockedTerm
+
         term = BlockedTerm.objects.create(term="  Niños   Prohibidos ")
         self.assertEqual(term.term_norm, "ninos prohibidos")

@@ -1,15 +1,14 @@
-
 VIDEO_FORMAT = "video"
 UNKNOWN_MEDIA_FORMAT = "Unknown"
 
 ALLOWED_VIDEO_FORMAT = ("mp4", "mov")
 ALLOWED_IMAGE_FORMAT = (
-    'png',
-    'jpg',
-    'jpeg',
+    "png",
+    "jpg",
+    "jpeg",
     # The frontend compresses images to WebP before uploading, so the stored
     # reference (and the direct-to-bucket upload) is a .webp object.
-    'webp',
+    "webp",
 )
 
 ALLOWED_MEDIA_FORMATS = ALLOWED_VIDEO_FORMAT + ALLOWED_IMAGE_FORMAT

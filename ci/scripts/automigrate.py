@@ -53,8 +53,7 @@ def _run_task_logs(ecs, logs, cluster, svc, command):
     # Look the container up by name — with the cloudflared sidecar present,
     # containers[0] is not guaranteed to be the web container.
     container = next(
-        c for c in ecs.describe_tasks(cluster=cluster, tasks=[arn])["tasks"][0]["containers"]
-        if c["name"] == CONTAINER
+        c for c in ecs.describe_tasks(cluster=cluster, tasks=[arn])["tasks"][0]["containers"] if c["name"] == CONTAINER
     )
     if container.get("exitCode") not in (0, None):
         print(f"WARNING: task exited with code {container.get('exitCode')}", file=sys.stderr)

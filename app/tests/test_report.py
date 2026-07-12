@@ -1,13 +1,13 @@
 import json
 
-from django.test import Client, TestCase, override_settings
 from django.contrib import admin as dj_admin
+from django.test import Client, TestCase, override_settings
 from rest_framework import status
 
-from app.models.mask import Mask
-from app.models.thread import Thread
-from app.models.report import Report
 from app.admin import ReportAdmin
+from app.models.mask import Mask
+from app.models.report import Report
+from app.models.thread import Thread
 
 
 def make_thread():
@@ -20,19 +20,15 @@ def make_thread():
 # so two posts from the same client share one mask → upsert.
 @override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False)
 class ReportEndpointTest(TestCase):
-
     def setUp(self):
         self.client = Client()
         self.thread = make_thread()
 
     def _post(self, body):
-        return self.client.post(
-            "/reports/", data=json.dumps(body),
-            content_type="application/json")
+        return self.client.post("/reports/", data=json.dumps(body), content_type="application/json")
 
     def test_create_report(self):
-        res = self._post({
-            "thread_id": self.thread.uid, "category": "spam_or_deception"})
+        res = self._post({"thread_id": self.thread.uid, "category": "spam_or_deception"})
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Report.objects.count(), 1)
         report = Report.objects.get()
@@ -43,11 +39,8 @@ class ReportEndpointTest(TestCase):
         self.assertIsNotNone(report.reporter)
 
     def test_rereport_same_thread_updates_not_duplicates(self):
-        self._post({
-            "thread_id": self.thread.uid, "category": "spam_or_deception"})
-        res = self._post({
-            "thread_id": self.thread.uid,
-            "category": "harassment", "reason": "changed my mind"})
+        self._post({"thread_id": self.thread.uid, "category": "spam_or_deception"})
+        res = self._post({"thread_id": self.thread.uid, "category": "harassment", "reason": "changed my mind"})
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(Report.objects.count(), 1)  # no duplicate
         report = Report.objects.get()
@@ -64,14 +57,11 @@ class ReportEndpointTest(TestCase):
         self.assertEqual(Report.objects.count(), 0)
 
     def test_reason_too_long_is_rejected(self):
-        res = self._post({
-            "thread_id": self.thread.uid,
-            "category": "other", "reason": "x" * 301})
+        res = self._post({"thread_id": self.thread.uid, "category": "other", "reason": "x" * 301})
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_unknown_thread_is_404(self):
-        res = self._post({
-            "thread_id": "doesnotexist", "category": "spam_or_deception"})
+        res = self._post({"thread_id": "doesnotexist", "category": "spam_or_deception"})
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
 

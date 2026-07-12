@@ -1,8 +1,8 @@
 # Python
-import time
 import logging
-from datetime import timedelta
+import time
 from collections import defaultdict
+from datetime import timedelta
 from itertools import chain
 
 # Django
@@ -10,11 +10,12 @@ from django.core.management.base import BaseCommand
 from django.db.models import Count, F, Q
 from django.utils import timezone
 
+from app.models.momentum_log import MomentumLog
+from app.models.reaction_relation import ReactionRelation
+from app.models.tag import Tag
+
 # Models
 from app.models.thread import Thread
-from app.models.reaction_relation import ReactionRelation
-from app.models.momentum_log import MomentumLog
-from app.models.tag import Tag
 from app.models.trending_tag import TrendingTag
 
 LOGGER = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         started = time.monotonic()
         LOGGER.info(
-            "recompute_momentum: iniciando reconteo (ventana=%sd, " "batch=%s)",
+            "recompute_momentum: iniciando reconteo (ventana=%sd, batch=%s)",
             options["days"],
             options["batch_size"],
         )
@@ -124,7 +125,9 @@ class Command(BaseCommand):
         )
         self.stdout.write(
             self.style.SUCCESS(
-                f"recompute_momentum: {processed} posts en ventana " f"({options['days']}d), {updated} actualizados, " f"{elapsed:.2f}s."
+                f"recompute_momentum: {processed} posts en ventana "
+                f"({options['days']}d), {updated} actualizados, "
+                f"{elapsed:.2f}s."
             )
         )
 
@@ -238,7 +241,11 @@ class Command(BaseCommand):
 
             # Skip no-changes: the dead tail (points=0, score=0) is not
             # rewritten — fewer writes on each cron run.
-            if thread.momentum_score == momentum and thread.unique_reactors_count == reactors and thread.unique_commenters_count == commenter_count:
+            if (
+                thread.momentum_score == momentum
+                and thread.unique_reactors_count == reactors
+                and thread.unique_commenters_count == commenter_count
+            ):
                 continue
 
             thread.momentum_score = momentum
@@ -265,7 +272,7 @@ class Command(BaseCommand):
         endpoint /search/suggest/ solo lee de aquí: cero cálculo por
         request.
         """
-        from django.db.models import Sum, Count
+        from django.db.models import Count, Sum
 
         rows = (
             Tag.objects.filter(

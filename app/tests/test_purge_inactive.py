@@ -2,16 +2,17 @@
 from datetime import timedelta
 from unittest import mock
 
+from django.core.management import call_command
+
 # Django
 from django.test import TestCase
 from django.utils import timezone
-from django.core.management import call_command
 
 # Models
 from app.models.mask import Mask
-from app.models.thread import Thread
 from app.models.media import ThreadFile
 from app.models.purge_log import PurgeLog
+from app.models.thread import Thread
 
 # Helpers
 from app.tests.test_thread_files import FakeBackend
@@ -54,8 +55,7 @@ class PurgeInactiveTest(TestCase):
         self.assertEqual(self.backend.deleted, [])
 
     def test_active_rows_are_never_touched(self):
-        record = ThreadFile.objects.create(
-            file_key="m/cc/cc/live.webp", is_active=True)
+        record = ThreadFile.objects.create(file_key="m/cc/cc/live.webp", is_active=True)
         age(ThreadFile.objects.filter(pk=record.pk), 48)
         call_command("purge_inactive")
         self.assertEqual(ThreadFile.objects.count(), 1)
@@ -79,8 +79,7 @@ class PurgeInactiveTest(TestCase):
         age(Thread.objects.filter(pk=thread.pk), 48)
         # Attached, ACTIVE file: dies with its thread (CASCADE), and its
         # storage object must go too.
-        ThreadFile.objects.create(
-            file_key="m/gg/gg/attached.webp", thread=thread, is_active=True)
+        ThreadFile.objects.create(file_key="m/gg/gg/attached.webp", thread=thread, is_active=True)
         call_command("purge_inactive")
         self.assertEqual(Thread.objects.count(), 0)
         self.assertEqual(ThreadFile.objects.count(), 0)
@@ -93,8 +92,7 @@ class PurgeInactiveTest(TestCase):
         # ACTIVE reply with an ACTIVE file: both die by CASCADE with the root,
         # so the reply's storage object must be swept too.
         reply = Thread.objects.create(text="respuesta", content={}, sub=root)
-        ThreadFile.objects.create(
-            file_key="m/hh/hh/reply.webp", thread=reply, is_active=True)
+        ThreadFile.objects.create(file_key="m/hh/hh/reply.webp", thread=reply, is_active=True)
         call_command("purge_inactive")
         self.assertEqual(Thread.objects.count(), 0)
         self.assertEqual(self.backend.deleted, ["m/hh/hh/reply.webp"])
@@ -138,13 +136,11 @@ class PurgeInactiveTest(TestCase):
         self.assertEqual(log.deleted_count, 1)
         self.assertEqual(log.files_total, 1)
         self.assertEqual(log.files_removed, 1)
-        self.assertEqual(
-            log.breakdown, {"ThreadFile": {"selected": 1, "deleted": 1}})
+        self.assertEqual(log.breakdown, {"ThreadFile": {"selected": 1, "deleted": 1}})
 
     def test_failed_run_logs_the_error_and_reraises(self):
         self._inactive_file("m/ll/ll/doomed.webp")
-        with mock.patch.object(
-            self.backend, "delete_objects", side_effect=RuntimeError("boom")):
+        with mock.patch.object(self.backend, "delete_objects", side_effect=RuntimeError("boom")):
             with self.assertRaises(RuntimeError):
                 call_command("purge_inactive")
         log = PurgeLog.objects.get()

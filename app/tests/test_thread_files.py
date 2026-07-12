@@ -1,21 +1,20 @@
 # Python
-import json
 import base64
 import hashlib
+import json
 from unittest import mock
-
-# Django
-from django.test import Client, TestCase, override_settings
 
 # Libs
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
+# Django
+from django.test import Client, TestCase, override_settings
+
 # Models
 from app.models.mask import Mask
-from app.models.thread import Thread
 from app.models.media import ThreadFile
-
+from app.models.thread import Thread
 
 client = Client()
 
@@ -31,10 +30,10 @@ def decode_body(response):
         return response.json()
     payload = response.headers["X-Response-Payload"][::-1]
     key_b64, iv_b64 = base64.b64decode(payload).decode().split(":")
-    cipher = AES.new(
-        base64.b64decode(key_b64), AES.MODE_CBC, base64.b64decode(iv_b64))
+    cipher = AES.new(base64.b64decode(key_b64), AES.MODE_CBC, base64.b64decode(iv_b64))
     raw = base64.b64decode(response.content.decode()[::-1])
     return json.loads(unpad(cipher.decrypt(raw), AES.block_size).decode())
+
 
 # Mask the MaskMiddleware derives for the test client: SHA-256 of REMOTE_ADDR
 # (Django's test client defaults to 127.0.0.1).
@@ -45,8 +44,7 @@ GET_BACKEND = "app.rest.thread_files.get_backend"
 
 
 def post(url, body):
-    return client.post(
-        url, data=json.dumps(body), content_type="application/json")
+    return client.post(url, data=json.dumps(body), content_type="application/json")
 
 
 class FakeBackend:
@@ -67,11 +65,7 @@ class FakeBackend:
         }
 
     def object_exists(self, key):
-        return (
-            {"content_length": self._content_length, "content_type": "image/webp"}
-            if self._exists
-            else None
-        )
+        return {"content_length": self._content_length, "content_type": "image/webp"} if self._exists else None
 
     def public_url(self, key, base_url=None):
         return f"https://cdn.test/{key}"
@@ -89,15 +83,17 @@ class FakeBackend:
 @override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False)
 class ThreadFilePresignTest(TestCase):
     def setUp(self):
-        self.mask = Mask.objects.create(
-            hash=REQUESTER_HASH, country_code="CO")
+        self.mask = Mask.objects.create(hash=REQUESTER_HASH, country_code="CO")
 
     @mock.patch(GET_BACKEND, return_value=FakeBackend())
     def test_presign_returns_contract_and_creates_detached(self, _backend):
-        response = post(PRESIGN_URL, {
-            "content_type": "image/webp",
-            "is_video": False,
-        })
+        response = post(
+            PRESIGN_URL,
+            {
+                "content_type": "image/webp",
+                "is_video": False,
+            },
+        )
 
         self.assertEqual(response.status_code, 201)
         body = decode_body(response)
@@ -134,35 +130,39 @@ class ThreadFilePresignTest(TestCase):
 
     @mock.patch(GET_BACKEND, return_value=FakeBackend())
     def test_presign_accepts_mov_video(self, _backend):
-        response = post(PRESIGN_URL, {
-            "content_type": "video/quicktime",
-            "is_video": True,
-        })
+        response = post(
+            PRESIGN_URL,
+            {
+                "content_type": "video/quicktime",
+                "is_video": True,
+            },
+        )
         self.assertEqual(response.status_code, 201)
         body = decode_body(response)
         self.assertTrue(body["key"].endswith(".mov"))
         self.assertTrue(ThreadFile.objects.get(uid=body["uid"]).is_video)
 
     def test_presign_rejects_bad_content_type(self):
-        response = post(PRESIGN_URL, {
-            "content_type": "image/gif",
-            "is_video": False,
-        })
+        response = post(
+            PRESIGN_URL,
+            {
+                "content_type": "image/gif",
+                "is_video": False,
+            },
+        )
         self.assertEqual(response.status_code, 400)
 
 
 @override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False)
 class ThreadFileConfirmTest(TestCase):
     def setUp(self):
-        self.mask = Mask.objects.create(
-            hash=REQUESTER_HASH, country_code="CO")
-        self.thread = Thread.objects.create(
-            content={}, text="hello", mask=self.mask)
+        self.mask = Mask.objects.create(hash=REQUESTER_HASH, country_code="CO")
+        self.thread = Thread.objects.create(content={}, text="hello", mask=self.mask)
         self.uid = "filabc123456"
         self.key = f"uploads/{self.uid}.webp"
         self.pending = ThreadFile.objects.create(
-            uid=self.uid, file_key=self.key, mask=self.mask, thread=None,
-            is_video=False, is_active=False)
+            uid=self.uid, file_key=self.key, mask=self.mask, thread=None, is_video=False, is_active=False
+        )
 
     def _confirm_body(self, **overrides):
         body = {
@@ -249,11 +249,9 @@ class ThreadFileConfirmTest(TestCase):
     @mock.patch(GET_BACKEND, return_value=FakeBackend(exists=True))
     def test_confirm_rejects_thread_not_owned(self, _backend):
         other_mask = Mask.objects.create(hash="hash-other", country_code="CO")
-        other_thread = Thread.objects.create(
-            content={}, text="x", mask=other_mask)
+        other_thread = Thread.objects.create(content={}, text="x", mask=other_mask)
 
-        response = post(CONFIRM_URL, self._confirm_body(
-            thread=other_thread.uid))
+        response = post(CONFIRM_URL, self._confirm_body(thread=other_thread.uid))
         self.assertEqual(response.status_code, 404)
         self.pending.refresh_from_db()
         self.assertFalse(self.pending.is_active)
@@ -262,8 +260,13 @@ class ThreadFileConfirmTest(TestCase):
     def test_confirm_rejects_file_not_owned(self, _backend):
         other_mask = Mask.objects.create(hash="hash-other", country_code="CO")
         ThreadFile.objects.create(
-            uid="otherfile123", file_key="uploads/otherfile123.webp",
-            mask=other_mask, thread=None, is_video=False, is_active=False)
+            uid="otherfile123",
+            file_key="uploads/otherfile123.webp",
+            mask=other_mask,
+            thread=None,
+            is_video=False,
+            is_active=False,
+        )
 
         response = post(CONFIRM_URL, self._confirm_body(uid="otherfile123"))
         self.assertEqual(response.status_code, 404)
@@ -321,8 +324,7 @@ class ThreadFileStorageCleanupTest(TestCase):
         self.addCleanup(patcher.stop)
 
     def _make_file(self, key="m/ab/cd/token.webp", thread=None):
-        return ThreadFile.objects.create(
-            file_key=key, file_url=f"https://cdn.test/{key}", thread=thread)
+        return ThreadFile.objects.create(file_key=key, file_url=f"https://cdn.test/{key}", thread=thread)
 
     def test_instance_delete_removes_storage_object(self):
         record = self._make_file()
@@ -351,11 +353,9 @@ class ThreadFileStorageCleanupTest(TestCase):
 
     def test_storage_failure_does_not_block_the_row_delete(self):
         record = self._make_file(key="m/cc/cc/flaky.webp")
-        with mock.patch.object(
-            self.backend, "delete_object", side_effect=RuntimeError("boom")):
+        with mock.patch.object(self.backend, "delete_object", side_effect=RuntimeError("boom")):
             record.delete()
-        self.assertFalse(
-            ThreadFile.objects.filter(pk=record.pk).exists())
+        self.assertFalse(ThreadFile.objects.filter(pk=record.pk).exists())
 
     def test_soft_delete_keeps_the_storage_object(self):
         record = self._make_file(key="m/dd/dd/kept.webp")

@@ -1,16 +1,15 @@
 # Python
 import hashlib
 
-# Models
-from app.models.mask import Mask
-
 # Libs
 from app.methods.location import get_country
 from app.methods.presence import mark_online
 
+# Models
+from app.models.mask import Mask
+
 
 class MaskMiddleware:
-    
     def __init__(self, get_response):
         self.get_response = get_response
 

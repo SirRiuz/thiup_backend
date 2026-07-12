@@ -4,7 +4,6 @@ from django.core import management
 from django.core.management.base import BaseCommand
 from django.core.management.commands import loaddata
 
-
 FIXTURES = ["reactions"]
 
 # Matches uniqueness violations across Postgres / SQLite / MySQL so we can
