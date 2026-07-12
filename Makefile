@@ -46,6 +46,10 @@ help:
 	@echo '  Testing:'
 	@echo '    make test            pytest with coverage (gate >=70%); no running stack needed'
 	@echo ''
+	@echo '  Code quality:'
+	@echo '    make lint            ruff check + format --check (fails on issues, no writes)'
+	@echo '    make format          ruff check --fix + format (rewrites files)'
+	@echo ''
 	@echo '  Dependencies:'
 	@echo '    make dependencies    Rebuild the web image to pick up requirements changes'
 	@echo ''
@@ -147,6 +151,16 @@ validate-config:
 
 test:
 	docker compose run --rm web pytest --cov --cov-report=term-missing --cov-report=html:htmlcov --cov-fail-under=70
+
+# ─── Code quality ───────────────────────────────────────────
+# Ruff ships in the local dev image (requirements.dev). Mirrors `make test`:
+# a one-off container, no running stack needed.
+
+lint:
+	docker compose run --rm web sh -c "ruff check . && ruff format --check ."
+
+format:
+	docker compose run --rm web sh -c "ruff check --fix . && ruff format ."
 
 # ─── Cleanup ────────────────────────────────────────────────
 

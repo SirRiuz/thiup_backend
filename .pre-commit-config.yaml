@@ -1,0 +1,10 @@
+# Ruff lint + format on commit (config in pyproject.toml [tool.ruff]).
+# Install once: pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      # Lint (with autofix), then format — the format hook must run last.
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
