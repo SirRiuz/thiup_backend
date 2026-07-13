@@ -16,7 +16,13 @@ class MaskSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Mask
-        exclude = ("create_at", "update_at", "is_active")
+        # Explicit allowlist: only the hash (the public @id is its first 6
+        # chars; the frontend also uses the full value to fetch the hover
+        # card) and the presence flag. The internal UUID pk, uid and
+        # country_code used to ship on every card — the UUID violated the
+        # "only public identifiers leave the API" rule and none of them were
+        # read by the frontend.
+        fields = ("hash", "is_online")
 
     def get_is_online(self, obj) -> bool:
         return is_online(obj.hash)

@@ -2,7 +2,6 @@
 from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK, HTTP_201_CREATED
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet
 
 # Models
@@ -12,6 +11,7 @@ from app.permissions.captcha import human_validator
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.throttling import TrustedIPScopedRateThrottle
 from app.rest.serializers.report_serializer import ReportSerializer
 
 
@@ -27,7 +27,7 @@ class ReportsViewSet(GenericViewSet):
     queryset = Report.objects.filter(is_active=True)
     serializer_class = ReportSerializer
     permission_classes = (IsClientAuthenticated,)
-    throttle_classes = (ScopedRateThrottle,)
+    throttle_classes = (TrustedIPScopedRateThrottle,)
     throttle_scope = "reports"
 
     @human_validator

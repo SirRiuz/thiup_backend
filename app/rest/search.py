@@ -15,7 +15,6 @@ from django.utils import timezone
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.status import HTTP_400_BAD_REQUEST
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet
 
 from app.constants.search import (
@@ -44,6 +43,7 @@ from app.models.trending_tag import TrendingTag
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.throttling import TrustedIPScopedRateThrottle
 from app.rest.pagination import SearchPagination
 from app.rest.serializers.media_serializer import ThreadMediaSerializer
 from app.rest.serializers.search_serializers import (
@@ -60,14 +60,16 @@ class SearchViewSet(GenericViewSet):
     """
     Global search by `q` query param over posts, tags, users and media.
 
-    Single-endpoint design (option A): it ALWAYS returns the counts of the
-    4 types (to render the tabs without extra calls) + the paginated results
-    of the active type (`type`).
+    Single-endpoint design (option A): it ALWAYS returns the `counts` dict
+    with the 4 type keys + the paginated results of the active type
+    (`type`). Only the ACTIVE type is actually counted — the other three
+    keys report 0 (the frontend deliberately renders no tab badges, so the
+    inactive COUNT queries were per-request cost with no consumer).
 
         GET /search/?q=<query>&type=posts|tags|users|media[&page=N]
 
         {
-            "counts": {"posts": 10, "tags": 5, "users": 4, "media": 7},
+            "counts": {"posts": 10, "tags": 0, "users": 0, "media": 0},
             "count": 10,            # total of the active type (pagination)
             "next": "http://.../search/?q=a&type=posts&page=2",
             "previous": null,
@@ -99,7 +101,7 @@ class SearchViewSet(GenericViewSet):
     pagination_class = SearchPagination
     serializer_class = ThreadSerializer
     permission_classes = (IsClientAuthenticated,)
-    throttle_classes = (ScopedRateThrottle,)
+    throttle_classes = (TrustedIPScopedRateThrottle,)
 
     def get_throttles(self):
         # Rate limit anónimo por IP (scopes en DEFAULT_THROTTLE_RATES):
@@ -357,9 +359,16 @@ class SearchViewSet(GenericViewSet):
         return tags_page
 
     def _users_queryset(self, query) -> QuerySet:
-        """Masks whose hash contains the query, with their root post count."""
+        """Masks whose hash starts with the query, with their root post count.
+
+        Prefix match on purpose: the only meaningful author query is the
+        public @id (the hash's first 6 hex chars — same rule as
+        _author_mask_query and MasksViewSet.retrieve). The previous
+        hash__unaccent__icontains wrapped a hex column in UNACCENT (a no-op
+        that defeated the index) and seq-scanned ALL masks on every search
+        request."""
         return (
-            Mask.objects.filter(is_active=True, hash__unaccent__icontains=query)
+            Mask.objects.filter(is_active=True, hash__startswith=query)
             .annotate(
                 posts_count=Count(
                     "thread",
@@ -522,18 +531,23 @@ class SearchViewSet(GenericViewSet):
         tags_qs = self._tags_queryset(query.lstrip("#"))
         users_qs = self._users_queryset(query)
 
-        # Counts of the 3 types, always (for the tabs). In tags_qs the
-        # count() of a .values().annotate() queryset returns the number of
-        # groups. For posts we count the FLAT filter (no card annotations,
-        # no joins): a plain COUNT the trigram index can serve.
-        counts = {
-            POSTS: posts_base.order_by().count(),
-            TAGS: tags_qs.count(),
-            USERS: users_qs.count(),
+        # Count ONLY the active tab. The response keeps the four `counts`
+        # keys (frozen contract) but the frontend never renders tab badges,
+        # so the three inactive COUNT queries per request were pure cost —
+        # they now report 0. In tags_qs the count() of a .values().annotate()
+        # queryset returns the number of groups; for posts we count the FLAT
+        # filter (no card annotations, no joins): a plain COUNT the trigram
+        # index can serve.
+        count_for = {
+            POSTS: lambda: posts_base.order_by().count(),
+            TAGS: lambda: tags_qs.count(),
+            USERS: lambda: users_qs.count(),
             # Gallery tiles (one per thread with media) — what the tab
             # paginates.
-            MEDIA: media_qs.order_by().count(),
+            MEDIA: lambda: media_qs.order_by().count(),
         }
+        counts = {POSTS: 0, TAGS: 0, USERS: 0, MEDIA: 0}
+        counts[search_type] = count_for[search_type]()
         # The paginator (SearchPagination) reuses the active tab's count —
         # without this it would re-issue the SAME expensive COUNT over the
         # annotated queryset (measured: 2 redundant COUNTs per request).

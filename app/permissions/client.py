@@ -16,6 +16,12 @@ class IsClientAuthenticated(BasePermission):
     it cannot forge. decode_token verifies signature + exp (jwt.decode fails
     if expired). This replaces the previous scheme, in which the FE signed
     with a shared secret extractable from the bundle.
+
+    NOT anti-replay / NOT single-use: a valid, unexpired ticket is accepted
+    on any number of requests (the FE deliberately reuses one ticket for its
+    whole TTL). The jti minted in issue_ticket() is NOT tracked. This gates
+    casual scripting (a client must fetch and rotate a ticket), not a
+    determined attacker; TLS is the real transport boundary.
     """
 
     TOKEN_TYPE = "Client-assertion"

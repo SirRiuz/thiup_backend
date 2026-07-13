@@ -3,11 +3,6 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path, re_path
-from drf_yasg import openapi
-
-# Libs
-from drf_yasg.views import get_schema_view
-from rest_framework import permissions
 
 from app.methods.storage_backends import (
     LOCAL_UPLOAD_ROUTE,
@@ -18,21 +13,7 @@ from app.methods.storage_backends import (
 # Views
 from app.rest.health import HealthCheckView
 
-schema_view = get_schema_view(
-    openapi.Info(
-        title="Thriup Rest API",
-        default_version="v1",
-        description="Descripción de tu API",
-        terms_of_service="https://www.tuapi.com/terms/",
-        contact=openapi.Contact(email="contacto@tuapi.com"),
-        license=openapi.License(name="Licencia de tu API"),
-    ),
-    public=True,
-    permission_classes=(permissions.IsAdminUser,),
-)
-
 urlpatterns = [
-    path("admin/swagger/", schema_view.with_ui("swagger", cache_timeout=0), name="schema-swagger-ui"),
     # Decoy /admin/ — django-honeypot logs scanners and serves a fake login.
     path("admin/", include("honeypot.urls")),
     # Real admin lives at INTERNAL_ADMIN_URL (set in .env).
@@ -43,6 +24,39 @@ urlpatterns = [
     # GraphQL (future) will be mounted separately without touching this.
     path("", include("app.rest.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+# Swagger is admin-only and costs real memory (drf_yasg import + schema built
+# at URLconf import in every worker and every ephemeral scheduled task), so it
+# only exists when ENABLE_SWAGGER is on (default: DEBUG). It lives UNDER the
+# real (obfuscated) admin path — {INTERNAL_ADMIN_URL}swagger/ — never under
+# the /admin/ honeypot decoy, so the schema page is as unguessable as the
+# admin itself. Registered FIRST so the admin include's catch-all never
+# shadows it.
+if settings.ENABLE_SWAGGER:
+    from drf_yasg import openapi
+    from drf_yasg.views import get_schema_view
+    from rest_framework import permissions
+
+    schema_view = get_schema_view(
+        openapi.Info(
+            title="Thriup Rest API",
+            default_version="v1",
+            description="Descripción de tu API",
+            terms_of_service="https://www.tuapi.com/terms/",
+            contact=openapi.Contact(email="contacto@tuapi.com"),
+            license=openapi.License(name="Licencia de tu API"),
+        ),
+        public=True,
+        permission_classes=(permissions.IsAdminUser,),
+    )
+    urlpatterns.insert(
+        0,
+        path(
+            f"{settings.INTERNAL_ADMIN_URL}swagger/",
+            schema_view.with_ui("swagger", cache_timeout=0),
+            name="schema-swagger-ui",
+        ),
+    )
 
 # Local-only PUT receiver: the local equivalent of R2's upload target, the
 # destination of the presigned PUT when the LocalStorageBackend is active

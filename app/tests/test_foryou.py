@@ -1054,12 +1054,20 @@ class SearchMediaTest(TestCase):
             [hot_file.uid, quiet_file.uid],
         )
 
-    def test_counts_carry_media_on_other_tabs_and_empty_query(self):
+    def test_counts_only_active_tab_and_empty_query(self):
+        # Only the ACTIVE tab is counted (the frontend renders no tab
+        # badges, so the other three COUNT queries were per-request cost):
+        # the inactive keys stay present at 0 — the shape is frozen.
         thread = make_thread(self.author, age_hours=1, text="lluvia hoy")
         make_file(thread, tag="one")
 
         posts_body = self.search("lluvia", search_type="posts")
-        self.assertEqual(posts_body["counts"]["media"], 1)
+        self.assertEqual(posts_body["counts"]["posts"], 1)
+        self.assertEqual(posts_body["counts"]["media"], 0)
+
+        media_body = self.search("lluvia", search_type="media")
+        self.assertEqual(media_body["counts"]["media"], 1)
+        self.assertEqual(media_body["counts"]["posts"], 0)
 
         empty_body = self.search("", search_type="media")
         self.assertEqual(empty_body["counts"]["media"], 0)

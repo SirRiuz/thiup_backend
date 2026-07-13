@@ -1,20 +1,17 @@
 # Django
-from django.db.models import Count
 from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK, HTTP_201_CREATED
 
 # Libs
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet
 
 from app.models.reaction_relation import Reaction, ReactionRelation
-from app.models.thread import Thread
 from app.permissions.captcha import human_validator
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.throttling import TrustedIPScopedRateThrottle
 from app.rest.serializers.reaction_serializer import (
     BaseReactionSerializer,
     ReactionRelationSerializer,
-    ReactionSerializer,
 )
 
 
@@ -28,7 +25,7 @@ class ReactionsViewSet(GenericViewSet):
         # human pass): the catalog list stays unthrottled.
         if self.action == "create":
             self.throttle_scope = "reactions_create"
-            return [ScopedRateThrottle()]
+            return [TrustedIPScopedRateThrottle()]
         return super().get_throttles()
 
     def list(self, request) -> Response:
@@ -66,7 +63,8 @@ class ReactionsViewSet(GenericViewSet):
     @human_validator
     def create(self, request) -> Response:
         """
-        Create a new reaction for a thread
+        React to a thread (toggle semantics: reacting with the same emoji
+        again removes the reaction).
         ---
         Content/Type:
             application/json
@@ -74,7 +72,7 @@ class ReactionsViewSet(GenericViewSet):
         Header Parameters:
             token: Auth token
         ---
-        response code: 200
+        response code: 201
         ---
         Request Body:
 
@@ -85,46 +83,23 @@ class ReactionsViewSet(GenericViewSet):
 
         Response Body:
 
-                {
-                    "my_reaction": {
-                        "reaction": "",
-                        "thread": ""
-                    },
-                    "reactions": [
-                        {
-                            "id": "",
-                            "name": "",
-                            "emoji": "...",
-                            "reaction_count": 1
-                        }
-                    ]
-                }
+                {"status": "ok"}
+
+        The frontend renders reactions optimistically and never read the old
+        echo of the thread's full reaction breakdown — recomputing it cost an
+        aggregate plus one COUNT per reaction type on EVERY react, the most
+        frequent write of the app. Minimal acknowledgement instead.
 
         Response codes:
 
-            201 - Obtains an object of the created reaction.
+            201 - The reaction was applied (or toggled off).
             401 - The client is not authorized.
             500 - An error occurred on the server.
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        data = serializer.create({**serializer.data, "mask": request.mask})
-        # `thread` in the payload is the public uid; we resolve the instance for
-        # the queries (the FKs are by UUID pk, they don't accept the uid as string).
-        thread = Thread.objects.get(uid=request.data["thread"])
-        thread_reactions = (
-            Reaction.objects.filter(is_active=True, reactionrelation__thread=thread)
-            .annotate(reaction_count=Count("reactionrelation"))
-            .order_by("-reaction_count")
-        )
+        # validated_data carries the resolved Reaction/Thread instances; the
+        # serializer's create() reuses them (no re-fetch by id/uid).
+        serializer.create({**serializer.validated_data, "mask": request.mask})
 
-        my_reaction = ReactionRelationSerializer(data, context={"request": request})
-        serializer = ReactionSerializer(thread_reactions, context={"thread": thread, "request": request}, many=True)
-
-        return Response(
-            {
-                "my_reaction": (my_reaction.data if data else None),
-                "reactions": serializer.data,
-            },
-            status=HTTP_201_CREATED,
-        )
+        return Response({"status": "ok"}, status=HTTP_201_CREATED)

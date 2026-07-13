@@ -15,6 +15,7 @@ from app.models.thread import Thread
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.throttling import TrustedIPScopedRateThrottle
 
 # Serializers
 from app.rest.serializers.mask_profile_serializer import MaskProfileSerializer
@@ -38,6 +39,8 @@ class MasksViewSet(GenericViewSet):
     queryset = Mask.objects.filter(is_active=True)
     serializer_class = MaskProfileSerializer
     permission_classes = (IsClientAuthenticated,)
+    throttle_classes = (TrustedIPScopedRateThrottle,)
+    throttle_scope = "profile"
 
     # The PUBLIC mask id (the 6-hex prefix shown everywhere in the UI) is
     # also accepted as the lookup — it powers the /anon/<id> profile deep
@@ -107,6 +110,8 @@ class CurrentMaskView(APIView):
     """
 
     permission_classes = (IsClientAuthenticated,)
+    throttle_classes = (TrustedIPScopedRateThrottle,)
+    throttle_scope = "profile"
 
     def get(self, request) -> Response:
         mask = getattr(request, "mask", None)

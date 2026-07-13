@@ -19,13 +19,20 @@ def get_tags_list(text) -> list:
 
 
 def create_tags(thread, tags_list):
-    """Create a relation with thread and hashtag"""
-    for tag in tags_list:
-        name = tag.lower()
-        Tag.objects.create(
-            name=name,
+    """Create a relation with thread and hashtag.
+
+    ONE bulk INSERT for the whole list (before: one INSERT per hashtag).
+    BaseModel's id/uid come from field defaults, so bulk_create fills them.
+    """
+    tags = [
+        Tag(
+            name=tag.lower(),
             # name_norm feeds the autocomplete (indexed prefix,
             # accent-insensitive): lowercase + no accents.
-            name_norm=strip_accents(name),
+            name_norm=strip_accents(tag.lower()),
             thread=thread,
         )
+        for tag in tags_list
+    ]
+    if tags:
+        Tag.objects.bulk_create(tags)

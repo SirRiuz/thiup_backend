@@ -1,4 +1,5 @@
 # Django
+from django.core.cache import cache
 from django.db import models
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
@@ -8,7 +9,7 @@ from django.utils.translation import gettext_lazy as _
 from app.models.base_model import BaseModel
 
 # Libs
-from honeypot.app_settings import HONEYPOT_LOGIN_TRYOUT
+from honeypot.app_settings import BLACKLIST_CACHE_KEY, HONEYPOT_LOGIN_TRYOUT
 from honeypot.models.login_attempt import LoginAttempt
 
 
@@ -31,6 +32,13 @@ class BlackList(BaseModel):
 @receiver(post_delete, sender=BlackList)
 def remove_all_related_attempts(sender, instance, **kwargs):
     LoginAttempt.objects.filter(ip_address=instance.ip_address).delete()
+
+
+@receiver([post_save, post_delete], sender=BlackList)
+def invalidate_blacklist_cache(sender, instance, **kwargs):
+    # The middleware serves the blacklist from LocMem; any write to the table
+    # must drop the cached set so enforcement/unbanning is immediate.
+    cache.delete(BLACKLIST_CACHE_KEY)
 
 
 @receiver(post_save, sender=LoginAttempt)

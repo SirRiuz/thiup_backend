@@ -23,6 +23,13 @@ RUN python -m venv /opt/venv \
   && /opt/venv/bin/pip install --upgrade pip \
   && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
+# botocore ships the API definitions of EVERY AWS service (tens of MB);
+# this app only talks to S3-compatible storage (R2). Keep the s3 service
+# dir; the loose files at data/ root (endpoints/partitions/retry configs)
+# are shared plumbing and stay untouched (-type d only).
+RUN cd /opt/venv/lib/python3.12/site-packages/botocore/data \
+  && find . -maxdepth 1 -mindepth 1 -type d ! -name "s3" -exec rm -rf {} +
+
 
 FROM public.ecr.aws/docker/library/python:3.12-slim-bookworm
 
@@ -47,6 +54,13 @@ COPY . .
 ARG GIT_SHA
 ENV GIT_SHA=$GIT_SHA
 
+# Drop root: the web process only READS /code and /opt/venv (media goes to R2,
+# static to S3, logs to stdout — nothing is written to the image at runtime),
+# so a container escape/RCE lands as an unprivileged user. Port 8000 is >1024,
+# so no privileged bind is needed.
+RUN useradd --system --uid 10001 --create-home appuser
+USER appuser
+
 EXPOSE 8000
 
 # Shell form so SERVER_PORT / GUNICORN_* (if ECS passes them) expand.
@@ -59,6 +73,10 @@ EXPOSE 8000
 #    connects lazily); keeps worker recycling cheap.
 #  - max-requests + jitter: recycle workers to contain memory leaks.
 #  - timeouts/keep-alive tuned; warning-level logs to reduce noise.
+#  - NO access log: it logged EVERY request to stdout regardless of
+#    --log-level (the access log is independent of it) — CloudWatch
+#    ingestion cost and against the sparse-logging constraint. Errors
+#    still go to stderr.
 CMD gunicorn \
     --worker-class gthread \
     --workers ${GUNICORN_WORKERS:-1} \
@@ -70,7 +88,6 @@ CMD gunicorn \
     --graceful-timeout 30 \
     --keep-alive 5 \
     --log-level warning \
-    --access-logfile=- \
     --error-logfile=- \
     --bind=0.0.0.0:${SERVER_PORT:-8000} \
     core.wsgi

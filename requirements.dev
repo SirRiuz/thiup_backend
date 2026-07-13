@@ -20,6 +20,20 @@ pytest-django>=4.8,<5.0
 pytest-cov>=4.1,<6.0
 factory-boy>=3.3,<4.0
 
+# ─── Dev-only runtime extras ────────────────────────────────
+# Swagger schema page (admin-only, ENABLE_SWAGGER defaults to DEBUG). The
+# package costs ~20 MB of image; prod ships without it — settings.py raises
+# a clear ImproperlyConfigured if ENABLE_SWAGGER is turned on without it.
+drf-yasg>=1.21,<2.0
+# Fixtures/seeding (add_dummy_threads): offline world cities + fake text.
+# Kept OUT of the prod image on purpose (image size = billed pull time on
+# every ephemeral momentum/purge tick).
+geonamescache>=2.0,<3.0
+Faker>=25.0,<40.0
+# No ImageField remains in the models; kept locally only.
+# >=12.2 patches several Pillow CVEs (Dependabot #80/#81/#94-#97).
+Pillow>=12.2,<13.0
+
 # ─── Code quality ───────────────────────────────────────────
 # Ruff = lint + format (replaces black + flake8). Config in pyproject.toml.
 ruff>=0.15,<1.0

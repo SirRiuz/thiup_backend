@@ -99,11 +99,23 @@ class ThreadFilePresignTest(TestCase):
         body = decode_body(response)
         self.assertEqual(body["method"], "PUT")
         self.assertEqual(body["headers"]["Content-Type"], "image/webp")
-        self.assertEqual(body["upload_url"], f"https://fake.example/{body['key']}")
-        self.assertEqual(body["public_url"], f"https://cdn.test/{body['key']}")
+
+        # A DETACHED (no thread), mask-owned, inactive record now exists, with
+        # the key stored as a plain reference (file_key).
+        pending = ThreadFile.objects.get(uid=body["uid"])
+        self.assertFalse(pending.is_active)
+        self.assertIsNone(pending.thread_id)
+        self.assertEqual(pending.mask_id, self.mask.id)
+        self.assertEqual(body["upload_url"], f"https://fake.example/{pending.file_key}")
+
+        # The storage key stays INTERNAL (payload-trim contract): the client
+        # only gets the PUT target, its headers and the pending uid.
+        self.assertNotIn("key", body)
+        self.assertNotIn("public_url", body)
+        self.assertNotIn("expires_in", body)
 
         # Sharded key: 'm/<c1c2>/<c3c4>/<token>.webp'.
-        parts = body["key"].split("/")
+        parts = pending.file_key.split("/")
         self.assertEqual(parts[0], "m")
         self.assertEqual(len(parts), 4)
         self.assertEqual(len(parts[1]), 2)
@@ -115,18 +127,11 @@ class ThreadFilePresignTest(TestCase):
         token = parts[-1][: -len(".webp")]
         self.assertGreaterEqual(len(token), 40)
         self.assertTrue(token.startswith(parts[1] + parts[2]))
-        self.assertNotIn(body["uid"], body["key"])
+        self.assertNotIn(body["uid"], pending.file_key)
 
-        # A DETACHED (no thread), mask-owned, inactive record now exists, with
-        # the key stored as a plain reference (file_key).
-        pending = ThreadFile.objects.get(uid=body["uid"])
-        self.assertFalse(pending.is_active)
-        self.assertIsNone(pending.thread_id)
-        self.assertEqual(pending.mask_id, self.mask.id)
-        self.assertEqual(pending.file_key, body["key"])
         # URL is persisted ALREADY at presign (so unconfirmed uploads aren't
         # orphans without a URL).
-        self.assertEqual(pending.file_url, body["public_url"])
+        self.assertEqual(pending.file_url, f"https://cdn.test/{pending.file_key}")
 
     @mock.patch(GET_BACKEND, return_value=FakeBackend())
     def test_presign_accepts_mov_video(self, _backend):
@@ -139,8 +144,9 @@ class ThreadFilePresignTest(TestCase):
         )
         self.assertEqual(response.status_code, 201)
         body = decode_body(response)
-        self.assertTrue(body["key"].endswith(".mov"))
-        self.assertTrue(ThreadFile.objects.get(uid=body["uid"]).is_video)
+        pending = ThreadFile.objects.get(uid=body["uid"])
+        self.assertTrue(pending.file_key.endswith(".mov"))
+        self.assertTrue(pending.is_video)
 
     def test_presign_rejects_bad_content_type(self):
         response = post(
@@ -189,22 +195,25 @@ class ThreadFileConfirmTest(TestCase):
         self.assertEqual(response.status_code, 200)
         body = decode_body(response)
         self.assertEqual(body["uid"], self.uid)
-        self.assertEqual(body["key"], self.key)
         # The full public URL is returned and persisted (not just the key).
-        self.assertEqual(body["file_url"], f"https://cdn.test/{self.key}")
         self.assertEqual(body["public_url"], f"https://cdn.test/{self.key}")
         self.assertTrue(body["is_nsfw"])
-        # width/height/target_color live INSIDE metadata now (not columns).
-        self.assertEqual(body["metadata"]["width"], 1408)
-        self.assertEqual(body["metadata"]["height"], 2112)
-        self.assertEqual(body["metadata"]["target_color"], "#060503")
-        self.assertEqual(body["metadata"]["prediccion"], "Bloquear")
-        self.assertNotIn("evil", body["metadata"])
+        # Payload-trim contract: the storage key stays internal, file_url
+        # duplicated public_url and the metadata echo had no reader.
+        self.assertNotIn("key", body)
+        self.assertNotIn("file_url", body)
+        self.assertNotIn("metadata", body)
 
         self.pending.refresh_from_db()
         self.assertTrue(self.pending.is_active)
         self.assertEqual(self.pending.thread_id, self.thread.id)
+        # width/height/target_color live INSIDE metadata now (not columns),
+        # persisted on the record even though they are not echoed back.
+        self.assertEqual(self.pending.metadata["width"], 1408)
         self.assertEqual(self.pending.metadata["height"], 2112)
+        self.assertEqual(self.pending.metadata["target_color"], "#060503")
+        self.assertEqual(self.pending.metadata["prediccion"], "Bloquear")
+        self.assertNotIn("evil", self.pending.metadata)
         # Full public URL persisted on the record; key kept for storage ops.
         self.assertEqual(self.pending.file_url, f"https://cdn.test/{self.key}")
         self.assertEqual(self.pending.file_key, self.key)

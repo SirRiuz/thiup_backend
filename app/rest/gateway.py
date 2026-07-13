@@ -42,9 +42,12 @@ class GatewayView(APIView):
     y se DESPACHA INTERNAMENTE (sin redirect): se reescribe el HttpRequest y
     se re-resuelve la vista destino con django.urls.resolve.
 
-    ANTI-REPLAY: el {token} de la URL es RUIDO, NO anti-replay. Reenviar un
-    sobre capturado lo rechaza SINGLE_REQUEST_PROTECT en la vista interna
-    (el ticket JWT es de vida corta) — protección INDEPENDIENTE del nonce.
+    REPLAY: the URL {token} is NOISE, not anti-replay. There is NO single-use
+    enforcement — SINGLE_REQUEST_PROTECT only checks that the inner view's
+    Client-assertion ticket is signed and UNEXPIRED (see app/permissions/
+    client.py); a captured envelope+ticket replays for the ticket's short TTL.
+    The real boundary is TLS; the ticket TTL only bounds the replay window.
+    (The name is historical — it does not mean "single request".)
 
     AUTH: el gateway es AllowAny a propósito (rompe el huevo-y-la-gallina:
     el ticket se obtiene VÍA gateway sin tener ticket aún). La protección
@@ -58,7 +61,9 @@ class GatewayView(APIView):
     permission_classes = (AllowAny,)
 
     ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
-    ALLOWED_VIEW_MODULE = "app.rest"
+    # Trailing dot on purpose: "app.rest" (no dot) would also match a future
+    # sibling module like "app.restricted". Only real app.rest.* views pass.
+    ALLOWED_VIEW_MODULE = "app.rest."
 
     def post(self, request, gw_hash="") -> Response:
         # Toggle: el gateway SOLO opera con el cifrado activo. Apagado → 404
