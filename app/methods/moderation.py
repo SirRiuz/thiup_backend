@@ -33,6 +33,24 @@ def invalidate_blocked_terms() -> None:
     cache.delete(BLOCKED_TERMS_CACHE_KEY)
 
 
+# Per-process memo of the COMPILED per-term patterns. Compiling inside
+# find_blocked_terms leaned on re's internal 512-pattern cache — a large
+# seeded blocklist plus the app's other regexes can thrash it, recompiling on
+# every search/suggest keystroke. The memo re-syncs whenever the cached terms
+# list changes (blocked_terms() already invalidates on admin writes).
+_compiled_patterns = None
+_compiled_source = None
+
+
+def _blocked_patterns() -> list:
+    global _compiled_patterns, _compiled_source
+    terms = blocked_terms()
+    if terms != _compiled_source:
+        _compiled_patterns = [(term, re.compile(rf"(?<!\w){re.escape(term)}(?!\w)")) for term in terms if term]
+        _compiled_source = terms
+    return _compiled_patterns
+
+
 def find_blocked_terms(normalized_text) -> list:
     """Blocked terms present in `normalized_text` as WHOLE words/phrases.
 
@@ -42,7 +60,7 @@ def find_blocked_terms(normalized_text) -> list:
     a term must not shadowban an innocent word that merely contains it.
     """
     text = normalized_text or ""
-    return [term for term in blocked_terms() if term and re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text)]
+    return [term for term, pattern in _blocked_patterns() if pattern.search(text)]
 
 
 def shadowban_matching(terms) -> int:

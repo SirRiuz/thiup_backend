@@ -1,0 +1,14 @@
+# Keep the build context (and therefore the image Fargate pulls on every
+# ephemeral momentum/purge tick) small: COPY . . shipped .git (~38 MB),
+# coverage output and caches — and would ship a local .env if present.
+.git
+.git-blame-ignore-revs
+.env
+htmlcov
+.pytest_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+*.pyc
+media
+staticfiles

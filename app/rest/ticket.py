@@ -2,11 +2,11 @@
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK
-from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 # Libs
 from app.methods.tokens import issue_ticket
+from app.permissions.throttling import TrustedIPAnonRateThrottle
 
 
 class TicketView(APIView):
@@ -27,7 +27,7 @@ class TicketView(APIView):
     """
 
     permission_classes = (AllowAny,)
-    throttle_classes = (AnonRateThrottle,)
+    throttle_classes = (TrustedIPAnonRateThrottle,)
 
     def get(self, request) -> Response:
         return Response({"ticket": issue_ticket()}, status=HTTP_200_OK)

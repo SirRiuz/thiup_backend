@@ -14,7 +14,6 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.status import *
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet
 
 from app.constants.search import MAX_QUERY_LENGTH
@@ -42,6 +41,7 @@ from app.models.tag import Tag
 from app.models.thread import Thread
 from app.permissions.captcha import human_validator
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.throttling import TrustedIPScopedRateThrottle
 from app.rest.pagination import CustomThreadPagination
 
 # Serailizers
@@ -133,12 +133,18 @@ class ThreadsViewSet(GenericViewSet):
     ordering = ("-create_at",)
 
     def get_throttles(self) -> list:
-        # Rate-limit ONLY entity creation (anti-abuse companion of the
-        # captcha human pass): reads and the read-only POST feeds
-        # (foryou/closeyou) stay unthrottled.
-        if self.action == "create":
-            self.throttle_scope = "threads_create"
-            return [ScopedRateThrottle()]
+        # Entity creation is the anti-abuse companion of the captcha pass.
+        # The read-only POST feeds run several queries + in-Python ranking
+        # per call, so they get their own (looser) per-IP cap too — a cheap
+        # ticket must not let a client hammer them on 0.25 vCPU hardware.
+        scope = {
+            "create": "threads_create",
+            "foryou": "feed",
+            "closeyou": "feed",
+        }.get(self.action)
+        if scope:
+            self.throttle_scope = scope
+            return [TrustedIPScopedRateThrottle()]
         return super().get_throttles()
 
     def get_queryset(self) -> QuerySet:
@@ -187,17 +193,24 @@ class ThreadsViewSet(GenericViewSet):
                 return threads.none()
 
             if tag:
-                # EXACT tag (Thread-Tag relation) but case- and
-                # accent-insensitive: unaccent(name) = unaccent(tag) → #peru
-                # finds #perú. distinct(): a post with the same hashtag
-                # repeated creates several Tag rows and the join would
-                # duplicate the thread.
-                return threads.filter(tag__name__unaccent__iexact=strip_accents(tag)).distinct().order_by("-create_at")
+                # EXACT tag (Thread-Tag relation), case- and accent-
+                # insensitive: both sides follow the same normalization
+                # contract (strip_accents + lower) and compare EQUAL against
+                # the derived name_norm column (btree-indexed) — #peru finds
+                # #perú. The previous __unaccent__iexact wrapped the column
+                # in UPPER(UNACCENT(...)) and seq-scanned Tag per request.
+                # distinct(): a post with the same hashtag repeated creates
+                # several Tag rows and the join would duplicate the thread.
+                normalized_tag = strip_accents(tag).lower()
+                return threads.filter(tag__name_norm=normalized_tag).distinct().order_by("-create_at")
 
             if query:
-                # icontains + unaccent on both sides (field and query):
-                # case- and accent-insensitive, same as /search/.
-                return threads.filter(text__unaccent__icontains=strip_accents(query)).order_by("-create_at")
+                # Same contract as /search/: plain __contains against
+                # text_norm (query normalized with the SAME function that
+                # writes the column) so the GIN trigram index serves the
+                # match — text__unaccent__icontains seq-scanned the table.
+                normalized_query = strip_accents(query).lower()
+                return threads.filter(text_norm__contains=normalized_query).order_by("-create_at")
 
             return threads.order_by("-create_at")
 
@@ -348,7 +361,9 @@ class ThreadsViewSet(GenericViewSet):
             401 - The client is not authorized.
             500 - An error occurred on the server.
         """
-        thread = get_object_or_404(self.get_queryset())
+        # with_card_relations: retrieve serializes on the serializer's fast
+        # path (prefetches/annotation) instead of the ~4-query legacy fallback.
+        thread = get_object_or_404(with_card_relations(self.get_queryset(), request.mask))
         serializer = self.get_serializer(thread, many=False, context=({"mask": request.mask})).data
 
         return Response(serializer, status=HTTP_200_OK)
@@ -417,9 +432,15 @@ class ThreadsViewSet(GenericViewSet):
         """
         sub_tread = request.data.get("sub")
         if sub_tread:
-            sub_tread = get_object_or_404(Thread.objects.filter(uid=sub_tread)).uid
+            # Only allow replying to a LIVE, visible thread — mirrors the
+            # is_active/visibility filter used by reactions/reports; without
+            # it a reply could be attached to a soft-deleted or hidden thread.
+            sub_tread = get_object_or_404(Thread.objects.filter(uid=sub_tread, is_active=True, visibility=True)).uid
 
-        serializer = self.get_serializer(data=request.data, context=({"mask": request.mask, "show_responses": True}))
+        # No show_responses: a freshly created thread has no replies, so the
+        # old `responses: []` echo only cost an extra query — and the
+        # frontend never read it.
+        serializer = self.get_serializer(data=request.data, context=({"mask": request.mask}))
         serializer.is_valid(raise_exception=True)
         # Language/region DECLARED by the FE (navigator.language) — the
         # backend only normalizes and persists, no GeoIP. language feeds
@@ -777,7 +798,8 @@ class ThreadsViewSet(GenericViewSet):
             401 - The client is not authorized.
             500 - An error occurred on the server.
         """
-        thread = get_object_or_404(self.get_queryset())
+        # with_card_relations: the head card serializes on the fast path too.
+        thread = get_object_or_404(with_card_relations(self.get_queryset(), request.mask))
         head_serializer = self.get_serializer(thread, many=False, context=({"mask": request.mask}))
 
         responses = with_card_relations(

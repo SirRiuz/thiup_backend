@@ -7,7 +7,6 @@ from rest_framework.status import (
     HTTP_404_NOT_FOUND,
     HTTP_503_SERVICE_UNAVAILABLE,
 )
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from app.methods.captcha import (
@@ -18,6 +17,7 @@ from app.methods.captcha import (
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.throttling import TrustedIPScopedRateThrottle
 
 
 class CaptchaVerifyView(APIView):
@@ -42,7 +42,7 @@ class CaptchaVerifyView(APIView):
     """
 
     permission_classes = (IsClientAuthenticated,)
-    throttle_classes = (ScopedRateThrottle,)
+    throttle_classes = (TrustedIPScopedRateThrottle,)
     throttle_scope = "captcha"
 
     def post(self, request) -> Response:

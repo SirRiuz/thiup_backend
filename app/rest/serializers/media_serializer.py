@@ -57,8 +57,9 @@ class ThreadMediaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ThreadFile
+        # No `id`: the internal UUID pk must never leave the API — `uid` is
+        # the public identifier and the only one the frontend reads.
         fields = (
-            "id",
             "uid",
             "is_video",
             "is_nsfw",

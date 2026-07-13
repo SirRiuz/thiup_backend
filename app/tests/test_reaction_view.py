@@ -199,15 +199,30 @@ class ThreadsViewTest(TransactionTestCase):
         self.assertEqual(relations.count(), 1)
         self.assertEqual(relations.first().reaction_id, second.id)
 
-    def test_reaction_count(self):
-        """A single reaction yields reaction_count == 1 in the response."""
+    def test_react_returns_minimal_ack(self):
+        """Reacting answers a minimal acknowledgement: the frontend renders
+        optimistically and never read the old echo of the thread's reaction
+        breakdown (recomputing it cost an aggregate + one COUNT per reaction
+        type on every react)."""
         reaction = Reaction.objects.first()
         uid = self.__make_thread()
 
         response = self.__react(reaction.id, uid)
 
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data, {"status": "ok"})
+
+    def test_reaction_count(self):
+        """A single reaction yields reaction_count == 1 on the thread card."""
+        reaction = Reaction.objects.first()
+        uid = self.__make_thread()
+
+        token = self.__get_client_token()
+        self.__react(reaction.id, uid)
+        card = client.get(f"/threads/{uid}/", HTTP_X_DYNAMIC_TOKEN=token)
+
         match = next(
-            (r for r in response.data["reactions"] if r["name"] == reaction.name),
+            (r for r in card.data["reactions"] if r["name"] == reaction.name),
             None,
         )
         self.assertIsNotNone(match)

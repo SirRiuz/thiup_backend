@@ -80,6 +80,29 @@ DEBUG = config("DEBUG", cast=bool)
 
 LOG_LEVEL = "DEBUG" if DEBUG else "INFO"
 
+# Swagger (drf_yasg) is an admin-only schema page but costs ~10-20 MB of RSS
+# in EVERY process that imports the URLconf (each gunicorn worker AND every
+# ephemeral momentum/purge Fargate task). Off by default in prod; local dev
+# keeps it via DEBUG.
+ENABLE_SWAGGER = config("ENABLE_SWAGGER", cast=bool, default=DEBUG)
+# drf-yasg ships only in the DEV image (requirements.dev) — it costs ~20 MB
+# of image that prod (swagger off by default) would pull on every ephemeral
+# scheduled task. Fail fast with a clear message instead of a random
+# ImportError if someone flips the flag on an image without the package.
+if ENABLE_SWAGGER:
+    try:
+        import drf_yasg  # noqa: F401
+    except ImportError as exc:
+        raise ImproperlyConfigured(
+            "ENABLE_SWAGGER=True but drf-yasg is not installed. It ships only "
+            "in the dev image (requirements.dev); add it to requirements.in if "
+            "you really need Swagger in this environment."
+        ) from exc
+# Opt in to drf_yasg's new format-suffix renderers (the compat ones emit a
+# DeprecationWarning). Only the plain {INTERNAL_ADMIN_URL}swagger/ UI route is registered,
+# so the removed "." format-suffix behavior is not used anywhere.
+SWAGGER_USE_COMPAT_RENDERERS = False
+
 # Hostnames the server responds to (Host-header attack defense).
 # Format: hostnames only — NO scheme, NO port. Wildcards (*.thiup.com) allowed.
 ALLOWED_HOSTS = env_list(
@@ -207,8 +230,26 @@ LOGGING = {
     "loggers": {
         "app": {
             "handlers": ["console"],
-            "level": "INFO",
+            "level": LOG_LEVEL,
             "propagate": False,
+        },
+    },
+}
+
+# Explicit LocMem cache. Without CACHES Django falls back to LocMem with
+# MAX_ENTRIES=300 — far too small here: presence keys (1 per online user),
+# EVERY DRF throttle history (1 per IP per scope), the moderation blocklist
+# and the tag-activity aggregates all share those slots. Past ~300 combined
+# entries the cull evicts a third of them per set: throttle counters silently
+# reset under load (rate limits stop working exactly when needed) and
+# presence flaps. 20k tiny entries is a few MB, bounded — still LocMem
+# (no Redis: cost anti-goal), still per-process.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "OPTIONS": {
+            "MAX_ENTRIES": 20000,
+            "CULL_FREQUENCY": 4,
         },
     },
 }
@@ -219,7 +260,7 @@ PROJECT_APPS = [
     "honeypot",
 ]
 
-EXTERNAL_APPS = ["corsheaders", "drf_yasg", "storages"]
+EXTERNAL_APPS = ["corsheaders", "storages"] + (["drf_yasg"] if ENABLE_SWAGGER else [])
 
 DJANGO_APPS = [
     "django.contrib.admin",
@@ -256,6 +297,18 @@ MIDDLEWARE = [
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+# Trusted client-IP resolution (app/utils/client.py). The real client IP is
+# security-critical: mask identity, GeoIP, the honeypot blacklist and every
+# per-IP throttle key on it, so it must NOT come from a client-forgeable hop.
+# TRUST_CLOUDFLARE: read CF-Connecting-IP (set/overwritten by Cloudflare's
+#   edge — unspoofable behind the tunnel). Defaults ON in prod (not DEBUG),
+#   OFF locally where there is no Cloudflare edge.
+# TRUSTED_PROXY_COUNT: how many reverse proxies append to X-Forwarded-For
+#   (nginx = 1). The resolver takes the Nth-from-the-right entry, ignoring
+#   anything the client prepended.
+TRUST_CLOUDFLARE = config("TRUST_CLOUDFLARE", cast=bool, default=not DEBUG)
+TRUSTED_PROXY_COUNT = config("TRUSTED_PROXY_COUNT", cast=int, default=1)
+
 # ── Anti-fingerprinting (defense-in-depth — does NOT replace real
 # security: E2E, auth and the obfuscated admin remain the foundation) ───
 # Generically named cookies: 'csrftoken'/'sessionid' give Django away to
@@ -270,6 +323,19 @@ SESSION_COOKIE_NAME = config("SESSION_COOKIE_NAME", default="x_s")
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"
+
+# Cookie hardening for the session/CSRF cookies of the REAL admin (the API
+# itself is cookieless — header + E2E). Gated on prod: over Cloudflare HTTPS
+# the browser must never send x_s/x_t over plaintext.
+# Left OFF under DEBUG so local http dev keeps working.
+if not DEBUG:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+# Defense-in-depth defaults (harmless in dev too): the admin cookies are not
+# needed by JS, and Lax SameSite blocks cross-site cookie leakage.
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = True
 
 ROOT_URLCONF = "core.urls"
 
@@ -305,6 +371,9 @@ DATABASES = {
         # Persistent connections: avoids the overhead of opening a Postgres
         # connection on EVERY request (noticeable on limited CPU / Raspberry).
         "CONN_MAX_AGE": 60,
+        # Ping persistent connections before reuse: a remote DB (Neon) can
+        # drop idle connections, and a stale one would surface as a 500.
+        "CONN_HEALTH_CHECKS": True,
     }
 }
 
@@ -329,6 +398,15 @@ REST_FRAMEWORK = {
         # Human-pass issuer (/captcha/verify/): renewals are ~1 per TTL per
         # user, so this is far above legitimate traffic.
         "captcha": config("THROTTLE_CAPTCHA", default="20/min"),
+        # Direct-to-storage upload flow: each presign writes a detached
+        # ThreadFile row + mints a PUT capability, so it is the one create
+        # path that MUST be capped (it was the only unthrottled one).
+        "thread_files": config("THROTTLE_THREAD_FILES", default="30/min"),
+        # Read-only feed POSTs (foryou/closeyou): several queries + in-Python
+        # ranking per call — cheap ticket, expensive work on 0.25 vCPU.
+        "feed": config("THROTTLE_FEED", default="60/min"),
+        # Profile reads (/me/, /users/<hash>/): annotated Count/Sum joins.
+        "profile": config("THROTTLE_PROFILE", default="120/min"),
     },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "DEFAULT_RENDERER_CLASSES": [
@@ -399,8 +477,6 @@ STORAGE_SHARD_WIDTH = 2
 
 USE_AWS_STORAGE = config("USE_AWS_STORAGE", cast=bool)
 
-print("Use S3 storage system :", "YES" if USE_AWS_STORAGE else "NO")
-
 if USE_AWS_STORAGE:
     from botocore.config import Config
 
@@ -428,20 +504,29 @@ if USE_AWS_STORAGE:
         response_checksum_validation="when_required",
     )
 
-    STATICFILES_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
-    DEFAULT_FILE_STORAGE = "storages.backends.s3boto3.S3Boto3Storage"
+    # STORAGES replaces the deprecated DEFAULT_FILE_STORAGE /
+    # STATICFILES_STORAGE settings (RemovedInDjango51Warning).
+    STORAGES = {
+        "default": {"BACKEND": "storages.backends.s3boto3.S3Boto3Storage"},
+        "staticfiles": {"BACKEND": "storages.backends.s3boto3.S3Boto3Storage"},
+    }
 else:
     # Local media: emit absolute URLs so consumers (frontend, emails, admin)
     # see the same shape they get from S3/R2. Origin comes from MEDIA_BASE_URL.
-    DEFAULT_FILE_STORAGE = "app.storages.AbsoluteUrlFileSystemStorage"
+    STORAGES = {
+        "default": {"BACKEND": "app.storages.AbsoluteUrlFileSystemStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
     MEDIA_BASE_URL = os.environ.get("MEDIA_BASE_URL", "http://localhost:8000")
 
 # Under pytest, never touch real object storage: media goes to an in-memory
 # backend so a connected bucket (R2/S3) is never written to, and static resolves
 # locally. Overrides whatever the storage block set above.
 if "pytest" in sys.modules:
-    DEFAULT_FILE_STORAGE = "django.core.files.storage.InMemoryStorage"
-    STATICFILES_STORAGE = "django.contrib.staticfiles.storage.StaticFilesStorage"
+    STORAGES = {
+        "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
 
 GEOLITE_DIR = "geolite2-country.mmdb"
 

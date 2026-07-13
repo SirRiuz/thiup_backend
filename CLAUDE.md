@@ -122,6 +122,14 @@ is a no-op.
 **Mask identity** — `MaskMiddleware` (`app/middlewares/mask.py`) sets `request.mask` on every
 request: SHA-256(client IP) → get-or-create `Mask`, country resolved via the local
 `geolite2-country.mmdb` GeoIP DB. `/health/` is exempt so it can answer when the DB is down.
+Two perf contracts here: the Mask instance is CACHED in LocMem for 60 s (`mask:<hash>`), so
+only a cache miss (or a country change) hits the DB — before, every request paid a
+get_or_create round trip; and the GeoIP reader is a module-level SINGLETON
+(`app/methods/location.py`) — it used to reopen the 68 MB .mmdb per request. It reads the file
+with raw `maxminddb` (NOT the geoip2 wrapper, dropped: it dragged in aiohttp only for a
+web-service client this app never calls); `.get()` works with any edition, so swapping the file
+for the ~9 MB GeoLite2-Country needs no code change (recommended; the current file is actually
+a City DB).
 
 **Presence ("online now")** — `app/methods/presence.py`, ephemeral by design:
 - Passive marking: `MaskMiddleware` refreshes `online:<mask_hash>` in the LocMem cache (TTL 60 s)
@@ -185,7 +193,10 @@ run a job that takes seconds every 30 min, vs ~50 MB (PSS) for the whole web app
 reintroduce always-on async machinery** (broker/worker/Redis); if a new background job appears,
 make it another ephemeral scheduled command.
 
-**Honeypot** — the literal `/admin/` path is a fake login (`honeypot/`) that records credentials,
+**Honeypot** — the blacklist check is served from a LocMem-cached IP set (60 s TTL,
+`honeypot/middleware.py::blacklisted_ips`) instead of a per-request exists() query; post_save/
+post_delete signals on `BlackList` invalidate the key, so banning/unbanning stays immediate.
+The literal `/admin/` path is a fake login (`honeypot/`) that records credentials,
 IP and user-agent; ≥5 attempts from one IP → `BlackList` → `HoneyPotMiddleware` returns 403 for
 that IP. The real Django admin lives at the env-configured `INTERNAL_ADMIN_URL` (required at
 boot, must NOT be `admin/`; the app refuses to start otherwise).
@@ -209,7 +220,7 @@ Legend — **Enc**: response encrypted when `ENCRYPTED_RESPONSE=True` (global re
 | GET | `/config/` | `ConfigView` (`config.py`) | Transport flags: `{encrypted_response, single_request_protect, captcha_protect, captcha_endpoint}` | yes | no (AllowAny) | no | no (bootstrap) |
 | GET | `/ticket/` | `TicketView` (`ticket.py`) | Issues client-assertion JWT (anon throttle 120/min) | yes | no (AllowAny) | no | no (bootstrap) |
 | GET | `/health/` | `HealthCheckView` (`health.py`) | Liveness probe → 200 `{"status":"ok"}` (no DB) | yes | no (AllowAny — the ECS container health check can't send a ticket) | no | yes |
-| GET | `/me/` | `CurrentMaskView` (`masks.py`) | Current mask: `{mask_id, country_code}` | yes | yes | no | yes |
+| GET | `/me/` | `CurrentMaskView` (`masks.py`) | Current mask: `{mask_id, joined, country_code, stats:{threads, reactions, replies}}` | yes | yes | no | yes |
 | POST | `/captcha/verify/` | `CaptchaVerifyView` (`captcha.py`) | Exchanges a single-use Cap token for the human pass (throttle 20/min); 404 `CAPTCHA_DISABLED` when the flag is off | yes | yes | no (it MINTS the pass) | yes |
 | GET/POST | `/threads/` | `ThreadsViewSet` (`threads.py`) | List (`?q=`, `?tag=`) / create thread (create throttle 10/min) | yes | yes | POST only | yes |
 | GET | `/threads/<uid>/` | 〃 | Thread detail | yes | yes | no | yes |
@@ -217,19 +228,41 @@ Legend — **Enc**: response encrypted when `ENCRYPTED_RESPONSE=True` (global re
 | GET | `/threads/mine/` | 〃 | Threads of `request.mask` | yes | yes | no | yes |
 | POST | `/threads/foryou/` | 〃 | For You feed; ephemeral body `{lang, region, tags}` | yes | yes | no (read-only POST) | yes |
 | POST | `/threads/closeyou/` | 〃 | Close You feed; body `{geohash, radius_km}` (1–100, default 15) | yes | yes | no (read-only POST) | yes |
-| GET/POST | `/reactions/` | `ReactionsViewSet` (`reactions.py`) | List catalog / react to a thread (create throttle 60/min) | yes | yes | POST only | yes |
+| GET/POST | `/reactions/` | `ReactionsViewSet` (`reactions.py`) | List catalog / react to a thread — toggle semantics; POST answers a minimal `{status: "ok"}` ack (the FE renders optimistically and never read the old reaction-breakdown echo) (create throttle 60/min) | yes | yes | POST only | yes |
 | POST | `/reports/` | `ReportsViewSet` (`reports.py`) | Report a thread — upsert per (thread, reporter mask) (throttle 30/min) | yes | yes | yes | yes |
 | POST | `/thread-files/presign/` | `ThreadFilesViewSet` (`thread_files.py`) | Step 1 of the direct-to-storage upload: issue PUT URL + detached pending `ThreadFile` | yes | yes | yes | yes |
 | POST | `/thread-files/confirm/` | 〃 | Step 3: verify the object exists, attach to thread, activate | yes | yes | yes | yes |
 | GET | `/search/` | `SearchViewSet` (`search.py`) | Search; `?q=&type=posts\|tags\|users\|media&ordering=&page=` (throttle 60/min) | yes | yes | no | yes |
 | GET | `/search/suggest/` | 〃 | Autocomplete (throttle 240/min) | yes | yes | no | yes |
-| GET | `/users/<hash>/` | `MasksViewSet` (`masks.py`) | Mask hover-card: joined, posts/replies counts | yes | yes | no | yes |
+| GET | `/users/<hash>/` | `MasksViewSet` (`masks.py`) | Mask hover-card: `{mask_id, joined, posts_count, replies_count, reactions_count, is_online}` (accepts full hash or the 6-hex public id) | yes | yes | no | yes |
 | POST | `/{gw_hash}/` (24 hex) | `GatewayView` (`gateway.py`) | Rotating gateway; dispatches the inner envelope | yes | inner view's | inner view's | — |
 | any | `/admin/` | honeypot | Decoy admin; logs and blacklists | — | — | — | blocked |
 | any | `/{INTERNAL_ADMIN_URL}` | Django admin | Real admin (obfuscated path) | — | staff | — | blocked |
-| GET | `/admin/swagger/` | drf_yasg | Schema (IsAdminUser) | — | — | — | blocked |
+| GET | `/{INTERNAL_ADMIN_URL}swagger/` | drf_yasg | Schema (IsAdminUser); lives under the REAL obfuscated admin path (never under the `/admin/` honeypot); only registered when `ENABLE_SWAGGER` (default: `DEBUG`) — drf_yasg costs ~10-20 MB RSS per process | — | — | — | blocked |
 
 `TagsViewSet` is registered at `/tags/` but currently defines no actions (stub).
+
+**Write-path field safety (mass-assignment).** `ThreadSerializer` uses `exclude`, so any model
+field not listed is auto-writable. Server-controlled fields MUST stay out of client reach:
+`momentum_score` is `read_only_fields` (emitted for the FE's DEBUG view, never accepted — a
+writable one let a client top the feed/search ranking), and `mask` is EXCLUDED as an input
+(authorship is forced from `request.mask`; `to_representation` still emits it from the instance).
+When adding a model field, decide explicitly whether it is client-writable. Replies
+(`POST /threads/` with `sub`) only attach to a LIVE, visible parent (`is_active=True,
+visibility=True`) — mirrors the reaction/report filters.
+
+**Thread-card contract (trimmed to what the FE reads).** The card emits: `uid`, `text`,
+`create_at` (relative string), `created_at_iso`, `responses_count`, `media[]` (`uid`, `file`,
+`is_video`, `is_nsfw`, `width`, `height`, `target_color` — no internal `id`), `reactions[]`
+(`{id, name, emoji, reaction_count}`), `last_reaction`, `mask` (`{hash, is_online}` ONLY — no
+internal UUID/uid/country_code), `is_mine`, `is_op`, `momentum_score` (+ `momentum_final` on the
+feeds) and `responses[]` (only under `show_responses`; nested replies serialize through
+`with_card_relations`, fast path). Deliberately REMOVED (verified unread by the FE — do not
+re-add without a consumer): `content` and `sub` (now write-only create inputs), `parent`,
+`is_new`, top-level `reactions_count`, `geohash4` (location metadata; privacy). Same trim
+elsewhere: presign returns `{upload_url, method, headers, uid}`; confirm returns
+`{uid, public_url, is_video, is_nsfw}` (the storage `key`, `file_url` dup and `metadata` echo
+stay internal).
 
 ## Search & feed internals
 
@@ -251,9 +284,13 @@ prefix match with annotated `posts_count`), `media` (Twitter-style gallery: the 
 served by the trigram index + the `thread_id` FK index — ordered by parent momentum then date,
 files in upload order within a thread; each item is the thread-card media shape plus `thread`,
 the parent's full card serialized once per distinct thread of the page). Every search response
-includes `context.counts = {posts, tags, users, media}` for the four tabs regardless of the
-active one;
-`SearchPagination` reuses these precomputed counts to avoid duplicate COUNT queries. Query length:
+includes `context.counts = {posts, tags, users, media}` — the four KEYS are frozen contract, but
+only the ACTIVE tab is actually counted (the other three report 0): the FE deliberately renders
+no tab badges, so the inactive COUNTs were pure per-request cost. The `users` count in
+particular used to seq-scan all masks via `hash__unaccent__icontains`; the users tab now matches
+`hash__startswith` (the public @id is a prefix — same rule as `_author_mask_query`).
+`SearchPagination` reuses the active tab's precomputed count to avoid a duplicate COUNT query.
+Query length:
 max 100 chars; suggest needs ≥2 chars (below that: trending tags only, read from `TrendingTag`).
 Searching `@xxxxxx` (6 hex chars) matches a mask's public ID exactly.
 
@@ -293,7 +330,10 @@ request path; expose it as a precomputed indexed column like `momentum_score`.
 ## Tests
 
 - Framework: **pytest + pytest-django** (config in `pyproject.toml`; `testpaths = ["app"]`,
-  no `conftest.py` — helpers live inside the test files).
+  helpers live inside the test files; the only `conftest.py` (`app/tests/conftest.py`) is an
+  autouse fixture that clears the LocMem cache before each test — the DB rolls back per test
+  but cached state (masks, blacklist set, throttles, presence, blocklist) would otherwise leak
+  across tests).
 - Files: `app/tests/test_foryou.py` (momentum, For You/Close You, search, request crypto),
   `test_gateway.py` (rotation, HMAC validation, anti-SSRF, toggles), `test_thread_view.py`
   (CRUD/replies/search, uses `TransactionTestCase`), `test_reaction_view.py`, `test_captcha.py`
@@ -364,10 +404,18 @@ load-bearing facts:
   piece is the connector token (Secrets Manager `/<stack>/TUNNEL_TOKEN`). The tunnel ID (and
   DNS) never changes across deploys — connectors self-register, rolling deploys overlap two
   connectors, zero downtime.
-- **Client IP arrives in `X-Forwarded-For` (set by Cloudflare, first entry);** `REMOTE_ADDR`
-  is the loopback. Mask identity, honeypot blacklisting and GeoIP all rely on that first XFF
-  entry (`app/middlewares/mask.py`, `app/utils/client.py`) — same value as the old ALB path,
-  so masks survived the migration. With no direct path to gunicorn, XFF is not spoofable.
+- **Client IP resolution is security-critical and hardened** (`app/utils/client.py::get_client_ip`).
+  Mask identity, GeoIP, the honeypot blacklist AND every per-IP throttle key on it, so it must
+  come from a hop the client cannot forge. The resolver: (1) prefers `CF-Connecting-IP` when
+  `TRUST_CLOUDFLARE` is on (Cloudflare's edge SETS/overwrites it — unspoofable behind the tunnel,
+  absent on a forged request); (2) else takes the X-Forwarded-For entry the outermost trusted
+  proxy APPENDED (`TRUSTED_PROXY_COUNT` from the right, nginx=1), NOT the leftmost — the client
+  can only forge entries to the left; (3) else `REMOTE_ADDR`. `TRUST_CLOUDFLARE` defaults to
+  `not DEBUG`. **The old code trusted the leftmost XFF entry, which was fully client-forgeable**
+  (nginx `$proxy_add_x_forwarded_for` and Cloudflare both APPEND) → mask impersonation, throttle
+  evasion and blacklist poisoning; that is now fixed. DRF throttles use
+  `app/permissions/throttling.py` (`TrustedIP*RateThrottle`) so they key on the same trusted IP,
+  not the raw XFF string.
 - **Health is the container-level health check** (python urllib against
   `http://127.0.0.1:8000/health/`; the slim image has no curl). If `ALLOWED_HOSTS` is ever
   tightened from `"*"`, it MUST include `127.0.0.1` or ECS cycles the task on 400s.
@@ -380,7 +428,9 @@ load-bearing facts:
 - **Cost frugality is a design constraint** (~$17/mo total; it was $41 before the ALB was
   removed): smallest Fargate size (0.25 vCPU / 512 MB — the app runs at ~84 MB with 1
   gunicorn worker), momentum every 30 min (each tick is a billed ephemeral task), multi-stage
-  slim image (564 MB vs 1.15 GB — Fargate bills from pull start, and momentum pays that pull
+  slim image (291 MB, was 1.15 GB → 564 MB → 291 MB after trimming deps: no drf-yasg/geoip2+aiohttp/
+  Pillow/Faker/geonamescache/humanize in prod, botocore pruned to s3-only, .dockerignore keeps
+  .git out — Fargate bills from pull start, and momentum pays that pull
   every tick; don't add system packages to the runtime stage). Don't reintroduce a load
   balancer, NAT gateway, or always-on machinery; cost knobs and history are in
   `ci/infra/README.md`.

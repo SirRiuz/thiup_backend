@@ -3,18 +3,15 @@ FROM python:3.12
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Install env dependencies in one single command/layer
+# Install env dependencies in one single command/layer. Only what compiling
+# psycopg2 needs — pango/xvfb/xauth/wget/libcurl were installed but nothing
+# in requirements uses them (the prod image already dropped them).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
-        libcurl4-openssl-dev \
         libffi-dev \
         libpq-dev \
-        pango1.0-tools \
         python3-dev \
-        wget \
-        xvfb \
-        xauth \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get purge --auto-remove \
     && apt-get clean

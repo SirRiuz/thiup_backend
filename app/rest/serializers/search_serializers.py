@@ -34,7 +34,6 @@ class UserSearchSerializer(serializers.Serializer):
     """
 
     hash = serializers.CharField()
-    country_code = serializers.CharField()
     posts_count = serializers.IntegerField()
     joined_at = serializers.DateTimeField(source="create_at")
     # Ephemeral presence (LocMem, 60 s TTL) — additive; drives the green dot

@@ -1,7 +1,6 @@
 # Django
 from django.contrib.postgres.indexes import GinIndex
 from django.db import models
-from django.utils import timezone
 
 # Libs
 from app.models.base_model import BaseModel
@@ -119,10 +118,6 @@ class Thread(BaseModel):
         # text_norm is ALWAYS derived from text (same rule as geohash4).
         self.text_norm = strip_accents(self.text or "").lower()
         super().save(*args, **kwargs)
-
-    def is_new(self) -> bool:
-        hours = (timezone.now() - self.create_at).total_seconds() // 3600
-        return hours <= 48
 
     class Meta:
         # All listings order by create_at (feed/search/tag): a descending

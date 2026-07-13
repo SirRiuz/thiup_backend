@@ -3,6 +3,7 @@ from django.db.models import Count
 from rest_framework import serializers
 
 from app.methods.tags import create_tags, get_tags_list
+from app.methods.threads import with_card_relations
 from app.models.media import ThreadFile
 from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation
@@ -20,11 +21,16 @@ from app.utils.time import format_short_time
 
 
 class ThreadSerializer(serializers.ModelSerializer):
-    content = serializers.JSONField(required=True)
+    # write_only: both are CREATE inputs the frontend never reads back —
+    # `content` (the DraftJS JSON) was the heaviest field of every card and
+    # the FE renders from `text`; the reply nesting comes from `responses`,
+    # not from echoing `sub`. Payload trimmed, validation/create unchanged.
+    content = serializers.JSONField(required=True, write_only=True)
     sub = serializers.SlugRelatedField(
         slug_field="uid",
         required=False,
         allow_null=True,
+        write_only=True,
         queryset=Thread.objects.filter(is_active=True),
         help_text="Parent thread, referenced by its uid.",
     )
@@ -46,7 +52,6 @@ class ThreadSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        head_id = instance.sub.uid if instance.sub else None
 
         # ── FAST PATH (lists: feed/search/tag/replies) ─────────────────────
         # If the queryset came through with_card_relations(), the per-thread
@@ -90,8 +95,6 @@ class ThreadSerializer(serializers.ModelSerializer):
                 item["reaction_count"] = count
                 reactions_data.append(item)
             representation["reactions"] = reactions_data
-            # Same as the legacy: number of reaction TYPES of the thread.
-            representation["reactions_count"] = len(ordered)
 
             my_relations = getattr(instance, "my_reaction_relations", [])
             last_reaction = my_relations[0].reaction if my_relations else None
@@ -104,7 +107,6 @@ class ThreadSerializer(serializers.ModelSerializer):
                 .annotate(reaction_count=Count("reactionrelation"))
                 .order_by("-reaction_count")
             )
-            representation["reactions_count"] = thread_reactions.count()
             representation["reactions"] = ReactionSerializer(
                 thread_reactions,
                 many=True,
@@ -118,7 +120,6 @@ class ThreadSerializer(serializers.ModelSerializer):
             )
             last_reaction = last_relation[0].reaction if last_relation else None
 
-        representation["parent"] = head_id
         representation["last_reaction"] = (
             ReactionSerializer(
                 last_reaction,
@@ -134,7 +135,13 @@ class ThreadSerializer(serializers.ModelSerializer):
             # sub-reply were never included and replies of 3rd level+ were
             # created in DB but didn't come back in the GET (they stayed in "limbo").
             # It's a tree (FK sub, no cycles): the recursion terminates on its own.
-            subs = Thread.objects.filter(is_active=True, sub=instance)
+            # with_card_relations: each nested reply serializes on the FAST
+            # path (before this, every node fell back to the legacy queries —
+            # ~5 extra queries per nested reply, hundreds per deep page).
+            subs = with_card_relations(
+                Thread.objects.filter(is_active=True, sub=instance),
+                self.context.get("mask"),
+            )
             representation["responses"] = ThreadSerializer(
                 subs,
                 many=True,
@@ -168,7 +175,6 @@ class ThreadSerializer(serializers.ModelSerializer):
             representation["momentum_final"] = momentum_final
 
         representation["mask"] = mask_data
-        representation["is_new"] = instance.is_new()
         # is_mine: this thread/reply belongs to the CURRENT viewer (anonymous
         # mask comparison). PRIVATE — only ever true for the viewer's own
         # content, so only its author sees it; reveals nothing to third parties.
@@ -193,14 +199,18 @@ class ThreadSerializer(serializers.ModelSerializer):
     class Meta:
         model = Thread
         # The threshold counters are internal plumbing of the For You engine.
-        # momentum_score IS exposed: the frontend shows it in the card
-        # when DEBUG is active (src/settings.js) — it's an innocuous float.
         # language/region are excluded from the contract: the client DECLARES
         # them in the creation payload but the view normalizes them and passes
         # them via serializer.save(...) — they are not editable serializer fields
         # nor part of the card.
         # text_norm is a derived search column (lowercase, accent-stripped
         # copy of text) — internal plumbing, never part of the card.
+        # geohash4 is the derived ~39 km cell of the Close You wide filter:
+        # location metadata that must never ride on a public card.
+        # mask is EXCLUDED as an input field: authorship is forced server-side
+        # from request.mask in the view; a writable `mask` let a client
+        # override or null out the author (mass assignment). It is still
+        # emitted by to_representation (built from the instance, not this field).
         exclude = (
             "id",
             "is_active",
@@ -210,7 +220,13 @@ class ThreadSerializer(serializers.ModelSerializer):
             "region",
             "language",
             "geohash",
+            "geohash4",
             "text_norm",
             "unique_reactors_count",
             "unique_commenters_count",
+            "mask",
         )
+        # momentum_score IS exposed (the FE shows it under DEBUG) but must be
+        # READ-ONLY: it is precomputed by the momentum cron, and a writable
+        # field let a client set it to top the feed/search ranking.
+        read_only_fields = ("momentum_score",)

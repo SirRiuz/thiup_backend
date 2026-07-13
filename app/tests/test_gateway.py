@@ -168,3 +168,52 @@ class GatewayDispatchTest(TestCase):
         res = gateway_post("POST", "/threads/foryou/", token(), body="{}")
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(decode_body(res).get("code"), "GATEWAY_DISABLED")
+
+
+class GatewayEdgeCasesTest(TestCase):
+    """Envelope-shape and method validation branches of the dispatcher."""
+
+    def test_non_dict_envelope_is_rejected(self):
+        data, header = _seal(json.dumps(["not", "a", "dict"]))
+        res = client.post(
+            "/" + "0" * 24 + "/",
+            data=data,
+            content_type="application/raw",
+            HTTP_X_REQUEST_PAYLOAD=header,
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_disallowed_method_is_rejected(self):
+        res = gateway_post("TRACE", "/config/", token())
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_dict_body_is_serialized_for_the_inner_view(self):
+        # The FE sends the inner body as a string, but a JSON object is also
+        # accepted: the gateway re-serializes it for the target view.
+        res = gateway_post("POST", "/threads/foryou/", token(), body={"lang": "es"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+class RequestCryptoEdgeCasesTest(TestCase):
+    """Uncovered rejection/exemption branches of RequestDecryptMiddleware
+    (tests only — the middleware itself is untouchable)."""
+
+    def test_decrypted_non_json_is_rejected(self):
+        data, header = _seal("not json at all")
+        res = client.post(
+            "/threads/",
+            data=data,
+            content_type="application/raw",
+            HTTP_X_REQUEST_PAYLOAD=header,
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unresolvable_path_still_requires_encryption(self):
+        res = client.post("/nonexistent/", {"a": 1}, content_type="application/json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_honeypot_admin_surface_is_exempt(self):
+        # Server-rendered HTML surfaces (honeypot/admin) bypass the crypto
+        # requirement — classified by app_name via resolve().
+        res = client.post("/admin/login/", {"username": "x", "password": "y"})
+        self.assertIn(res.status_code, (200, 302))

@@ -19,7 +19,6 @@ from rest_framework import status
 
 from app.cripto.kdf import decryptor, encryptor
 from app.methods.storage import check_token, save_token
-from app.methods.user import get_user
 from app.middlewares.delay import SimulateDelayMiddleware
 
 # Models
@@ -57,24 +56,28 @@ class FormatShortTimeTest(SimpleTestCase):
         self.assertEqual(format_short_time(self._ago(days=800)), "2Y")
 
 
+@override_settings(TRUST_CLOUDFLARE=False, TRUSTED_PROXY_COUNT=1)
 class ClientIpHelpersTest(SimpleTestCase):
-    """get_client_addres + get_user honor X-Forwarded-For then REMOTE_ADDR."""
+    """get_client_ip resolves the TRUSTED hop, not the client-forgeable one."""
 
-    def test_get_client_addres_forwarded_then_remote(self):
+    def test_takes_the_proxy_appended_entry_not_the_forged_one(self):
         rf = RequestFactory()
+        # nginx appends the real peer LAST; the leftmost is client-supplied.
         fwd = rf.get("/", HTTP_X_FORWARDED_FOR="1.1.1.1, 2.2.2.2")
-        self.assertEqual(get_client_addres(fwd), "1.1.1.1")
+        self.assertEqual(get_client_addres(fwd), "2.2.2.2")
         direct = rf.get("/", REMOTE_ADDR="9.9.9.9")
         self.assertEqual(get_client_addres(direct), "9.9.9.9")
         self.assertEqual(get_client_addres(rf.get("/")), "127.0.0.1")
 
-    def test_get_user_hashes_client(self):
+    @override_settings(TRUST_CLOUDFLARE=True)
+    def test_cloudflare_header_wins_and_ignores_forged_xff(self):
         rf = RequestFactory()
-        fwd = rf.get("/", HTTP_X_FORWARDED_FOR="8.8.8.8, 7.7.7.7")
-        direct = rf.get("/", REMOTE_ADDR="8.8.8.8")
-        # Same IP via either header -> same derived id.
-        self.assertEqual(get_user(fwd), get_user(direct))
-        self.assertTrue(get_user(direct).startswith("0x"))
+        req = rf.get(
+            "/",
+            HTTP_CF_CONNECTING_IP="3.3.3.3",
+            HTTP_X_FORWARDED_FOR="6.6.6.6, 7.7.7.7",
+        )
+        self.assertEqual(get_client_addres(req), "3.3.3.3")
 
 
 class TokenStorageTest(TestCase):

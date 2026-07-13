@@ -24,6 +24,7 @@ from app.permissions.captcha import human_validator
 
 # Libs
 from app.permissions.client import IsClientAuthenticated
+from app.permissions.throttling import TrustedIPScopedRateThrottle
 from app.rest.serializers.thread_file_serializer import (
     ConfirmSerializer,
     PresignSerializer,
@@ -56,6 +57,13 @@ class ThreadFilesViewSet(GenericViewSet):
 
     queryset = ThreadFile.objects.all()
     permission_classes = (IsClientAuthenticated,)
+
+    def get_throttles(self) -> list:
+        # Per-IP cap on the upload flow: presign writes a detached ThreadFile
+        # row AND mints a storage-write capability, so without this a single
+        # authenticated client could loop it to exhaust the DB/bucket.
+        self.throttle_scope = "thread_files"
+        return [TrustedIPScopedRateThrottle()]
 
     @action(detail=False, methods=["post"], url_path="presign")
     @human_validator
@@ -127,15 +135,15 @@ class ThreadFilesViewSet(GenericViewSet):
 
         upload = backend.generate_upload(key, data["content_type"], base_url=base_url)
 
+        # Only what the uploader consumes: the PUT target, its headers and the
+        # pending file's public uid (sent back at confirm). The storage key
+        # stays internal; public_url/expires_in had no frontend reader.
         return Response(
             {
                 "upload_url": upload["upload_url"],
                 "method": upload["method"],
                 "headers": upload["headers"],
-                "key": key,
                 "uid": thread_file.uid,
-                "public_url": public_url,
-                "expires_in": upload["expires_in"],
             },
             status=HTTP_201_CREATED,
         )
@@ -197,8 +205,10 @@ class ThreadFilesViewSet(GenericViewSet):
 
         # General hard cap for ANY file (the real, untrusted-client guard). The
         # actual object size from storage — can't be spoofed by the client.
-        size = head.get("content_length") or 0
-        if size > settings.UPLOAD_MAX_BYTES:
+        # Fail CLOSED if storage omits the length (None → reject) rather than
+        # letting an unmeasured object through as size 0.
+        size = head.get("content_length")
+        if size is None or size > settings.UPLOAD_MAX_BYTES:
             return Response(
                 {"detail": "Uploaded object is too large."},
                 status=HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -235,15 +245,15 @@ class ThreadFilesViewSet(GenericViewSet):
         thread_file.is_active = True
         thread_file.save()
 
+        # Only what the client reads: the storage key stays internal,
+        # file_url duplicated public_url, and echoing the client-sent
+        # metadata back was dead payload.
         return Response(
             {
                 "uid": thread_file.uid,
-                "key": key,
                 "public_url": public_url,
-                "file_url": public_url,
                 "is_video": thread_file.is_video,
                 "is_nsfw": thread_file.is_nsfw,
-                "metadata": thread_file.metadata,
             },
             status=HTTP_200_OK,
         )
