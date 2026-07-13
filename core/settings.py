@@ -326,15 +326,11 @@ X_FRAME_OPTIONS = "DENY"
 
 # Cookie hardening for the session/CSRF cookies of the REAL admin (the API
 # itself is cookieless — header + E2E). Gated on prod: over Cloudflare HTTPS
-# the browser must never send x_s/x_t over plaintext, and HSTS pins HTTPS.
+# the browser must never send x_s/x_t over plaintext.
 # Left OFF under DEBUG so local http dev keeps working.
 if not DEBUG:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    SECURE_SSL_REDIRECT = True
-    SECURE_HSTS_SECONDS = config("SECURE_HSTS_SECONDS", cast=int, default=31536000)
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
 # Defense-in-depth defaults (harmless in dev too): the admin cookies are not
 # needed by JS, and Lax SameSite blocks cross-site cookie leakage.
 SESSION_COOKIE_HTTPONLY = True
