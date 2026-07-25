@@ -32,9 +32,37 @@ UPLOAD_CONTENT_TYPE_EXT = {
 # (the grace window lets new posts receive their first interactions). All
 # fields are precomputed by `recompute_momentum`: the WHERE is over indexed
 # counters, recomputing nothing per request.
+# Thread/reply text limit — Threads' exact 500 (their posts and replies share
+# one limit; a reply IS a Thread here too). Enforced server-side by the
+# serializer (the FE composers mirror it with their MAX_CHARS; keep in sync).
+# INPUT-only: legacy longer rows still serialize fine.
+THREAD_TEXT_MAX_LENGTH = 500
+
 FORYOU_MIN_COMMENTERS = 1
 FORYOU_MIN_REACTORS = 3
 FORYOU_GRACE_HOURS = 2
+
+# Feed conversation preview (X-style two-story card): a third-party DIRECT
+# reply rides under its root's feed card as `top_reply` ONLY when it EARNED
+# it — rule B of attach_top_replies (rule A, the author's own continuation,
+# never thresholds). TWO gates, both required:
+#
+#   1. ABSOLUTE FLOOR — at least this many unique reactors, excluding the
+#      reply's own author (the momentum engine's anti-self-boost rule).
+#   2. RELATIVE BAR — the reply's reactors must be at least this fraction of
+#      the ROOT's precomputed unique_reactors_count. This is what keeps the
+#      preview scarce AT SCALE: a fixed number alone stops filtering once
+#      production threads routinely collect a handful of reactions per reply
+#      (a 4-reactor reply is noise on a 50-reactor thread, notable on a
+#      4-reactor one). Self-calibrating: the more a thread grows, the more
+#      it demands of its replies. A 0-reactor root passes trivially — the
+#      reply OUTSHINES the post, X's purest case (the reply drags the post).
+#
+# Next knob if previews still read too common with real data: additionally
+# require the reply to have replies of its own (conversation signal — the
+# heaviest ranking signal on X per their published pipeline).
+FEED_TOP_REPLY_MIN_REACTORS = 2
+FEED_TOP_REPLY_ROOT_RATIO = 0.5
 
 # For You personalization (PHASE 2).
 # The client sends its top tags in the POST BODY — the affinity profile,

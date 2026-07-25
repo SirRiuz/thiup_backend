@@ -2,6 +2,7 @@
 from django.db.models import Count
 from rest_framework import serializers
 
+from app.constants.threads import THREAD_TEXT_MAX_LENGTH
 from app.methods.tags import create_tags, get_tags_list
 from app.methods.threads import with_card_relations
 from app.models.media import ThreadFile
@@ -26,6 +27,18 @@ class ThreadSerializer(serializers.ModelSerializer):
     # the FE renders from `text`; the reply nesting comes from `responses`,
     # not from echoing `sub`. Payload trimmed, validation/create unchanged.
     content = serializers.JSONField(required=True, write_only=True)
+    # Server-side length gate (Threads' exact 500, posts AND replies): the FE
+    # composers block it first, but the API is the real limit — without this
+    # a raw client could post unbounded text (the model is a plain TextField).
+    # trim_whitespace=False: the composers already trim; the serializer must
+    # not silently mutate what a client sent. Input-only — legacy longer rows
+    # keep serializing.
+    text = serializers.CharField(
+        required=True,
+        max_length=THREAD_TEXT_MAX_LENGTH,
+        trim_whitespace=False,
+        help_text="Text of the thread.",
+    )
     sub = serializers.SlugRelatedField(
         slug_field="uid",
         required=False,

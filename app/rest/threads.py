@@ -34,7 +34,7 @@ from app.constants.threads import (
     FORYOU_TAGS_MAX,
 )
 from app.methods.moderation import find_blocked_terms
-from app.methods.threads import get_ranked_thread, with_card_relations
+from app.methods.threads import attach_top_replies, get_ranked_thread, with_card_relations
 from app.models.tag import Tag
 
 # Models
@@ -281,8 +281,11 @@ class ThreadsViewSet(GenericViewSet):
         queryset = self.filter_queryset(self.get_queryset())
         pages = self.paginate_queryset(queryset)
         serializer = self.get_serializer(pages, many=True, context=({"mask": request.mask, "short": True}))
+        cards = serializer.data
+        # Conversation preview — every feed of root cards carries it.
+        attach_top_replies(cards, pages, request.mask)
 
-        return self.get_paginated_response(({"data": serializer.data}))
+        return self.get_paginated_response(({"data": cards}))
 
     @action(detail=False, methods=["GET"])
     def mine(self, request) -> Response:
@@ -309,8 +312,11 @@ class ThreadsViewSet(GenericViewSet):
 
         pages = self.paginate_queryset(threads)
         serializer = self.get_serializer(pages, many=True, context=({"mask": request.mask, "short": True}))
+        cards = serializer.data
+        # Conversation preview — the user's own threads carry it too.
+        attach_top_replies(cards, pages, request.mask)
 
-        return self.get_paginated_response(({"data": serializer.data}))
+        return self.get_paginated_response(({"data": cards}))
 
     def retrieve(self, request, pk) -> Response:
         """
@@ -616,7 +622,8 @@ class ThreadsViewSet(GenericViewSet):
         Shared serving engine: newest FALLBACK (over filler_qs — global in
         For You, local in Close You), pagination of the id list, rich
         queryset (with_card_relations, no N+1) ONLY for the page,
-        momentum_final per query and the card serializer.
+        momentum_final per query and the card serializer. Each card may carry
+        a `top_reply` conversation preview (see __attach_top_replies).
         """
         page_size = self.paginator.get_page_size(request)
         if len(ordered_ids) < page_size and filler_qs is not None:
@@ -635,8 +642,12 @@ class ThreadsViewSet(GenericViewSet):
             thread.momentum_final = momentum_final_fn(thread)
 
         serializer = self.get_serializer(page, many=True, context=({"mask": request.mask, "short": True}))
+        cards = serializer.data
+        # Conversation preview — shared with every feed surface (see
+        # app/methods/threads.py::attach_top_replies).
+        attach_top_replies(cards, page, request.mask)
 
-        return self.get_paginated_response(({"data": serializer.data}))
+        return self.get_paginated_response(({"data": cards}))
 
     def __foryou_response(self, request, threshold, tags, region, lang) -> Response:
         """
@@ -760,6 +771,7 @@ class ThreadsViewSet(GenericViewSet):
                         "reactions": [],
                         "is_new": false
                     },
+                    "parents": [],
                     "count": 13,
                     "next": null,
                     "previous": "...",
@@ -797,10 +809,55 @@ class ThreadsViewSet(GenericViewSet):
             200 - Returns a list with the responses of a thread.
             401 - The client is not authorized.
             500 - An error occurred on the server.
+
+        Note: `pk` can be ANY thread uid — a root thread or a reply at any
+        depth (a reply IS a Thread with `sub` set). When the head is a reply,
+        `parents` carries its ancestor chain (root first, immediate parent
+        last) so the client can render the Threads-style comment permalink
+        with full thread continuity. For a root thread `parents` is [].
         """
         # with_card_relations: the head card serializes on the fast path too.
         thread = get_object_or_404(with_card_relations(self.get_queryset(), request.mask))
-        head_serializer = self.get_serializer(thread, many=False, context=({"mask": request.mask}))
+
+        # ── Ancestor chain (comment permalink) ─────────────────────────────
+        # Walk the `sub` FK up to the root with the SAME liveness rules as the
+        # head itself (active + visible + not expired): a hidden/expired
+        # ancestor TRUNCATES the chain there — the permalink still resolves,
+        # it just shows less context. Cheap id-only walk (one indexed PK
+        # lookup per level; real depth is small), then ONE with_card_relations
+        # batch so each ancestor card serializes on the fast path.
+        now_date = timezone.localtime(timezone.now())
+        alive = Q(expire_date__gte=now_date) | Q(expire_date__isnull=True)
+        chain_ids = []
+        seen_ids = {thread.id}
+        node_id = thread.sub_id
+        while node_id and node_id not in seen_ids:
+            row = (
+                Thread.objects.filter(alive, pk=node_id, is_active=True, visibility=True).values("id", "sub_id").first()
+            )
+            if row is None:
+                break
+            chain_ids.append(row["id"])
+            seen_ids.add(row["id"])
+            node_id = row["sub_id"]
+        chain_ids.reverse()  # root → immediate parent
+
+        parents = []
+        if chain_ids:
+            cards = with_card_relations(Thread.objects.filter(pk__in=chain_ids), request.mask)
+            by_id = {t.id: t for t in cards}
+            parents = [by_id[pk] for pk in chain_ids if pk in by_id]
+
+        # op_mask = the ROOT author's mask (chain root when the head is a
+        # reply, the head itself otherwise) so is_op means "authored by the
+        # thread's Original Poster" all along the permalink — head, ancestors
+        # and replies alike. Same boolean-only, thread-local privacy contract.
+        op_mask = parents[0].mask if parents else thread.mask
+
+        head_serializer = self.get_serializer(thread, many=False, context=({"mask": request.mask, "op_mask": op_mask}))
+        parents_serializer = self.get_serializer(
+            parents, many=True, context=({"mask": request.mask, "op_mask": op_mask})
+        )
 
         responses = with_card_relations(
             get_ranked_thread().filter(is_active=True, sub=thread),
@@ -819,10 +876,13 @@ class ThreadsViewSet(GenericViewSet):
         responses = responses.order_by(*replies_ordering)
 
         pages = self.paginate_queryset(responses)
-        # op_mask = the thread author's mask, so each reply can compute is_op
-        # (reply author == OP) LOCALLY to this thread, as a boolean only.
+        # op_mask = the chain root author's mask (see above), so each reply can
+        # compute is_op (reply author == OP) LOCALLY to this thread, as a
+        # boolean only.
         serializer = self.get_serializer(
-            pages, many=True, context=({"mask": request.mask, "op_mask": thread.mask, "show_responses": True})
+            pages, many=True, context=({"mask": request.mask, "op_mask": op_mask, "show_responses": True})
         )
 
-        return self.get_paginated_response(({"data": serializer.data, "context": {"head": head_serializer.data}}))
+        return self.get_paginated_response(
+            ({"data": serializer.data, "context": {"head": head_serializer.data, "parents": parents_serializer.data}})
+        )
