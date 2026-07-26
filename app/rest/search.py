@@ -32,7 +32,7 @@ from app.constants.search import (
     VALID_TYPES,
 )
 from app.methods.moderation import find_blocked_terms, shadowban_matching
-from app.methods.threads import with_card_relations
+from app.methods.threads import attach_top_replies, with_card_relations
 from app.models.mask import Mask
 from app.models.media import ThreadFile
 from app.models.tag import Tag
@@ -570,6 +570,9 @@ class SearchViewSet(GenericViewSet):
                 many=True,
                 context={"mask": request.mask, "short": True},
             ).data
+            # Conversation preview (X-style): the search posts tab serves the
+            # same two-story cards as the feeds (shared gate/helper).
+            attach_top_replies(results, page, request.mask)
 
         return self.get_paginated_response(
             {

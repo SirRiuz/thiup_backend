@@ -317,3 +317,108 @@ class ThreadsViewTest(TransactionTestCase):
 
         response = client.get(f"/threads/{thread.data['uid']}/responses/")
         self.assertTrue(response.status_code, status.HTTP_200_OK)
+
+    def __create_thread(self, text, sub=None):
+        """Creates a thread (or a reply when `sub` is given) and returns the
+        response. Minimal valid DraftJS content, no media."""
+        token = self.__get_client_token()
+        body = {
+            "media": [],
+            "text": text,
+            "content": {
+                "blocks": [
+                    {
+                        "key": "cmnci",
+                        "text": text,
+                        "type": "unstyled",
+                        "depth": 0,
+                        "inlineStyleRanges": [],
+                        "entityRanges": [],
+                        "data": {},
+                    }
+                ],
+                "entityMap": {},
+            },
+        }
+        if sub:
+            body["sub"] = sub
+        return client.post(
+            "/threads/",
+            body,
+            content_type="application/json",
+            HTTP_X_DYNAMIC_TOKEN=token,
+        )
+
+    def test_responses_of_reply_includes_parent_chain(self):
+        """
+        Comment permalink contract: GET /threads/<uid>/responses/ where the
+        uid is a REPLY resolves the reply as the head and exposes its
+        ancestor chain in `parents` (root first, immediate parent last), so
+        the client can render the Threads-style thread continuity. A root
+        thread answers with an empty `parents`.
+        """
+        root = self.__create_thread("root thread")
+        reply = self.__create_thread("first level reply", sub=root.data["uid"])
+        sub_reply = self.__create_thread("second level reply", sub=reply.data["uid"])
+
+        # Root thread → no ancestors.
+        response = client.get(f"/threads/{root.data['uid']}/responses/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["head"]["uid"], root.data["uid"])
+        self.assertEqual(response.data["parents"], [])
+
+        # First-level reply → chain is [root].
+        response = client.get(f"/threads/{reply.data['uid']}/responses/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["head"]["uid"], reply.data["uid"])
+        self.assertEqual([p["uid"] for p in response.data["parents"]], [root.data["uid"]])
+        # Its page lists the sub-reply as a response.
+        self.assertEqual([r["uid"] for r in response.data["results"]], [sub_reply.data["uid"]])
+
+        # Second-level reply → chain is [root, reply], root FIRST.
+        response = client.get(f"/threads/{sub_reply.data['uid']}/responses/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["head"]["uid"], sub_reply.data["uid"])
+        self.assertEqual(
+            [p["uid"] for p in response.data["parents"]],
+            [root.data["uid"], reply.data["uid"]],
+        )
+        # All test threads share the same mask (same client IP), so every
+        # node reads as authored by the thread's OP — the boolean contract.
+        self.assertTrue(all(p["is_op"] for p in response.data["parents"]))
+
+    def test_text_length_gate_is_threads_exact(self):
+        """Server-side text limit (Threads' 500, posts and replies alike):
+        exactly 500 chars → 201; 501 → 400. The FE composers mirror it, but
+        the API is the real gate."""
+        at_limit = self.__create_thread("x" * 500)
+        self.assertEqual(at_limit.status_code, status.HTTP_201_CREATED)
+
+        over = self.__create_thread("x" * 501)
+        self.assertEqual(over.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("text", over.data)
+
+        # Replies share the same gate.
+        over_reply = self.__create_thread("x" * 501, sub=at_limit.data["uid"])
+        self.assertEqual(over_reply.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_responses_parent_chain_truncates_on_hidden_ancestor(self):
+        """
+        A soft-deleted ancestor TRUNCATES the chain at that point (the
+        permalink still resolves, with less context) — hidden content never
+        rides inside `parents`.
+        """
+        # Local import (test-only): flip the middle ancestor directly in DB.
+        from app.models.thread import Thread
+
+        root = self.__create_thread("root thread")
+        reply = self.__create_thread("first level reply", sub=root.data["uid"])
+        sub_reply = self.__create_thread("second level reply", sub=reply.data["uid"])
+
+        Thread.objects.filter(uid=reply.data["uid"]).update(is_active=False)
+
+        response = client.get(f"/threads/{sub_reply.data['uid']}/responses/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # The walk stops at the hidden parent: no ancestors survive (the
+        # root is only reachable THROUGH the hidden node).
+        self.assertEqual(response.data["parents"], [])

@@ -1446,3 +1446,136 @@ class BlockedTermSweepTest(TestCase):
 
         term = BlockedTerm.objects.create(term="  Niños   Prohibidos ")
         self.assertEqual(term.term_norm, "ninos prohibidos")
+
+
+class FeedTopReplyPreviewTest(TestCase):
+    """X-style conversation preview: `top_reply` rides on a feed card ONLY
+    when a direct reply earned it (>= FEED_TOP_REPLY_MIN_REACTORS unique
+    reactors, the reply's own author never counting)."""
+
+    def setUp(self):
+        self.author = make_mask("author")
+        self.user_b = make_mask("b")
+        self.user_c = make_mask("c")
+        # `love` is seeded by migration 0015; reuse it instead of recreating.
+        self.reaction, _ = Reaction.objects.get_or_create(name="love", defaults={"emoji": "❤️"})
+
+    def __get_client_token(self) -> str:
+        payload = {"timestamp": datetime.now().__str__()}
+        return encode_token(payload)
+
+    def get_foryou(self):
+        response = encrypted_post("/threads/foryou/", {}, self.__get_client_token())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return decode_body(response)
+
+    def react(self, thread, mask):
+        ReactionRelation.objects.create(thread=thread, mask=mask, reaction=self.reaction)
+
+    def test_gate_and_winner_selection(self):
+        root = make_thread(self.author, text="root")
+        winner = make_thread(self.user_b, sub=root, text="winner")
+        loser = make_thread(self.user_c, sub=root, text="loser")
+        # winner: 2 unique reactors, none its own author → qualifies.
+        self.react(winner, self.author)
+        self.react(winner, self.user_c)
+        # loser: a self-react (excluded) + 1 stranger → below the gate.
+        self.react(loser, self.user_c)
+        self.react(loser, self.author)
+        # A root with no qualifying reply carries NO preview at all.
+        bare = make_thread(self.author, text="bare")
+
+        by_uid = {p["uid"]: p for p in self.get_foryou()["results"]}
+        self.assertEqual(by_uid[root.uid]["top_reply"]["uid"], winner.uid)
+        # The preview is a reply by user_b, not the root author → is_op False.
+        self.assertFalse(by_uid[root.uid]["top_reply"]["is_op"])
+        self.assertNotIn("top_reply", by_uid[bare.uid])
+
+    def test_op_reply_preview_marks_is_op(self):
+        root = make_thread(self.author, text="root")
+        reply = make_thread(self.author, sub=root, text="op continues")
+        self.react(reply, self.user_b)
+        self.react(reply, self.user_c)
+
+        card = next(p for p in self.get_foryou()["results"] if p["uid"] == root.uid)
+        self.assertEqual(card["top_reply"]["uid"], reply.uid)
+        self.assertTrue(card["top_reply"]["is_op"])
+
+    def test_self_thread_rule_needs_no_reactions(self):
+        """Rule A: the author continuing their own thread previews with ZERO
+        engagement — the self-thread never competes."""
+        root = make_thread(self.author, text="root")
+        continuation = make_thread(self.author, sub=root, text="part two")
+
+        card = next(p for p in self.get_foryou()["results"] if p["uid"] == root.uid)
+        self.assertEqual(card["top_reply"]["uid"], continuation.uid)
+        self.assertTrue(card["top_reply"]["is_op"])
+
+    def test_relative_bar_scales_with_the_root(self):
+        """Rule B's second gate: the SAME 2-reactor reply is notable on a
+        modest thread but noise on a popular one (reactors >= RATIO × the
+        root's precomputed unique_reactors_count)."""
+        # Popular root (50 precomputed unique reactors): a 2-reactor reply
+        # stays below 0.5 × 50 → NO preview.
+        popular = make_thread(self.author, text="popular root")
+        Thread.objects.filter(pk=popular.pk).update(unique_reactors_count=50)
+        noise = make_thread(self.user_b, sub=popular, text="reply lost in the crowd")
+        self.react(noise, self.author)
+        self.react(noise, self.user_c)
+
+        # Modest root (3 precomputed unique reactors): the same 2 reactors
+        # clear 0.5 × 3 → preview.
+        modest = make_thread(self.author, text="modest root")
+        Thread.objects.filter(pk=modest.pk).update(unique_reactors_count=3)
+        notable = make_thread(self.user_b, sub=modest, text="reply that carries the thread")
+        self.react(notable, self.author)
+        self.react(notable, self.user_c)
+
+        by_uid = {p["uid"]: p for p in self.get_foryou()["results"]}
+        self.assertNotIn("top_reply", by_uid[popular.uid])
+        self.assertEqual(by_uid[modest.uid]["top_reply"]["uid"], notable.uid)
+
+    def test_self_thread_beats_earned_reply_and_is_chronological(self):
+        """Rule A wins over rule B, and among the author's own continuations
+        the FIRST chronological one shows (X's thread order), not the most
+        reacted one."""
+        root = make_thread(self.author, text="root")
+        # A third-party reply that EARNS rule B on its own...
+        earned = make_thread(self.user_b, sub=root, text="popular stranger")
+        self.react(earned, self.author)
+        self.react(earned, self.user_c)
+        # ...and two self-continuations, the SECOND one more reacted.
+        first = make_thread(self.author, sub=root, text="part two", age_hours=0)
+        Thread.objects.filter(pk=first.pk).update(create_at=timezone.now() - timedelta(hours=1))
+        second = make_thread(self.author, sub=root, text="part three")
+        self.react(second, self.user_b)
+        self.react(second, self.user_c)
+
+        card = next(p for p in self.get_foryou()["results"] if p["uid"] == root.uid)
+        self.assertEqual(card["top_reply"]["uid"], first.uid)
+
+    def test_preview_rides_on_every_feed_surface(self):
+        """The shared helper serves /threads/ (list), /threads/mine/ and the
+        search posts tab with the SAME two-story cards as the home feeds —
+        the thread view (/responses/) never carries it (it shows the tree)."""
+        root = make_thread(self.author, text="findme root")
+        winner = make_thread(self.user_b, sub=root, text="the earned preview")
+        self.react(winner, self.author)
+        self.react(winner, self.user_c)
+
+        token = self.__get_client_token()
+
+        # /threads/ list (keyword filter).
+        listed = decode_body(client.get("/threads/?q=findme", HTTP_CLIENT_ASSERTION=token))
+        self.assertEqual(listed["results"][0]["top_reply"]["uid"], winner.uid)
+
+        # Search posts tab (also the /m/:maskId thread list — same endpoint).
+        # (/threads/mine/ shares the same helper; it can't be exercised here
+        # because request.mask derives from the test client's IP, not from
+        # make_mask's rows.)
+        searched = decode_body(client.get("/search/?q=findme&type=posts", HTTP_CLIENT_ASSERTION=token))
+        self.assertEqual(searched["results"][0]["top_reply"]["uid"], winner.uid)
+
+        # The thread view keeps the real tree — no preview key on its head.
+        responses = decode_body(client.get(f"/threads/{root.uid}/responses/", HTTP_CLIENT_ASSERTION=token))
+        self.assertNotIn("top_reply", responses["head"])
