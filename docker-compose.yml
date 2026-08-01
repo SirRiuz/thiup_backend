@@ -94,8 +94,8 @@ services:
       # carry a real default here: an EMPTY value would crash int() at startup
       # (decouple doesn't use its default when the var is present-but-empty).
       - UPLOAD_PRESIGN_EXPIRES=${UPLOAD_PRESIGN_EXPIRES:-600}
-      # 512 MB general hard cap (see .env.template; proxy must allow ≥ this).
-      - UPLOAD_MAX_BYTES=${UPLOAD_MAX_BYTES:-536870912}
+      # 100 MB (decimal) general hard cap (see .env.template; proxy must allow ≥ this).
+      - UPLOAD_MAX_BYTES=${UPLOAD_MAX_BYTES:-100000000}
       # Captcha (Cap standalone — the `cap` service below). Real defaults:
       # empty values would crash the bool/int casts at startup. CAP_PORT is
       # the single local knob — settings.py derives both Cap URLs from it
