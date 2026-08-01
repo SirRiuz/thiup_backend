@@ -218,13 +218,13 @@ class ThreadFileConfirmTest(TestCase):
         self.assertEqual(self.pending.file_url, f"https://cdn.test/{self.key}")
         self.assertEqual(self.pending.file_key, self.key)
 
-    @override_settings(UPLOAD_MAX_BYTES=512 * 1024 * 1024)
+    @override_settings(UPLOAD_MAX_BYTES=100_000_000)
     @mock.patch(
         GET_BACKEND,
-        return_value=FakeBackend(content_length=512 * 1024 * 1024 + 1),
+        return_value=FakeBackend(content_length=100_000_000 + 1),
     )
     def test_confirm_rejects_object_over_hard_cap(self, _backend):
-        # The general 512 MB hard cap — uses the object's ACTUAL size (can't be
+        # The general 100 MB hard cap — uses the object's ACTUAL size (can't be
         # spoofed by the client). Over the cap → 413, and stays unconfirmed.
         response = post(CONFIRM_URL, self._confirm_body())
 
@@ -233,10 +233,10 @@ class ThreadFileConfirmTest(TestCase):
         self.assertFalse(self.pending.is_active)
         self.assertIsNone(self.pending.thread_id)
 
-    @override_settings(UPLOAD_MAX_BYTES=512 * 1024 * 1024)
+    @override_settings(UPLOAD_MAX_BYTES=100_000_000)
     @mock.patch(
         GET_BACKEND,
-        return_value=FakeBackend(content_length=512 * 1024 * 1024),
+        return_value=FakeBackend(content_length=100_000_000),
     )
     def test_confirm_accepts_object_at_hard_cap(self, _backend):
         # Exactly at the cap is allowed (only strictly greater is rejected).

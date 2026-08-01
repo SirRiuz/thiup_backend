@@ -456,11 +456,15 @@ STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 # defaults so nothing needs configuring; override via env only if needed.
 UPLOAD_PRESIGN_EXPIRES = config("UPLOAD_PRESIGN_EXPIRES", cast=int, default=600)
 # General HARD CAP for ANY uploaded object (safety net). The frontend enforces
-# finer per-type limits (image 8 MB / GIF 15 MB / video 512 MB) for UX; this is
+# finer per-type limits (image 8 MB / GIF 15 MB / video 100 MB) for UX; this is
 # the real, untrusted-client guard. In production the upload goes straight to R2
 # (Django never holds the bytes) and the cap is checked at confirm via the
 # object's actual content-length.
-UPLOAD_MAX_BYTES = config("UPLOAD_MAX_BYTES", cast=int, default=512 * 1024 * 1024)
+# DECIMAL 100 MB on purpose, not 100 MiB (104,857,600): Cloudflare Media
+# Transformations requires sources STRICTLY under 100 MiB, so the round decimal
+# cap keeps a ~4.5 MiB safety margin AND matches the "100 MB" the frontend
+# shows. Keep in sync with the FE's VIDEO_MAX_BYTES (useMediaComposer).
+UPLOAD_MAX_BYTES = config("UPLOAD_MAX_BYTES", cast=int, default=100_000_000)
 # Keep large file uploads OFF the heap: anything past this small threshold is
 # streamed to a temp file on disk by Django (matters for the local debug upload
 # view; the R2 path never streams through Django). RAM is limited (~512 MB).
