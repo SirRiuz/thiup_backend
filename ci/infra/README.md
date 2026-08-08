@@ -6,7 +6,7 @@ CodeBuild CI:
 ```
 Internet → Cloudflare edge → Tunnel ← cloudflared sidecar → gunicorn (same Fargate task, localhost)
                                    ├─ static/media served from an external S3-compatible bucket (Cloudflare R2)
-                                   ├─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 30 min)
+                                   ├─ momentum recompute: EventBridge Scheduler → ephemeral Fargate task (every 10 min)
                                    └─ garbage collector (purge_inactive): EventBridge Scheduler → ephemeral Fargate task (every 2 days)
 CI: CodeBuild project (build image → collectstatic to the bucket → deploy) — role fully permissioned
 ```
@@ -105,7 +105,7 @@ project bound to the old connection (including older ones).
 | `StorageBucketName` / `StoragePublicDomain` | Bucket name + its public domain (R2). |
 | `StorageEndpointUrl` | R2: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`. |
 | `StorageAccessKeyId` / `StorageSecretAccessKey` | R2 API token keys. NoEcho. |
-| `MomentumScheduleExpression` | Default `rate(30 minutes)` — each tick is a billed ephemeral task, so the cadence is a cost knob. |
+| `MomentumScheduleExpression` | Default `rate(10 minutes)` — each tick is a billed ephemeral task, so the cadence is a cost knob. |
 | `PurgeScheduleExpression` | Default `rate(2 days)` — garbage collector (`purge_inactive`). |
 
 Static port is fixed at **8000** (not a parameter). The image tag is fixed too: the
@@ -292,7 +292,7 @@ from git history if a future stack ever needs the same two-step detach).
 
 ## Momentum (For You ranking)
 
-EventBridge Scheduler runs `python manage.py recompute_momentum` every 30 min as an
+EventBridge Scheduler runs `python manage.py recompute_momentum` every 10 min as an
 ephemeral Fargate task (same task definition, command overridden). The `deploy` step
 re-points the schedule at the **deployed immutable revision** (after `migrate`), so
 the cron runs exactly the deployed, already-migrated code — no pre-migration window.

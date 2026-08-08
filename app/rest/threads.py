@@ -1,4 +1,6 @@
 # Python
+import hashlib
+import time
 from datetime import timedelta
 
 from django.db.models import Count, F, Q
@@ -26,6 +28,8 @@ from app.constants.threads import (
     FORYOU_AFFINITY_K,
     FORYOU_AFFINITY_MAX_TAGS,
     FORYOU_GRACE_HOURS,
+    FORYOU_JITTER_BUCKET_SECONDS,
+    FORYOU_JITTER_RANGE,
     FORYOU_MIN_COMMENTERS,
     FORYOU_MIN_REACTORS,
     FORYOU_MIX_POOL,
@@ -45,6 +49,10 @@ from app.permissions.throttling import TrustedIPScopedRateThrottle
 from app.rest.pagination import CustomThreadPagination
 
 # Serailizers
+from app.rest.serializers.thread_edit_serializer import (
+    ThreadEditHistorySerializer,
+    ThreadEditSerializer,
+)
 from app.rest.serializers.thread_serializer import ThreadSerializer
 from app.utils.geo import (
     GEOHASH_PRECISION,
@@ -93,9 +101,36 @@ def foryou_final_momentum(momentum, post_region, user_region, matched_tags) -> f
     return final
 
 
+def foryou_jitter(thread_id) -> float:
+    """
+    Per-candidate ranking jitter (±FORYOU_JITTER_RANGE) — the ONLY source of
+    non-determinism in the feed. Deterministic per (thread, time bucket),
+    NOT a fresh random draw per call: a plain `random.uniform()` re-rolled on
+    every request broke pagination — page 1 and page 2 of the SAME browse
+    are two separate requests, and each would re-rank the whole candidate
+    pool differently, so a post could appear on both pages or on neither.
+    Hashing (thread_id, current FORYOU_JITTER_BUCKET_SECONDS-wide time
+    bucket) keeps the jitter IDENTICAL for every request within that window
+    (pagination stays consistent — same as scrolling a feed that isn't
+    reshuffling under your feet) while still changing between separate
+    visits once the bucket rolls over. MD5 (not the builtin `hash()`,
+    randomized per-process via PYTHONHASHSEED) so multiple gunicorn workers
+    agree on the same value for the same thread — never persisted, never
+    applied to the stored momentum_score or the exposed momentum_final. A
+    separate function (not inlined) so tests can patch it to a fixed value
+    and get deterministic ordering assertions — see
+    `@patch("app.rest.threads.foryou_jitter", return_value=1.0)` in
+    app/tests/test_foryou.py.
+    """
+    bucket = int(time.time() // FORYOU_JITTER_BUCKET_SECONDS)
+    digest = hashlib.md5(f"{thread_id}:{bucket}".encode()).hexdigest()
+    unit = int(digest[:8], 16) / 0xFFFFFFFF  # deterministic float in [0, 1)
+    return 1 + (unit * 2 - 1) * FORYOU_JITTER_RANGE
+
+
 def rank_foryou_rows(rows, user_region, tag_counts=None) -> list:
     """
-    STEP 4 — SORT: momentum_final DESC (tie-break by date) over the
+    STEP 4 — SORT: momentum_final × jitter DESC (tie-break by date) over the
     BOUNDED set of candidates. Each row is (id, momentum_score,
     create_at, region); tag_counts = {thread_id: matching_tags}.
     """
@@ -103,10 +138,8 @@ def rank_foryou_rows(rows, user_region, tag_counts=None) -> list:
 
     def sort_key(row):
         thread_id, momentum, created, region = row
-        return (
-            foryou_final_momentum(momentum, region, user_region, counts.get(thread_id, 0)),
-            created,
-        )
+        final = foryou_final_momentum(momentum, region, user_region, counts.get(thread_id, 0))
+        return (final * foryou_jitter(thread_id), created)
 
     return [row[0] for row in sorted(rows, key=sort_key, reverse=True)]
 
@@ -141,6 +174,7 @@ class ThreadsViewSet(GenericViewSet):
             "create": "threads_create",
             "foryou": "feed",
             "closeyou": "feed",
+            "edit": "threads_edit",
         }.get(self.action)
         if scope:
             self.throttle_scope = scope
@@ -182,7 +216,7 @@ class ThreadsViewSet(GenericViewSet):
             # annotates responses_count — eliminates the serializer's N+1 in
             # the lists.
             threads = with_card_relations(
-                queryset.filter(visibility=True, is_active=True, sub__isnull=True),
+                queryset.filter(visibility=True, is_active=True, is_private=False, sub__isnull=True),
                 self.request.mask,
             )
 
@@ -441,13 +475,30 @@ class ThreadsViewSet(GenericViewSet):
             # Only allow replying to a LIVE, visible thread — mirrors the
             # is_active/visibility filter used by reactions/reports; without
             # it a reply could be attached to a soft-deleted or hidden thread.
-            sub_tread = get_object_or_404(Thread.objects.filter(uid=sub_tread, is_active=True, visibility=True)).uid
+            parent = get_object_or_404(Thread.objects.filter(uid=sub_tread, is_active=True, visibility=True))
+            # Owner turned commenting off — reject BEFORE validating/creating
+            # anything else. "replies_disabled" as the literal detail string
+            # (not a sentence) is what the frontend matches on to show its
+            # own dedicated copy instead of a generic post-failed message.
+            if parent.replies_disabled:
+                raise ValidationError({"detail": "replies_disabled"})
+            sub_tread = parent.uid
 
         # No show_responses: a freshly created thread has no replies, so the
         # old `responses: []` echo only cost an extra query — and the
         # frontend never read it.
         serializer = self.get_serializer(data=request.data, context=({"mask": request.mask}))
         serializer.is_valid(raise_exception=True)
+
+        # "Snap": self-deletes 24h after creation. The client only OPTS IN
+        # (is_snap=True) — the expiry itself is computed here, server-side,
+        # to a FIXED 24h window; a client can never set an arbitrary
+        # expire_date. Deliberately never exposed on ThreadEditSerializer,
+        # so this is also the ONLY place it's ever set — immutable by
+        # construction, not by a guard that could be forgotten elsewhere.
+        is_snap = bool(request.data.get("is_snap", False))
+        expire_date = timezone.now() + timedelta(hours=24) if is_snap else None
+
         # Language/region DECLARED by the FE (navigator.language) — the
         # backend only normalizes and persists, no GeoIP. language feeds
         # the For You language filter (legacy/absent → "es"); region the
@@ -460,8 +511,74 @@ class ThreadsViewSet(GenericViewSet):
             # by the client — the backend never sees coordinates. Null → the
             # post is not geolocatable (does not appear in Close You).
             geohash=normalize_geohash(request.data.get("geohash")),
+            is_private=bool(request.data.get("is_private", False)),
+            is_snap=is_snap,
+            expire_date=expire_date,
+            replies_disabled=bool(request.data.get("replies_disabled", False)),
         )
         return Response(serializer.data, status=HTTP_201_CREATED)
+
+    @action(detail=True, methods=["POST"])
+    def edit(self, request, pk=None) -> Response:
+        """
+        Edit the text and/or media of a thread OR reply the caller owns.
+        ---
+        Request body:
+
+                {
+                    "text": "new text",
+                    "content": {...},
+                    "remove_media": ["<file uid>", ...],
+                    "add_media": ["<file uid>", ...]
+                }
+
+        `remove_media`/`add_media` are ThreadFile uids — `remove_media` must
+        already be attached to THIS thread and owned by the caller's mask
+        (hard-deleted, same storage cleanup as any other ThreadFile removal);
+        `add_media` must already be confirmed (via the existing
+        POST /thread-files/confirm/) against THIS thread and owned by the
+        caller's mask — this endpoint does not attach new files itself, it
+        only counts the ones already attached for the edit-history note.
+
+        Ownership uses the SAME opaque-404 pattern as every other mutation in
+        this API: a thread that isn't active, or isn't owned by the caller's
+        mask, 404s — never 403 (this codebase never reveals existence to a
+        non-owner).
+
+        Response codes:
+
+            200 - Returns the updated thread/reply (same shape as retrieve).
+            400 - Invalid/empty text.
+            404 - Not found, inactive, or not owned by the caller.
+            429 - Rate limited.
+        """
+        thread = get_object_or_404(Thread, uid=pk, is_active=True, mask=request.mask)
+
+        serializer = ThreadEditSerializer(data=request.data, instance=thread, context={"mask": request.mask})
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save()
+
+        out = ThreadSerializer(updated, context={"mask": request.mask})
+        return Response(out.data, status=HTTP_200_OK)
+
+    @action(detail=True, methods=["GET"], url_path="edit-history")
+    def edit_history(self, request, pk=None) -> Response:
+        """
+        Text-only revision history of a thread/reply, newest first. PUBLIC to
+        every viewer (deliberately NOT owner-gated) — anyone can see how a
+        post's text changed over time. Media changes are represented only as
+        added/removed counts, never previews (see ThreadEditHistory).
+
+        Response codes:
+
+            200 - Paginated list of past revisions.
+            404 - Thread not found or inactive.
+        """
+        thread = get_object_or_404(Thread, uid=pk, is_active=True)
+        history = thread.edit_history.filter(is_active=True).order_by("-create_at")
+        page = self.paginate_queryset(history)
+        serializer = ThreadEditHistorySerializer(page, many=True)
+        return self.get_paginated_response({"data": serializer.data})
 
     @action(detail=False, methods=["POST"])
     def foryou(self, request) -> Response:
@@ -522,8 +639,10 @@ class ThreadsViewSet(GenericViewSet):
 
         momentum_final = momentum_base × proximity_boost, with a boost that
         DECREASES per ring: 1 + K×(1−ring/n) → your cell ×1.35, edge of the
-        radius ×1.0 (NO affinity or region). Fallback: newest LOCAL of the
-        area (never posts from somewhere else in the world).
+        radius ×1.0 (NO affinity or region). The SORT itself additionally
+        multiplies by foryou_jitter() (transient, never persisted, never
+        part of momentum_final) — same as For You. Fallback: newest LOCAL of
+        the area (never posts from somewhere else in the world).
 
         Response codes:
 
@@ -566,7 +685,7 @@ class ThreadsViewSet(GenericViewSet):
             row[0]
             for row in sorted(
                 rows,
-                key=lambda r: (proximity_final(r[1], r[3]), r[2]),
+                key=lambda r: (proximity_final(r[1], r[3]) * foryou_jitter(r[0]), r[2]),
                 reverse=True,
             )
         ]
@@ -613,6 +732,7 @@ class ThreadsViewSet(GenericViewSet):
             Q(expire_date__gte=now_date) | Q(expire_date__isnull=True),
             is_active=True,
             visibility=True,
+            is_private=False,
             sub__isnull=True,
         )
         return visible, visible.filter(foryou_threshold(timezone.now()))

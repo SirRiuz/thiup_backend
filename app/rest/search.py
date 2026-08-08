@@ -197,6 +197,7 @@ class SearchViewSet(GenericViewSet):
             match,
             is_active=True,
             visibility=True,
+            is_private=False,
             sub__isnull=True,
         )
 
@@ -375,6 +376,7 @@ class SearchViewSet(GenericViewSet):
                     filter=Q(
                         thread__is_active=True,
                         thread__visibility=True,
+                        thread__is_private=False,
                         thread__sub__isnull=True,
                     ),
                     distinct=True,
@@ -450,6 +452,7 @@ class SearchViewSet(GenericViewSet):
             Thread.objects.filter(
                 is_active=True,
                 visibility=True,
+                is_private=False,
                 sub__isnull=True,
                 text_norm__contains=normalized,
             )

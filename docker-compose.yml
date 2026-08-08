@@ -125,14 +125,14 @@ services:
     build:
       context: .
     # Local stand-in for AWS EventBridge Scheduler: runs the management command
-    # every 30 min (mirrors the prod cadence — each prod tick is a billed
+    # every 10 min (mirrors the prod cadence — each prod tick is a billed
     # ephemeral Fargate RunTask). Here it's a tiny sleep-loop so there is NO
     # broker (RabbitMQ) and NO always-on Celery worker. The recompute_momentum
     # command is self-contained — Celery only used to schedule it.
     command: >
       sh -c 'while true; do
                python manage.py recompute_momentum;
-               sleep 1800;
+               sleep 600;
              done'
     environment:
       - DATABASE_ENGINE=${DATABASE_ENGINE:-}

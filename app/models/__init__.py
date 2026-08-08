@@ -4,6 +4,7 @@
 from app.models.base_model import BaseModel
 from app.models.mask import Mask
 from app.models.thread import Thread
+from app.models.thread_edit import ThreadEditHistory
 from app.models.media import ThreadFile
 from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation

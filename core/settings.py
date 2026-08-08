@@ -394,6 +394,10 @@ REST_FRAMEWORK = {
         # bound what a bot achieves within one human-pass window. Generous
         # for humans, hard ceiling for scripts.
         "threads_create": config("THROTTLE_THREADS", default="10/min"),
+        # Editing an existing thread/reply — mutates, doesn't create a new
+        # public entity, but still a write worth its own cap (same shape as
+        # threads_create).
+        "threads_edit": config("THROTTLE_THREADS_EDIT", default="10/min"),
         "reactions_create": config("THROTTLE_REACTIONS", default="60/min"),
         # Human-pass issuer (/captcha/verify/): renewals are ~1 per TTL per
         # user, so this is far above legitimate traffic.

@@ -1,5 +1,6 @@
 # Python
 import logging
+import math
 import time
 from collections import defaultdict
 from datetime import timedelta
@@ -10,6 +11,7 @@ from django.core.management.base import BaseCommand
 from django.db.models import Count, F, Q
 from django.utils import timezone
 
+from app.constants.threads import MOMENTUM_ENGAGE_K, MOMENTUM_FRESH_TAU_HOURS
 from app.models.momentum_log import MomentumLog
 from app.models.reaction_relation import ReactionRelation
 from app.models.tag import Tag
@@ -22,18 +24,27 @@ LOGGER = logging.getLogger(__name__)
 
 
 # ── Momentum formula parameters ─────────────────────────────────────────
+# Freshness-first, engagement-modulated (freshness is the ONLY age-based
+# term — no denominator for engagement to race against): a brand-new post
+# ranks on arrival, no engagement required; engagement then multiplies that
+# on top, log-scaled so it has diminishing returns and can never let an old,
+# heavily-engaged post fully bury a brand-new zero-engagement one.
+#
 #   points = unique_reactors
 #          + unique_commenters                 × COMMENTER_WEIGHT
 #          + commenters_replied_by_author      × AUTHOR_REPLY_WEIGHT
 #          [+ log10(views + 1) × 2 → OMITTED in v1: there is no views counter]
-#   momentum_score = points / (age_hours + AGE_SOFTENER_HOURS)^DECAY_EXPONENT
+#   freshness = e^(-age_hours / MOMENTUM_FRESH_TAU_HOURS)
+#   engagement_boost = MOMENTUM_ENGAGE_K × ln(1 + points)
+#   momentum_score = freshness × (1 + engagement_boost)
+#
+# MOMENTUM_FRESH_TAU_HOURS/MOMENTUM_ENGAGE_K live in app/constants/threads.py
+# with the other feed tuning knobs (region/affinity/proximity boosts).
 #
 # Golden counting rule: each signal measures DISTINCT MASKS and EXCLUDES the
 # thread author (one person = one vote, nobody votes for themselves).
 COMMENTER_WEIGHT = 3
 AUTHOR_REPLY_WEIGHT = 5
-DECAY_EXPONENT = 1.5
-AGE_SOFTENER_HOURS = 2  # softens the first few hours
 
 # Top-N de tags en tendencia que precomputa el cron (tabla pequeña).
 TRENDING_TAGS_LIMIT = 100
@@ -51,7 +62,7 @@ class Command(BaseCommand):
         "Recompute momentum_score and the For You counters for the root "
         "posts inside the active window (default 30 days). Idempotent and "
         "cheap: 3 aggregate queries + batched bulk_update. An external "
-        "scheduler runs it every 30 min (EventBridge Scheduler in prod, the "
+        "scheduler runs it every 10 min (EventBridge Scheduler in prod, the "
         "`momentum` docker-compose service locally); also invocable by hand "
         "for debug or backfill: make recompute_momentum"
     )
@@ -63,8 +74,8 @@ class Command(BaseCommand):
             default=30,
             help=(
                 "Ventana activa en días. Posts más viejos no se recalculan: "
-                "a 30 días el divisor (722h)^1.5 deja cualquier puntaje en "
-                "~0, no vale el cómputo."
+                "a 30 días la frescura e^(-720/8) es cero para todo efecto "
+                "práctico, no vale el cómputo."
             ),
         )
         parser.add_argument(
@@ -237,7 +248,9 @@ class Command(BaseCommand):
 
             points = reactors + commenter_count * COMMENTER_WEIGHT + replied * AUTHOR_REPLY_WEIGHT
             age_hours = (now - thread.create_at).total_seconds() / 3600
-            momentum = points / ((age_hours + AGE_SOFTENER_HOURS) ** DECAY_EXPONENT)
+            freshness = math.exp(-age_hours / MOMENTUM_FRESH_TAU_HOURS)
+            engagement_boost = MOMENTUM_ENGAGE_K * math.log1p(points)
+            momentum = freshness * (1 + engagement_boost)
 
             # Skip no-changes: the dead tail (points=0, score=0) is not
             # rewritten — fewer writes on each cron run.

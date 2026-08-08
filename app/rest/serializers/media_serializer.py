@@ -63,6 +63,7 @@ class ThreadMediaSerializer(serializers.ModelSerializer):
             "uid",
             "is_video",
             "is_nsfw",
+            "is_spoiler",
             "file",
             "target_color",
             "width",

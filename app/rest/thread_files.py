@@ -28,6 +28,7 @@ from app.permissions.throttling import TrustedIPScopedRateThrottle
 from app.rest.serializers.thread_file_serializer import (
     ConfirmSerializer,
     PresignSerializer,
+    SpoilerToggleSerializer,
     clean_metadata,
 )
 
@@ -241,6 +242,7 @@ class ThreadFilesViewSet(GenericViewSet):
         thread_file.file_url = public_url
         thread_file.is_video = data["is_video"]
         thread_file.is_nsfw = data["is_nsfw"]
+        thread_file.is_spoiler = data["is_spoiler"]
         thread_file.metadata = metadata
         thread_file.is_active = True
         thread_file.save()
@@ -254,6 +256,42 @@ class ThreadFilesViewSet(GenericViewSet):
                 "public_url": public_url,
                 "is_video": thread_file.is_video,
                 "is_nsfw": thread_file.is_nsfw,
+                "is_spoiler": thread_file.is_spoiler,
             },
+            status=HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["post"], url_path="spoiler")
+    def spoiler(self, request) -> Response:
+        """
+        Re-toggle the spoiler flag on an ALREADY-published file, anytime
+        after confirm — independent of the automatic is_nsfw flag. Same
+        ownership boundary as confirm: mask=request.mask, and the file must
+        still be attached+active (never a detached/pending row).
+        ---
+        Request Body:
+
+                { "uid": "<file uid>", "is_spoiler": true }
+
+        Codes: 200 updated · 400 invalid · 401 unauthorized ·
+        404 not found / not owned.
+        """
+        serializer = SpoilerToggleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        thread_file = get_object_or_404(
+            ThreadFile,
+            uid=data["uid"],
+            mask=request.mask,
+            thread__isnull=False,
+            thread__is_active=True,
+            is_active=True,
+        )
+        thread_file.is_spoiler = data["is_spoiler"]
+        thread_file.save(update_fields=["is_spoiler", "update_at"])
+
+        return Response(
+            {"uid": thread_file.uid, "is_spoiler": thread_file.is_spoiler},
             status=HTTP_200_OK,
         )
