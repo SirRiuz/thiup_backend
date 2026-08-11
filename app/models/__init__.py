@@ -15,3 +15,5 @@ from app.models.system_metrics import SystemMetrics
 from app.models.trending_tag import TrendingTag
 from app.models.report import Report
 from app.models.blocked_term import BlockedTerm
+from app.models.notification import Notification
+from app.models.engagement_daily import EngagementDaily
