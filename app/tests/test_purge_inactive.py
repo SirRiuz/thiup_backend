@@ -108,10 +108,11 @@ class PurgeInactiveTest(TestCase):
     def test_db_query_count_is_constant_regardless_of_rows(self):
         for index in range(10):
             self._inactive_file(f"m/jj/jj/many{index}.webp")
-        # One pk-scan per registry model (5) + the single fast DELETE for the
-        # ThreadFile batch (pk+file_key ride the same scan) + the PurgeLog
-        # insert = 7 queries total, independent of how many rows are purged.
-        with self.assertNumQueries(7):
+        # The expired-snap-threads UPDATE pre-pass (1) + one pk-scan per
+        # registry model (5) + the single fast DELETE for the ThreadFile
+        # batch (pk+file_key ride the same scan) + the PurgeLog insert = 8
+        # queries total, independent of how many rows are purged.
+        with self.assertNumQueries(8):
             call_command("purge_inactive")
         self.assertEqual(ThreadFile.objects.count(), 0)
 

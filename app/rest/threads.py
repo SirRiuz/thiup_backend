@@ -1,5 +1,6 @@
 # Python
 import hashlib
+import math
 import time
 from datetime import timedelta
 
@@ -29,7 +30,9 @@ from app.constants.threads import (
     FORYOU_AFFINITY_MAX_TAGS,
     FORYOU_GRACE_HOURS,
     FORYOU_JITTER_BUCKET_SECONDS,
-    FORYOU_JITTER_RANGE,
+    FORYOU_JITTER_DECAY_HOURS,
+    FORYOU_JITTER_RANGE_MAX,
+    FORYOU_JITTER_RANGE_MIN,
     FORYOU_MIN_COMMENTERS,
     FORYOU_MIN_REACTORS,
     FORYOU_MIX_POOL,
@@ -101,31 +104,42 @@ def foryou_final_momentum(momentum, post_region, user_region, matched_tags) -> f
     return final
 
 
-def foryou_jitter(thread_id) -> float:
+def foryou_jitter(thread_id, created_at) -> float:
     """
-    Per-candidate ranking jitter (±FORYOU_JITTER_RANGE) — the ONLY source of
-    non-determinism in the feed. Deterministic per (thread, time bucket),
-    NOT a fresh random draw per call: a plain `random.uniform()` re-rolled on
-    every request broke pagination — page 1 and page 2 of the SAME browse
-    are two separate requests, and each would re-rank the whole candidate
-    pool differently, so a post could appear on both pages or on neither.
-    Hashing (thread_id, current FORYOU_JITTER_BUCKET_SECONDS-wide time
-    bucket) keeps the jitter IDENTICAL for every request within that window
-    (pagination stays consistent — same as scrolling a feed that isn't
-    reshuffling under your feet) while still changing between separate
-    visits once the bucket rolls over. MD5 (not the builtin `hash()`,
-    randomized per-process via PYTHONHASHSEED) so multiple gunicorn workers
-    agree on the same value for the same thread — never persisted, never
-    applied to the stored momentum_score or the exposed momentum_final. A
-    separate function (not inlined) so tests can patch it to a fixed value
+    Per-candidate ranking jitter — the ONLY source of non-determinism in the
+    feed. Deterministic per (thread, time bucket), NOT a fresh random draw
+    per call: a plain `random.uniform()` re-rolled on every request broke
+    pagination — page 1 and page 2 of the SAME browse are two separate
+    requests, and each would re-rank the whole candidate pool differently,
+    so a post could appear on both pages or on neither. Hashing (thread_id,
+    current FORYOU_JITTER_BUCKET_SECONDS-wide time bucket) keeps the jitter
+    IDENTICAL for every request within that window (pagination stays
+    consistent — same as scrolling a feed that isn't reshuffling under your
+    feet) while still changing between separate visits once the bucket
+    rolls over. MD5 (not the builtin `hash()`, randomized per-process via
+    PYTHONHASHSEED) so multiple gunicorn workers agree on the same value
+    for the same thread — never persisted, never applied to the stored
+    momentum_score or the exposed momentum_final.
+
+    The RANGE scales with `created_at`'s age: fresh/unproven content gets
+    the wide ±FORYOU_JITTER_RANGE_MAX swing (more mixing → more chances to
+    surface), decaying to the narrow ±FORYOU_JITTER_RANGE_MIN past
+    FORYOU_JITTER_DECAY_HOURS so already-settled content isn't randomly
+    reshuffled for no reason.
+
+    A separate function (not inlined) so tests can patch it to a fixed value
     and get deterministic ordering assertions — see
     `@patch("app.rest.threads.foryou_jitter", return_value=1.0)` in
     app/tests/test_foryou.py.
     """
+    age_hours = max((timezone.now() - created_at).total_seconds() / 3600, 0)
+    novelty = math.exp(-age_hours / FORYOU_JITTER_DECAY_HOURS)
+    jitter_range = FORYOU_JITTER_RANGE_MIN + (FORYOU_JITTER_RANGE_MAX - FORYOU_JITTER_RANGE_MIN) * novelty
+
     bucket = int(time.time() // FORYOU_JITTER_BUCKET_SECONDS)
     digest = hashlib.md5(f"{thread_id}:{bucket}".encode()).hexdigest()
     unit = int(digest[:8], 16) / 0xFFFFFFFF  # deterministic float in [0, 1)
-    return 1 + (unit * 2 - 1) * FORYOU_JITTER_RANGE
+    return 1 + (unit * 2 - 1) * jitter_range
 
 
 def rank_foryou_rows(rows, user_region, tag_counts=None) -> list:
@@ -139,7 +153,7 @@ def rank_foryou_rows(rows, user_region, tag_counts=None) -> list:
     def sort_key(row):
         thread_id, momentum, created, region = row
         final = foryou_final_momentum(momentum, region, user_region, counts.get(thread_id, 0))
-        return (final * foryou_jitter(thread_id), created)
+        return (final * foryou_jitter(thread_id, created), created)
 
     return [row[0] for row in sorted(rows, key=sort_key, reverse=True)]
 
@@ -685,7 +699,7 @@ class ThreadsViewSet(GenericViewSet):
             row[0]
             for row in sorted(
                 rows,
-                key=lambda r: (proximity_final(r[1], r[3]) * foryou_jitter(r[0]), r[2]),
+                key=lambda r: (proximity_final(r[1], r[3]) * foryou_jitter(r[0], r[2]), r[2]),
                 reverse=True,
             )
         ]

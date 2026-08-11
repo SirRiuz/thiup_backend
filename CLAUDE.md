@@ -143,19 +143,28 @@ a City DB).
   history). LocMem is per-process: exact with 1 gunicorn worker; degrades gracefully with more.
 
 **Momentum (For You ranking)** — precomputed, never per-request:
-- Formula (`app/management/commands/recompute_momentum.py`), freshness-first,
-  engagement-modulated: freshness is the ONLY age-based term (a brand-new post ranks on
-  arrival, no engagement required); engagement multiplies on top, log-scaled (diminishing
-  returns) so it can never let an old, heavily-engaged post fully bury a brand-new one:
-  `points = unique_reactors + unique_commenters×3 + commenters_replied_by_author×5`;
-  `freshness = e^(-age_hours / MOMENTUM_FRESH_TAU_HOURS)` (TAU=8h);
-  `engagement_boost = MOMENTUM_ENGAGE_K × ln(1 + points)` (K=0.6);
-  `momentum_score = freshness × (1 + engagement_boost)`.
-  Golden rule: every signal counts **distinct masks** and **excludes the author**.
+- Formula (`app/management/commands/recompute_momentum.py`) is a LEAKY-BUCKET model
+  ("vaso de agua"): a base freshness drains from the post's own `create_at` exactly like
+  before, but every interaction is now its own droplet that decays from **its own**
+  timestamp and is **added** on top instead of multiplying the base. This is what lets a
+  brand-new comment or reaction visibly lift an old, already-drained post — under the old
+  purely-multiplicative formula, engagement on a stale post was scaled down by that same
+  stale freshness and stayed invisible.
+  `freshness_base = e^(-post_age_hours / MOMENTUM_FRESH_TAU_HOURS)` (TAU=8h);
+  `pulse = Σ e^(-reactor_event_age_hours/TAU) + Σ e^(-commenter_event_age_hours/TAU)×3 + Σ e^(-author_reply_event_age_hours/TAU)×5`;
+  `momentum_score = freshness_base + MOMENTUM_ENGAGE_K × ln(1 + pulse)` (K=0.6).
+  Golden rule unchanged: every signal counts **distinct masks** (each mask's MOST RECENT
+  event when it interacted more than once) and **excludes the author**. `log1p` on the pulse
+  keeps the same diminishing-returns guarantee the old formula had on raw counts — a
+  simultaneous pile-up of interactions still can't blow one post's score out of proportion.
 - Ranking also applies a small per-request **jitter** (`foryou_jitter()` in
-  `app/rest/threads.py`, ±`FORYOU_JITTER_RANGE`=0.15) — transient, re-rolled on every serve,
-  never persisted, never part of the exposed `momentum_final`. Without it the sort is fully
-  deterministic and shows the identical order on every refresh between recompute runs.
+  `app/rest/threads.py`) — transient, re-rolled on every serve, never persisted, never part
+  of the exposed `momentum_final`. Without it the sort is fully deterministic and shows the
+  identical order on every refresh between recompute runs. The jitter **range itself scales
+  with the content's age**: fresh/unproven posts get the wide ±`FORYOU_JITTER_RANGE_MAX`=0.15
+  swing (more mixing → more chance to surface and get discovered), decaying to the narrow
+  ±`FORYOU_JITTER_RANGE_MIN`=0.05 past `FORYOU_JITTER_DECAY_HOURS`=12h so already-settled
+  content isn't randomly reshuffled for no reason.
 - Trigger: an **external scheduler runs the management command every 10 min** — there is **no
   Celery, no RabbitMQ, no in-process scheduler** (no APScheduler/threading). Locally it's the
   `momentum` service in `docker-compose.yml` (a tiny `while true; recompute_momentum; sleep 600`

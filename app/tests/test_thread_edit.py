@@ -13,6 +13,7 @@ from app.models.media import ThreadFile
 from app.models.thread import Thread
 from app.models.thread_edit import ThreadEditHistory
 from app.permissions.throttling import TrustedIPScopedRateThrottle
+from app.tests.test_foryou import decode_body
 
 client = Client()
 
@@ -70,7 +71,7 @@ class ThreadEditTest(TransactionTestCase):
         response = edit(self.thread.uid, self._edit_body(text="new text"))
 
         self.assertEqual(response.status_code, 200)
-        body = response.json()
+        body = decode_body(response)
         self.assertEqual(body["text"], "new text")
         self.assertTrue(body["is_edited"])
         self.assertIsNotNone(body["edited_at_iso"])
@@ -85,7 +86,7 @@ class ThreadEditTest(TransactionTestCase):
 
         response = edit_history(self.thread.uid)
         self.assertEqual(response.status_code, 200)
-        results = response.json()["results"]
+        results = decode_body(response)["results"]
 
         self.assertEqual(len(results), 2)
         # Newest first: the most recent edit's snapshot (what it was right
@@ -178,7 +179,7 @@ class ThreadEditTest(TransactionTestCase):
         response = edit_history(self.thread.uid, REMOTE_ADDR="10.0.0.3")
 
         self.assertEqual(response.status_code, 200)
-        results = response.json()["results"]
+        results = decode_body(response)["results"]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["previous_text"], "original text")
 

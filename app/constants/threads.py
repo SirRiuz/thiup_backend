@@ -54,15 +54,20 @@ FORYOU_MIN_REACTORS = 3
 # among posts that already qualify.
 FORYOU_GRACE_HOURS = 6
 
-# Momentum formula (recompute_momentum.py): freshness × (1 + engagement
-# boost) — freshness is the primary axis (a brand-new post ranks on arrival,
-# no engagement required), engagement modulates it with diminishing returns
-# (log-scaled) so a spicy new post can still shoot up, without letting an
-# old, heavily-engaged post fully bury a brand-new one.
-#   freshness = e^(-age_hours / MOMENTUM_FRESH_TAU_HOURS)
-#   engagement_boost = MOMENTUM_ENGAGE_K × ln(1 + points)
-#   momentum_score = freshness × (1 + engagement_boost)
-# TAU=8h → freshness ~37% at 8h, ~5% at 24h (effectively gone within a day).
+# Momentum formula (recompute_momentum.py) — LEAKY-BUCKET model ("vaso de
+# agua"): a base freshness that drains from the post's own create_at, plus a
+# pulse where every interaction is its OWN droplet that decays from ITS OWN
+# timestamp. This is what lets a brand-new comment or reaction lift an old,
+# already-drained post — the pulse ADDS on top instead of multiplying an
+# already-near-zero base.
+#   freshness_base = e^(-post_age_hours / MOMENTUM_FRESH_TAU_HOURS)
+#   pulse = Σ e^(-event_age_hours / MOMENTUM_FRESH_TAU_HOURS) × event_weight
+#   momentum_score = freshness_base + MOMENTUM_ENGAGE_K × ln(1 + pulse)
+# TAU=8h → a droplet is ~37% strong at 8h, ~5% at 24h (evaporates within a
+# day) — same curve as the base freshness, just re-centered on each event.
+# log1p on the pulse keeps the old diminishing-returns guarantee: a pile-up
+# of simultaneous interactions still can't blow one post's score out of
+# proportion to everything else.
 MOMENTUM_FRESH_TAU_HOURS = 8
 MOMENTUM_ENGAGE_K = 0.6
 
@@ -73,7 +78,15 @@ MOMENTUM_ENGAGE_K = 0.6
 # fresh random draw per call — so pagination (page 1 / page 2 of the same
 # browse) stays consistent within a bucket, while the order still changes
 # once the bucket rolls over. See foryou_jitter() in app/rest/threads.py.
-FORYOU_JITTER_RANGE = 0.15
+#
+# The RANGE itself scales with content age: new/unproven posts get the wide
+# ±FORYOU_JITTER_RANGE_MAX swing (more shuffling → more chances to surface
+# and get discovered), while posts past FORYOU_JITTER_DECAY_HOURS settle to
+# the narrow ±FORYOU_JITTER_RANGE_MIN (established order stays stable,
+# instead of randomly reshuffling content that already found its place).
+FORYOU_JITTER_RANGE_MAX = 0.15
+FORYOU_JITTER_RANGE_MIN = 0.05
+FORYOU_JITTER_DECAY_HOURS = 12
 FORYOU_JITTER_BUCKET_SECONDS = 600  # 10 min — matches the recompute cadence
 
 # Feed conversation preview (X-style two-story card): a third-party DIRECT
