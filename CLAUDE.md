@@ -37,12 +37,14 @@ All models inherit `BaseModel` (`app/models/base_model.py`): UUID `id` (internal
 | `Tag` | `tag.py` | FK to Thread; `name` + `name_norm` (GIN pg_trgm indexed for infix/prefix search) |
 | `Reaction` | `reaction.py` | Catalog: unique `name` + `emoji` (seeded from `app/fixtures/reactions.json`) |
 | `ReactionRelation` | `reaction_relation.py` | (thread, mask, reaction) — a user's reaction to a thread |
-| `Mask` | `mask.py` | `hash` (SHA-256 of IP, unique; first 6 hex chars are the public `@id`), `country_code` (GeoIP) |
+| `Mask` | `mask.py` | `hash` (SHA-256 of IP, unique; first 6 hex chars are the public `@id`), `country_code` (GeoIP), `unread_notifications_count` (denormalized, `F()`-updated by the notification signals) |
 | `ThreadFile` | `media.py` | Media attached to a thread (file, width/height, `is_video`, `target_color`). Formats: mp4/png/jpg/jpeg |
 | `MomentumLog` | `momentum_log.py` | Audit row per momentum recompute run (counts, duration, errors) |
 | `PurgeLog` | `purge_log.py` | Audit row per garbage-collector run (rows selected/deleted, storage objects removed, per-model breakdown JSON, duration, errors). Admin: view/delete only |
 | `SystemMetrics` | `system_metrics.py` | PROXY model (no table) — gives the admin an entry for the owner metrics dashboard (`templates/admin/system_metrics.html`, data from `app/methods/metrics.py::collect_metrics`, computed on demand: online-now via presence, worker RSS + system memory from `/proc`, DB latency/size, content counters, last momentum/GC runs) |
 | `TrendingTag` | `trending_tag.py` | Precomputed trending tags (name, score = Σ momentum of carrying threads). Fully rewritten on each momentum run; `/search/suggest/` only reads it |
+| `Notification` | `notification.py` | NOT a `BaseModel` (own `id`/`create_at`, no `uid`/`is_active`): `recipient`/`actor` FKs `Mask`, `verb` (`reaction`/`reply`/`profile_view`/`qr_generate`/`download`/`share`/`link_copy`), `thread` (deep-link target — nullable, null only for `profile_view`, whose target is `actor` itself), `reaction` FK (nullable), `is_read`. Created by `app/signals/notification_signals.py` (`reaction`/`reply`) or `app/rest/batch.py::_notify_engagement` (the other 5, on batch flush); also registered in the admin (add/edit works — the badge-bump signal fires for admin-created rows too, see "In-app notifications" below), hard-deleted by age in `purge_inactive` |
+| `EngagementDaily` | `engagement_daily.py` | NOT a `BaseModel`: `target_type`/`target_uid` (raw uid, not FK — existence unvalidated by design), `day`, five counters (`view/qr/link_copy/download/share_count`). Upserted in bulk by `POST /batch/`, unique per `(target_type, target_uid, day)`, hard-deleted by age in `purge_inactive` |
 | `BlockedTerm` | `blocked_term.py` | Moderation blocklist (shadowban filter): `term` + derived `term_norm` (indexed). Seeded by migration `0020` (CSAM / extremism / hate terms); managed from the admin. See "Shadowban blocklist" below |
 | `LoginAttempt`, `BlackList` | `honeypot/models/` | Honeypot forensics; a post_save signal blacklists an IP after `HONEYPOT_LOGIN_TRYOUT` (default 5) attempts |
 
@@ -131,6 +133,17 @@ web-service client this app never calls); `.get()` works with any edition, so sw
 for the ~9 MB GeoLite2-Country needs no code change (recommended; the current file is actually
 a City DB).
 
+**The 60 s Mask cache assumes the row is immutable except `country_code`** — it is a WHOLE-INSTANCE
+cache (`cache.set(f"mask:{hash}", obj, 60)`), not a field-level one. `Mask.unread_notifications_count`
+breaks that assumption: it's mutated from a DIFFERENT request than the one reading it (the actor's
+write vs. the recipient's poll), so a stale cached instance would silently serve the pre-write count
+for up to 60 s with no error and no DB inconsistency — it looks exactly like "the badge just didn't
+update," not a crash, which makes it easy to miss. Every writer of a mutable Mask field OTHER than
+`country_code` (today: `app/signals/notification_signals.py`'s `_notify()`, and
+`NotificationsViewSet.mark_read`) MUST call `invalidate_mask_cache(hash)`
+(`app/middlewares/mask.py`) right after the write. Adding another mutable field to `Mask` later?
+Audit every write site for this same call, or read it live instead of trusting `request.mask`.
+
 **Presence ("online now")** — `app/methods/presence.py`, ephemeral by design:
 - Passive marking: `MaskMiddleware` refreshes `online:<mask_hash>` in the LocMem cache (TTL 60 s)
   on every request — the user's own browsing IS the heartbeat; there is no heartbeat endpoint.
@@ -202,6 +215,124 @@ a City DB).
 - Trigger: EventBridge Scheduler **every 2 days** (same ephemeral-Fargate pattern as momentum,
   sidecar neutralized). Locally: the `purge` docker-compose service (2-day sleep loop, mirrors
   the `momentum` service). Manually: `make purge_inactive`.
+- **Retention sweeps (`Notification` / `EngagementDaily`)**: after the `PURGE_MODELS` loop, the
+  same run also hard-deletes `Notification` rows older than `NOTIFICATION_RETENTION_DAYS`
+  (default 30) and `EngagementDaily` rows older than `ENGAGEMENT_RETENTION_DAYS` (default 90) —
+  two flat, unconditional, single-statement deletes. Deliberately **outside** `PURGE_MODELS`:
+  neither model is ever soft-deleted by user action, so the `is_active=False` registry loop never
+  applies to them; these are pure age-based sweeps bolted onto the existing every-2-days cron so
+  no new scheduled job is needed. Counts fold into the same `PurgeLog.breakdown`, kept out of
+  `total_selected`/`--limit` bookkeeping (unrelated to the cascade/storage machinery above).
+
+**In-app notifications** — reaction, reply, and 5 engagement-derived verbs, delivered via a
+paginated inbox + a denormalized unread badge, never computed per-request:
+- `Notification` (`app/models/notification.py`) — NOT a `BaseModel`: never addressed by its own
+  URL (the FE deep-links via `thread.uid`, or for `profile_view`, `actor`'s mask id instead) and
+  never individually soft-deleted, so the UUID `id`/`uid` pair would be pure overhead on the
+  app's highest-frequency insert. Fields: `recipient`, `actor` (both FK `Mask`), `verb`
+  (`reaction`/`reply`/`profile_view`/`qr_generate`/`download`/`share`/`link_copy`, see
+  `Notification.THREAD_VERBS`), `thread` — the DEEP-LINK TARGET for every verb EXCEPT
+  `profile_view`: for `reaction` the reacted-to thread (the recipient's own content); for `reply`
+  the NEW reply thread the actor created, whose own `sub` FK already points back to the
+  recipient's content — so the FE reuses the existing `/threads/<uid>/responses/` permalink+
+  parents logic, no extra field needed; for `qr_generate`/`download`/`share`/`link_copy` the
+  thread the actor generated a QR for / downloaded the QR image of / shared / copied the link of.
+  Nullable ONLY for `profile_view`, whose target isn't a thread at all — `actor` already IS that
+  target (the mask who viewed the recipient's profile), so the FE routes to `/m/<actor.hash[:6]>`
+  instead of a thread permalink when `thread` is null. `reaction` (FK `Reaction`, set only for the
+  `reaction` verb), `is_read`.
+- Created by two signal receivers (`app/signals/notification_signals.py`, same one-file-per-
+  domain package as media/moderation signals): `post_save(ReactionRelation)` and
+  `post_save(Thread)` (guarded on `sub_id is not None`, i.e. a reply), both skipping self-
+  notifications (recipient == actor). Neither writes the badge itself — they only call
+  `Notification.objects.create(...)`. The badge bump lives on a THIRD receiver,
+  `post_save(Notification)` (`bump_unread_badge`), so it fires identically no matter what
+  created the row: the two signals above, the Django admin's add form, or any future code path
+  — creating one by hand in the admin behaves exactly like an organic one. That receiver writes
+  in exactly two statements — `Mask.unread_notifications_count` atomically `F()`-incremented (no
+  read-before-write), then `invalidate_mask_cache()` on the recipient's hash (see "Mask identity"
+  above: the write usually happens on the ACTOR's request, not the recipient's, so the
+  recipient's already-cached `Mask` instance must be dropped or it keeps serving the
+  pre-increment count for up to 60 s). Zero extra queries in the two upstream signals:
+  `instance.thread`/`instance.sub` are already-resolved Python instances at creation time
+  (assigned via the serializers' `SlugRelatedField`/`PrimaryKeyRelatedField`, not re-fetched by
+  id), so accessing `.mask_id` on them never re-hits the DB.
+  `ReactionRelationSerializer.create()` already returns `None` without calling `.create()` on a
+  toggle-OFF (same emoji again), so no `post_save(created=True)` fires then — no extra guard
+  needed. Switching to a **different** emoji deletes-then-creates, so it intentionally DOES
+  notify again (bounded by the existing `reactions_create` throttle).
+- The other 5 verbs (`profile_view`/`qr_generate`/`download`/`share`/`link_copy`) are created from
+  `POST /batch/` (`BatchView._notify_engagement`, `app/rest/batch.py`), NOT a `post_save` signal —
+  see "Engagement batching" below for why and for the query-cost tradeoff this introduces. A
+  deliberate, accepted departure from `EngagementDaily`'s "anonymous aggregate only" design: these
+  5 event types are considered deliberate-enough actions to be worth surfacing with actor
+  identity, unlike a passive thread `view` (which stays purely anonymous — nothing tracks that
+  event as notify-eligible). `profile_view` additionally has a **24 h cooldown per (actor,
+  recipient) pair** (`PROFILE_VIEW_COOLDOWN_HOURS`, served by the
+  `notif_actor_recipient_verb_idx` index) — unlike a reaction or reply, a profile view is passive
+  and high-volume, so without a cooldown anyone who revisits your profile repeatedly in a day
+  would flood your inbox; the other 4 verbs get no cooldown (deliberate, lower-volume actions).
+- Read side (`app/rest/notifications.py`, `GET/POST /notifications/...`): `unread_count` is a
+  zero-query read off `request.mask` (the denormalized counter, not a `COUNT(*)`).
+  `mark-read` bulk-flips every unread row for the recipient and resets the counter in two
+  statements. The list groups **consecutive** same-`(thread, verb)` rows on the already-fetched
+  page into one display entry (`app/methods/notifications.py::group_notifications`) — pure
+  Python over the page (size 25), no extra queries, same post-fetch-enrichment spirit as
+  `attach_top_replies` but simpler (nothing left to fetch). `dismiss` deletes a whole grouped
+  entry at once, identified by `{thread_uid, verb}` (never the row's internal pk — grouping
+  already collapsed however many rows into one displayed entry, so a dismiss removes all of
+  them). `thread_uid` is omitted for `profile_view` (its rows carry no thread) — `dismiss` then
+  scopes the delete with `thread__isnull=True` instead, so it can never accidentally sweep a
+  thread-linked row; `DismissNotificationSerializer` rejects the opposite mismatches too
+  (`thread_uid` present for `profile_view`, or missing for a `THREAD_VERBS` entry). No
+  `@human_validator` on any action (read-only or non-content-creating, same reasoning as
+  `foryou`/`closeyou`).
+
+**Engagement batching (`EngagementDaily`)** — foundation of a future analytics system: a generic,
+extensible daily rollup fed by client-batched, pre-aggregated telemetry (profile views, QR
+generations, downloads, shares):
+- `EngagementDaily` (`app/models/engagement_daily.py`) — also not a `BaseModel`, same frugality
+  reasoning as `Notification`. `target_type` (`thread`/`mask`) + `target_uid` — a RAW uid, not a
+  FK: the batch upsert never needs a join/lookup, and **target existence is deliberately never
+  validated on write** — these are accepted as best-effort/approximate stats, like every major
+  platform's view count. For `target_type="mask"` this stores the 6-hex public mask id (the same
+  identifier used everywhere a mask is publicly referenced), never the full hash. `day` is always
+  server-computed (`timezone.now().date()`), never trusted from the client — it's what the
+  `UniqueConstraint(target_type, target_uid, day)` upserts on. Five counters: `view_count`,
+  `qr_count`, `link_copy_count`, `download_count`, `share_count`.
+- `POST /batch/` (`app/rest/batch.py`) writes the **whole batch in ONE multi-row
+  `INSERT ... ON CONFLICT (target_type, target_uid, day) DO UPDATE SET col = table.col +
+  EXCLUDED.col` statement**, via a raw `connection.cursor()` (style matches the only other raw-
+  SQL usage in the codebase, `app/methods/metrics.py`) — this is what keeps the write O(1)
+  queries regardless of batch size (tested with `assertNumQueries`, 1 vs 200 events). Events for
+  the SAME `(target_type, target_uid)` are merged server-side into one VALUES row before the
+  query, because **Postgres forbids `ON CONFLICT DO UPDATE` from touching the same conflict-key
+  row twice within one statement**. Django's ORM-native `bulk_create(update_conflicts=True)` was
+  considered and rejected: it does `SET col = EXCLUDED.col` (last-write-wins overwrite), not the
+  additive increment this needs — it would silently drop counts on a second same-day batch.
+  Request is capped at `BATCH_MAX_EVENTS` (200) events and `BATCH_MAX_EVENT_COUNT` (1000) per
+  event (`app/constants/engagement.py`) — sanity caps, not real limits, since the FE already
+  pre-aggregates client-side before flushing. No `@human_validator` (fire-and-forget telemetry
+  the FE flushes opportunistically on an interval tick or tab-hide, not content creation — same
+  reasoning as `foryou`/`closeyou`), throttle scope `batch_ingest` (30/min).
+- Privacy note: this is the first place the backend receives real interaction telemetry (profile
+  views, QR/download/share events) — a deliberate product decision, distinct from the frontend's
+  `affinity.js` tag-personalization profile, which still never leaves the device.
+- **A second step, `_notify_engagement`, runs right after the upsert and creates real
+  actor-identified `Notification` rows** for `qr`/`download`/`share`/`link_copy` on a `thread`
+  target and `view` on a `mask` target — see "In-app notifications" above for the per-verb
+  reasoning and the `profile_view` cooldown. This breaks the upsert's own "O(1) queries
+  regardless of batch size" guarantee: unlike the upsert (which never validates target
+  existence), this step DOES resolve real `Thread`/`Mask` rows (so a notification always points
+  at something real) and calls `Notification.objects.create()` per eligible row, not
+  `bulk_create` — the `post_save` signal that bumps the recipient's badge must fire per row. To
+  keep this cheap, `_notify_engagement` first filters down to only the targets whose merged
+  counts actually touch a notify-eligible column **before** running any query — a batch made
+  entirely of `view` events (the overwhelmingly common case: every thread/profile page load)
+  still costs the upsert's original 1 query, paying nothing extra. In the eligible case it costs
+  O(distinct notify-eligible targets in the batch), which stays tiny in practice: one browser tab
+  reflects ~75 s of one person's activity, so it only ever touches the handful of
+  threads/profiles they were actually looking at.
 
 **Async stack reality check (cost-relevant)**: there is **no Redis, no Celery and no RabbitMQ** —
 they were removed. Momentum and the every-2-days garbage collector are the only background jobs,
@@ -253,6 +384,11 @@ Legend — **Enc**: response encrypted when `ENCRYPTED_RESPONSE=True` (global re
 | GET | `/search/` | `SearchViewSet` (`search.py`) | Search; `?q=&type=posts\|tags\|users\|media&ordering=&page=` (throttle 60/min) | yes | yes | no | yes |
 | GET | `/search/suggest/` | 〃 | Autocomplete (throttle 240/min) | yes | yes | no | yes |
 | GET | `/users/<hash>/` | `MasksViewSet` (`masks.py`) | Mask hover-card: `{mask_id, joined, posts_count, replies_count, reactions_count, is_online}` (accepts full hash or the 6-hex public id) | yes | yes | no | yes |
+| GET | `/notifications/` | `NotificationsViewSet` (`notifications.py`) | Paginated inbox, grouped at read by `(thread, verb)` | yes | yes | no | yes |
+| GET | `/notifications/unread-count/` | 〃 | `{unread_count}` — zero-query read off `request.mask`'s denormalized counter | yes | yes | no | yes |
+| POST | `/notifications/mark-read/` | 〃 | Bulk-flips every unread row for the caller + resets the counter | yes | yes | no | yes |
+| POST | `/notifications/dismiss/` | 〃 | Deletes a whole grouped entry, identified by `{thread_uid, verb}` — never an internal pk | yes | yes | no | yes |
+| POST | `/batch/` | `BatchView` (`batch.py`) | Batched engagement telemetry (view/qr/link_copy/download/share) → `EngagementDaily` upsert + `Notification` creation for 5 of those event types (throttle 30/min, ≤200 events/request) | yes | yes | no | yes |
 | POST | `/{gw_hash}/` (24 hex) | `GatewayView` (`gateway.py`) | Rotating gateway; dispatches the inner envelope | yes | inner view's | inner view's | — |
 | any | `/admin/` | honeypot | Decoy admin; logs and blacklists | — | — | — | blocked |
 | any | `/{INTERNAL_ADMIN_URL}` | Django admin | Real admin (obfuscated path) | — | staff | — | blocked |

@@ -2,10 +2,12 @@
 from django.urls import include, path, re_path
 from rest_framework import routers
 
+from app.rest.batch import BatchView
 from app.rest.captcha import CaptchaVerifyView
 from app.rest.config import ConfigView
 from app.rest.gateway import GatewayView
 from app.rest.masks import CurrentMaskView, MasksViewSet
+from app.rest.notifications import NotificationsViewSet
 from app.rest.reactions import ReactionsViewSet
 from app.rest.reports import ReportsViewSet
 from app.rest.search import SearchViewSet
@@ -24,6 +26,7 @@ router.register(r"thread-files", ThreadFilesViewSet, basename="thread-files")
 router.register(r"tags", TagsViewSet)
 router.register(r"search", SearchViewSet, basename="search")
 router.register(r"users", MasksViewSet, basename="users")
+router.register(r"notifications", NotificationsViewSet, basename="notifications")
 
 urlpatterns = [
     # Client-assertion issuer (bootstrap of SINGLE_REQUEST_PROTECT):
@@ -36,6 +39,10 @@ urlpatterns = [
     # Human-pass issuer: exchanges a single-use Cap captcha token for the
     # short-lived pass that entity-creating writes require (@human_validator).
     path("captcha/verify/", CaptchaVerifyView.as_view()),
+    # Batch engagement ingestion (foundation of the future analytics
+    # system): fire-and-forget, client-batched telemetry — no captcha, see
+    # app/rest/batch.py.
+    path("batch/", BatchView.as_view()),
     path("", include(router.urls)),
     # ── GATEWAY de transporte con PATH ÚNICO POR REQUEST /{token}/ ───────
     # COMODÍN (verificar, no registrar): los paths únicos no se pueden
