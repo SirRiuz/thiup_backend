@@ -98,13 +98,21 @@ class RecomputeMomentumTest(TestCase):
         # `love` is seeded by migration 0015; reuse it instead of recreating.
         self.reaction, _ = Reaction.objects.get_or_create(name="love", defaults={"emoji": "❤️"})
 
-    def react(self, thread, mask):
-        ReactionRelation.objects.create(thread=thread, mask=mask, reaction=self.reaction)
+    def react(self, thread, mask, age_hours=0) -> ReactionRelation:
+        relation = ReactionRelation.objects.create(thread=thread, mask=mask, reaction=self.reaction)
+        if age_hours:
+            ReactionRelation.objects.filter(pk=relation.pk).update(
+                create_at=timezone.now() - timedelta(hours=age_hours)
+            )
+            relation.refresh_from_db()
+        return relation
 
     def test_counting_rules_and_formula(self):
         """
         Author excluded from all signals, commenters DISTINCT, author
-        dialogue counted, and momentum = freshness × (1 + engagement_boost).
+        dialogue counted, and momentum = freshness_base + K × ln(1 + pulse)
+        where every interaction is its own droplet decaying from ITS OWN
+        timestamp (all created "now" here, so each droplet ≈ full strength).
         """
         thread = make_thread(self.author, age_hours=10)
 
@@ -132,11 +140,12 @@ class RecomputeMomentumTest(TestCase):
         self.assertEqual(thread.unique_reactors_count, 2)
         self.assertEqual(thread.unique_commenters_count, 2)
 
-        # points = 2 + 2*3 + 1*5 = 13
-        # freshness = e^(-10/8) ; engagement_boost = 0.6 * ln(1+13)
-        # momentum = freshness * (1 + engagement_boost)
-        freshness = math.exp(-10 / 8)
-        expected = freshness * (1 + 0.6 * math.log1p(13))
+        # Every reaction/comment/reply above was created "now" (age ≈ 0),
+        # so each droplet decays to ≈1: pulse ≈ 2 reactors + 2*3 commenters
+        # + 1*5 author-dialogue = 13. The post itself is 10h old.
+        # freshness_base = e^(-10/8) ; momentum = freshness_base + 0.6*ln(1+13)
+        freshness_base = math.exp(-10 / 8)
+        expected = freshness_base + 0.6 * math.log1p(13)
         self.assertAlmostEqual(thread.momentum_score, expected, places=3)
 
     def test_author_talking_alone_gets_freshness_only(self):
@@ -153,9 +162,59 @@ class RecomputeMomentumTest(TestCase):
 
         self.assertEqual(thread.unique_reactors_count, 0)
         self.assertEqual(thread.unique_commenters_count, 0)
-        # points=0 => engagement_boost = 0.6*ln(1) = 0 => momentum = freshness.
+        # pulse=0 => 0.6*ln(1+0) = 0 => momentum = freshness_base alone.
         expected = math.exp(-5 / 8)
         self.assertAlmostEqual(thread.momentum_score, expected, places=3)
+
+    def test_old_post_revived_by_fresh_interaction(self):
+        """
+        The leaky-bucket fix: an old post whose freshness_base has already
+        drained to ~0 gets a real, visible momentum bump from a BRAND NEW
+        interaction — the pulse decays from the EVENT's own timestamp, not
+        the post's, so a fresh droplet doesn't need the post itself to
+        still be fresh to count.
+        """
+        thread = make_thread(self.author, age_hours=200)  # long past TAU=8h
+        freshness_base = math.exp(-200 / 8)
+        self.assertLess(freshness_base, 1e-9)  # sanity: base is dead
+
+        self.react(thread, self.user_b)  # fresh reaction, age ≈ 0
+
+        call_command("recompute_momentum")
+        thread.refresh_from_db()
+
+        # pulse ≈ 1 (one fresh reactor) => momentum ≈ 0.6*ln(2), nowhere
+        # near freshness_base's ~1e-11 — the interaction alone carries it.
+        expected = freshness_base + 0.6 * math.log1p(1)
+        self.assertAlmostEqual(thread.momentum_score, expected, places=3)
+        self.assertGreater(thread.momentum_score, 0.3)
+
+    def test_stale_interaction_pulse_fades_more_than_fresh(self):
+        """
+        Each droplet decays from ITS OWN event time: a comment posted long
+        ago barely lifts the score, the same comment posted just now lifts
+        it much more — even on two equally old posts.
+        """
+        fresh_post = make_thread(self.author, age_hours=200)
+        stale_post = make_thread(self.author, age_hours=200)
+
+        make_thread(self.user_b, sub=fresh_post)  # comment "now"
+        stale_comment = make_thread(self.user_b, sub=stale_post)
+        Thread.objects.filter(pk=stale_comment.pk).update(create_at=timezone.now() - timedelta(hours=150))
+
+        call_command("recompute_momentum")
+        fresh_post.refresh_from_db()
+        stale_post.refresh_from_db()
+
+        self.assertEqual(fresh_post.unique_commenters_count, 1)
+        self.assertEqual(stale_post.unique_commenters_count, 1)
+        self.assertGreater(fresh_post.momentum_score, stale_post.momentum_score)
+
+        freshness_base = math.exp(-200 / 8)
+        fresh_expected = freshness_base + 0.6 * math.log1p(3)  # commenter weight 3, droplet ≈ 1
+        stale_expected = freshness_base + 0.6 * math.log1p(3 * math.exp(-150 / 8))
+        self.assertAlmostEqual(fresh_post.momentum_score, fresh_expected, places=3)
+        self.assertAlmostEqual(stale_post.momentum_score, stale_expected, places=3)
 
     def test_active_window_skips_old_posts(self):
         """Posts outside the --days window are not recalculated."""
@@ -210,6 +269,27 @@ class RecomputeMomentumTest(TestCase):
         self.assertEqual(last.window_days, 15)
         self.assertEqual(last.processed_count, 1)
         self.assertEqual(last.error, "")
+
+
+class ForyouJitterNoveltyTest(SimpleTestCase):
+    """foryou_jitter()'s range scales with the content's age (novelty)."""
+
+    def test_fresh_content_gets_wider_jitter_than_established_content(self):
+        from app.constants.threads import FORYOU_JITTER_RANGE_MAX, FORYOU_JITTER_RANGE_MIN
+        from app.rest.threads import foryou_jitter
+
+        thread_id = "same-thread-id"  # SAME id/bucket => identical hash draw
+        now = timezone.now()
+
+        fresh = foryou_jitter(thread_id, now)
+        established = foryou_jitter(thread_id, now - timedelta(hours=200))  # ≫ FORYOU_JITTER_DECAY_HOURS
+
+        # Same deterministic draw (same id, same time bucket): only the
+        # RANGE differs, so the deviation from 1.0 must be strictly wider
+        # for the fresh post, and each must stay within its own bound.
+        self.assertGreater(abs(fresh - 1), abs(established - 1))
+        self.assertLessEqual(abs(fresh - 1), FORYOU_JITTER_RANGE_MAX)
+        self.assertLessEqual(abs(established - 1), FORYOU_JITTER_RANGE_MIN + 1e-6)
 
 
 class ForYouViewTest(TestCase):
@@ -353,9 +433,13 @@ class ForYouPersonalizedTest(TestCase):
         ALWAYS momentum DESC over all candidates — a single monotonic
         list, without interleaved "windows" — and with no repeated posts.
         """
-        # 10 tagged (12h) and 10 untagged (6h → more momentum). Both groups
-        # fit within their quotas (350/150): all 20 are candidates.
-        tagged = [self.__make_qualifying(f"gato {i} #cats", 12, tag="cats") for i in range(10)]
+        # 10 tagged (48h) and 10 untagged (6h → more momentum). Both groups
+        # fit within their quotas (350/150): all 20 are candidates. The gap
+        # is wide (not just a few hours) so the untagged group's freshness
+        # lead survives the tagged group's ×1.35 affinity boost — see
+        # test_affinity_boost_reorders_the_top for where that boost DOES
+        # flip the order; this test only cares about composition/dedup.
+        tagged = [self.__make_qualifying(f"gato {i} #cats", 48, tag="cats") for i in range(10)]
         untagged = [self.__make_qualifying(f"global {i}", 6) for i in range(10)]
 
         call_command("recompute_momentum")
@@ -687,16 +771,21 @@ class ForYouAffinityBoostTest(TestCase):
         global top (×2.05); with 1 tag (×1.35) it doesn't make it. The
         served momentum_final reflects the exact ratios.
         """
-        # base: untagged(6h)=0.1326 > tagged(10h)=0.0722
+        # All three get the SAME commenter pulse (1 commenter, posted "now"):
+        # E = 0.6*ln(1+3) ≈ 0.832. base: untagged(6h) freshness_base≈0.472
+        # -> momentum≈1.304; tagged(24h) freshness_base≈0.050 -> momentum≈0.882.
+        # Tagged posts are aged well past the affinity gap (16h+) so that the
+        # ×1.35 boost alone still isn't enough to beat the fresher untagged
+        # post, while ×2.05 is.
         untagged = self.__make_post("global fuerte", 6)
-        tagged3 = self.__make_post("match total #cats #dogs #birds", 10, tag_names=("cats", "dogs", "birds"))
-        tagged1 = self.__make_post("match parcial #cats", 10, tag_names=("cats",))
+        tagged3 = self.__make_post("match total #cats #dogs #birds", 24, tag_names=("cats", "dogs", "birds"))
+        tagged1 = self.__make_post("match parcial #cats", 24, tag_names=("cats",))
 
         call_command("recompute_momentum")
         body = self.get_foryou({"tags": ["cats", "dogs", "birds"]})
 
         uids = [p["uid"] for p in body["results"]]
-        # tagged3: 0.0722×2.05=0.148 > untagged 0.1326 > tagged1 ×1.35=0.097
+        # tagged3: 0.882×2.05≈1.807 > untagged≈1.304 > tagged1: 0.882×1.35≈1.190
         self.assertEqual(uids[:3], [tagged3.uid, untagged.uid, tagged1.uid])
 
         by_uid = {p["uid"]: p for p in body["results"]}
