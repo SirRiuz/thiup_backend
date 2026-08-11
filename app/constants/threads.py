@@ -28,8 +28,9 @@ UPLOAD_CONTENT_TYPE_EXT = {
 # For You entry threshold.
 # SEPARATE from momentum: momentum SORTS, the threshold decides who ENTERS.
 # A post enters if it meets AT LEAST ONE:
-#   unique_commenters ≥ 1  OR  unique_reactions ≥ 3  OR  age < 2h
-# (the grace window lets new posts receive their first interactions). All
+#   unique_commenters ≥ 1  OR  unique_reactions ≥ 3  OR  age < 6h
+# (the grace window gives new posts a real shot at organic discovery before
+# the quality gate kicks back in — see FORYOU_GRACE_HOURS below). All
 # fields are precomputed by `recompute_momentum`: the WHERE is over indexed
 # counters, recomputing nothing per request.
 # Thread/reply text limit — Threads' exact 500 (their posts and replies share
@@ -40,7 +41,40 @@ THREAD_TEXT_MAX_LENGTH = 500
 
 FORYOU_MIN_COMMENTERS = 1
 FORYOU_MIN_REACTORS = 3
-FORYOU_GRACE_HOURS = 2
+# Extended from 2h to 6h alongside the freshness-first momentum redesign
+# (see recompute_momentum.py): a fresh, zero-engagement post now has a real,
+# nonzero momentum_score from freshness alone, so it needs a fair runway to
+# actually get discovered and earn its first reactions/comments organically
+# — 2h was too tight for that. Deliberately NOT stretched to cover the
+# formula's whole ~24h freshness tail (see MOMENTUM_FRESH_TAU_HOURS below):
+# past this gate, a post still needs the SAME real engagement bar as before
+# (≥1 commenter or ≥3 reactors) to stay in the pool — otherwise every post
+# from the last 24h would qualify regardless of quality, and the feed fills
+# with unengaged noise. This is the quality gate; TAU below is just ranking
+# among posts that already qualify.
+FORYOU_GRACE_HOURS = 6
+
+# Momentum formula (recompute_momentum.py): freshness × (1 + engagement
+# boost) — freshness is the primary axis (a brand-new post ranks on arrival,
+# no engagement required), engagement modulates it with diminishing returns
+# (log-scaled) so a spicy new post can still shoot up, without letting an
+# old, heavily-engaged post fully bury a brand-new one.
+#   freshness = e^(-age_hours / MOMENTUM_FRESH_TAU_HOURS)
+#   engagement_boost = MOMENTUM_ENGAGE_K × ln(1 + points)
+#   momentum_score = freshness × (1 + engagement_boost)
+# TAU=8h → freshness ~37% at 8h, ~5% at 24h (effectively gone within a day).
+MOMENTUM_FRESH_TAU_HOURS = 8
+MOMENTUM_ENGAGE_K = 0.6
+
+# Ranking jitter (For You + Close You) — never persisted, never applied to
+# the stored momentum_score nor the exposed momentum_final. Without it the
+# deterministic sort shows the identical order on every refresh between
+# recompute_momentum runs. DETERMINISTIC per (thread, time bucket) — not a
+# fresh random draw per call — so pagination (page 1 / page 2 of the same
+# browse) stays consistent within a bucket, while the order still changes
+# once the bucket rolls over. See foryou_jitter() in app/rest/threads.py.
+FORYOU_JITTER_RANGE = 0.15
+FORYOU_JITTER_BUCKET_SECONDS = 600  # 10 min — matches the recompute cadence
 
 # Feed conversation preview (X-style two-story card): a third-party DIRECT
 # reply rides under its root's feed card as `top_reply` ONLY when it EARNED

@@ -206,6 +206,28 @@ class ThreadSerializer(serializers.ModelSerializer):
         # is the raw timestamp so the client can render a localized date. Public
         # thread metadata, no extra query (the column is already loaded).
         representation["created_at_iso"] = instance.create_at.isoformat() if instance.create_at else None
+        # is_edited/edited_at_iso: the "· Edited" indicator, visible to every
+        # viewer (not private like is_mine) — mirrors create_at/created_at_iso.
+        # edited_at is a dedicated column (see Thread.edited_at) — NOT update_at,
+        # which unrelated writes (e.g. moderation) also touch.
+        representation["is_edited"] = instance.edited_at is not None
+        representation["edited_at_iso"] = instance.edited_at.isoformat() if instance.edited_at else None
+        # is_private: PUBLIC (not a secret like is_mine) — a viewer who
+        # already has the direct link is allowed to know it's private, same
+        # as the lock badge shown in the UI.
+        representation["is_private"] = instance.is_private
+        # is_snap/expires_at_iso: the frontend renders its OWN countdown off
+        # this absolute deadline (never trust a server-computed "Xh left"
+        # string, which goes stale between fetch and render) — same shape
+        # as created_at_iso/edited_at_iso. expires_at_iso is null for a
+        # non-snap thread even if expire_date is ever reused for something
+        # else in the future (is_snap is the source of truth for "this is a
+        # snap thread", not merely "expire_date is set").
+        representation["is_snap"] = instance.is_snap
+        representation["expires_at_iso"] = (
+            instance.expire_date.isoformat() if instance.is_snap and instance.expire_date else None
+        )
+        representation["replies_disabled"] = instance.replies_disabled
 
         return representation
 
@@ -228,6 +250,7 @@ class ThreadSerializer(serializers.ModelSerializer):
             "id",
             "is_active",
             "update_at",
+            "edited_at",
             "visibility",
             "expire_date",
             "region",
@@ -238,6 +261,18 @@ class ThreadSerializer(serializers.ModelSerializer):
             "unique_reactors_count",
             "unique_commenters_count",
             "mask",
+            # Same convention as expire_date/language/region above: the
+            # client DECLARES is_private/is_snap/replies_disabled at create
+            # time and the view passes them through serializer.save(...)
+            # (see ThreadsViewSet.create); is_private/replies_disabled are
+            # also writable later via ThreadEditSerializer. None of the
+            # three are directly writable through THIS serializer's own
+            # validation — all raw writes go through those two explicit
+            # paths. Public representation is a separate computed block in
+            # to_representation() below.
+            "is_private",
+            "is_snap",
+            "replies_disabled",
         )
         # momentum_score IS exposed (the FE shows it under DEBUG) but must be
         # READ-ONLY: it is precomputed by the momentum cron, and a writable

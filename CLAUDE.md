@@ -143,13 +143,22 @@ a City DB).
   history). LocMem is per-process: exact with 1 gunicorn worker; degrades gracefully with more.
 
 **Momentum (For You ranking)** — precomputed, never per-request:
-- Formula (`app/management/commands/recompute_momentum.py`):
+- Formula (`app/management/commands/recompute_momentum.py`), freshness-first,
+  engagement-modulated: freshness is the ONLY age-based term (a brand-new post ranks on
+  arrival, no engagement required); engagement multiplies on top, log-scaled (diminishing
+  returns) so it can never let an old, heavily-engaged post fully bury a brand-new one:
   `points = unique_reactors + unique_commenters×3 + commenters_replied_by_author×5`;
-  `momentum_score = points / (age_hours + 2)^1.5`.
+  `freshness = e^(-age_hours / MOMENTUM_FRESH_TAU_HOURS)` (TAU=8h);
+  `engagement_boost = MOMENTUM_ENGAGE_K × ln(1 + points)` (K=0.6);
+  `momentum_score = freshness × (1 + engagement_boost)`.
   Golden rule: every signal counts **distinct masks** and **excludes the author**.
-- Trigger: an **external scheduler runs the management command every 30 min** — there is **no
+- Ranking also applies a small per-request **jitter** (`foryou_jitter()` in
+  `app/rest/threads.py`, ±`FORYOU_JITTER_RANGE`=0.15) — transient, re-rolled on every serve,
+  never persisted, never part of the exposed `momentum_final`. Without it the sort is fully
+  deterministic and shows the identical order on every refresh between recompute runs.
+- Trigger: an **external scheduler runs the management command every 10 min** — there is **no
   Celery, no RabbitMQ, no in-process scheduler** (no APScheduler/threading). Locally it's the
-  `momentum` service in `docker-compose.yml` (a tiny `while true; recompute_momentum; sleep 1800`
+  `momentum` service in `docker-compose.yml` (a tiny `while true; recompute_momentum; sleep 600`
   loop); in prod it's **AWS EventBridge Scheduler → an ephemeral Fargate task** running
   `python manage.py recompute_momentum`, which starts, computes, exits. Manually:
   `make recompute_momentum`.
@@ -189,7 +198,7 @@ a City DB).
 they were removed. Momentum and the every-2-days garbage collector are the only background jobs,
 and they run as *ephemeral* scheduled tasks (see above), not on permanent workers. This deliberately avoids the ~750 MB of always-on
 memory (Celery worker+beat ≈ 540–580 MB + RabbitMQ ≈ 184 MB) that a broker/worker would cost to
-run a job that takes seconds every 30 min, vs ~50 MB (PSS) for the whole web app. **Don't
+run a job that takes seconds every 10 min, vs ~50 MB (PSS) for the whole web app. **Don't
 reintroduce always-on async machinery** (broker/worker/Redis); if a new background job appears,
 make it another ephemeral scheduled command.
 
@@ -427,7 +436,8 @@ load-bearing facts:
   `RestartPolicy` (crashed connector restarts in place; exit 0 ignored).
 - **Cost frugality is a design constraint** (~$17/mo total; it was $41 before the ALB was
   removed): smallest Fargate size (0.25 vCPU / 512 MB — the app runs at ~84 MB with 1
-  gunicorn worker), momentum every 30 min (each tick is a billed ephemeral task), multi-stage
+  gunicorn worker), momentum every 10 min (each tick is a billed ephemeral task — see the cost
+  trade-off note in ci/infra/README.md's changelog), multi-stage
   slim image (291 MB, was 1.15 GB → 564 MB → 291 MB after trimming deps: no drf-yasg/geoip2+aiohttp/
   Pillow/Faker/geonamescache/humanize in prod, botocore pruned to s3-only, .dockerignore keeps
   .git out — Fargate bills from pull start, and momentum pays that pull

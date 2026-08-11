@@ -67,4 +67,16 @@ class ConfirmSerializer(serializers.Serializer):
     height = serializers.IntegerField(min_value=0, default=0)
     target_color = serializers.CharField(required=False, allow_blank=True, default="161c1e", max_length=250)
     is_nsfw = serializers.BooleanField(default=False)
+    # DELIBERATE user choice at attach time — distinct from is_nsfw (client-
+    # detected). Can also be flipped later, post-publish, via the dedicated
+    # ThreadFilesViewSet.spoiler action.
+    is_spoiler = serializers.BooleanField(default=False)
     metadata = serializers.DictField(required=False, default=dict)
+
+
+class SpoilerToggleSerializer(serializers.Serializer):
+    """Validates the post-hoc spoiler-toggle request — re-marking an
+    ALREADY-confirmed, already-published file, at any point afterward."""
+
+    uid = serializers.CharField(max_length=12, help_text="ThreadFile uid.")
+    is_spoiler = serializers.BooleanField()

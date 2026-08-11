@@ -81,6 +81,23 @@ class Command(BaseCommand):
             options["min_age_hours"],
         )
 
+        # Snap threads (Thread.is_snap): self-delete 24h after creation.
+        # Every READ path already hides an expired thread instantly and
+        # precisely (the existing expire_date query filters, unchanged) —
+        # this pre-pass is only what makes the ROW eventually go away too.
+        # It just flips is_active=False (mirrors Thread.disable(), no
+        # cascades yet) so the expired snap thread becomes ordinary
+        # GC-eligible input to the SAME loop below, on a LATER run once it
+        # clears --min-age-hours — reusing 100% of the existing storage
+        # cleanup/batching machinery instead of a second, parallel deletion
+        # path. No new scheduled job: this command already runs on its own
+        # external schedule.
+        expired_snap_count = Thread.objects.filter(
+            is_snap=True, is_active=True, expire_date__lt=timezone.now()
+        ).update(is_active=False)
+        if expired_snap_count:
+            LOGGER.info("purge_inactive: deactivated %s expired snap thread(s).", expired_snap_count)
+
         total_selected = 0
         total_deleted = 0
         doomed_keys = []

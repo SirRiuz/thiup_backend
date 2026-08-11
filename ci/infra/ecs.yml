@@ -51,10 +51,10 @@ Parameters:
 
   MomentumScheduleExpression:
     Type: String
-    Default: "rate(30 minutes)"
+    Default: "rate(10 minutes)"
     Description: >
       How often the momentum recompute runs (EventBridge Scheduler). Default is
-      every 30 minutes (each tick is a billed ephemeral Fargate task, so the
+      every 10 minutes (each tick is a billed ephemeral Fargate task, so the
       cadence is a direct cost knob); FlexibleTimeWindow is OFF so it fires on
       time.
 
@@ -736,7 +736,7 @@ Resources:
             - !Ref ServiceSecurityGroup
 
   # ---- Momentum recompute: EventBridge Scheduler -> ephemeral Fargate task ----
-  # Replaces the old Celery beat + RabbitMQ. Every 30 min the scheduler launches
+  # Replaces the old Celery beat + RabbitMQ. Every 10 min the scheduler launches
   # a ONE-OFF task from the SAME task definition as the web service, overriding
   # the command to run `python manage.py recompute_momentum`. Because the image
   # tag is mutable (e.g. :test) and Fargate pulls the image fresh on every task
@@ -778,7 +778,7 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${AWS::StackName}-momentum"
-      Description: Recompute For You momentum every 30 min (ephemeral Fargate task).
+      Description: Recompute For You momentum every 10 min (ephemeral Fargate task).
       ScheduleExpression: !Ref MomentumScheduleExpression
       ScheduleExpressionTimezone: UTC
       State: ENABLED

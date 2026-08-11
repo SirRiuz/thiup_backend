@@ -48,6 +48,18 @@ server {
         alias /app/media/;
         expires 7d;
         add_header Cache-Control "public";
+        # Local-dev-only CORS: the frontend (localhost:3000) needs to `fetch()`
+        # these bytes itself (media viewer download/copy-to-clipboard) — a
+        # plain <img>/<video> src never needed this, but fetch() does, and
+        # without this header the browser blocks reading the response even
+        # though the request itself succeeds (0 findable in a Django view,
+        # this is purely a response-header gate). Public, unauthenticated
+        # files — a wildcard origin is fine, no credentials are ever sent
+        # here. `always` so it's sent on error responses (e.g. 404) too, not
+        # just 2xx (nginx's add_header default). Prod never hits this file
+        # (USE_AWS_STORAGE_SYSTEM=true there; media is served by S3/R2/CDN,
+        # whose own CORS policy is configured separately, outside this repo).
+        add_header 'Access-Control-Allow-Origin' '*' always;
     }
 
     location / {

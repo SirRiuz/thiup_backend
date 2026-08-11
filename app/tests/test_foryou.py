@@ -1,7 +1,9 @@
 # Python
 import base64
 import json
+import math
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 # Libs
 from Crypto.Cipher import AES
@@ -101,8 +103,8 @@ class RecomputeMomentumTest(TestCase):
 
     def test_counting_rules_and_formula(self):
         """
-        Author excluded from all signals, commenters DISTINCT,
-        author dialogue counted, and momentum = points/(age+2)^1.5.
+        Author excluded from all signals, commenters DISTINCT, author
+        dialogue counted, and momentum = freshness × (1 + engagement_boost).
         """
         thread = make_thread(self.author, age_hours=10)
 
@@ -130,12 +132,17 @@ class RecomputeMomentumTest(TestCase):
         self.assertEqual(thread.unique_reactors_count, 2)
         self.assertEqual(thread.unique_commenters_count, 2)
 
-        # points = 2 + 2*3 + 1*5 = 13 ; momentum = 13 / (10+2)^1.5
-        expected = 13 / ((10 + 2) ** 1.5)
+        # points = 2 + 2*3 + 1*5 = 13
+        # freshness = e^(-10/8) ; engagement_boost = 0.6 * ln(1+13)
+        # momentum = freshness * (1 + engagement_boost)
+        freshness = math.exp(-10 / 8)
+        expected = freshness * (1 + 0.6 * math.log1p(13))
         self.assertAlmostEqual(thread.momentum_score, expected, places=3)
 
-    def test_author_talking_alone_counts_zero(self):
-        """A thread where only the author talks/reacts => 0 in everything."""
+    def test_author_talking_alone_gets_freshness_only(self):
+        """A thread where only the author talks/reacts => 0 engagement, but
+        still a real momentum from freshness alone (freshness-first design:
+        a post doesn't need engagement to have SOME visibility on arrival)."""
         thread = make_thread(self.author, age_hours=5)
         self.react(thread, self.author)
         own_comment = make_thread(self.author, sub=thread)
@@ -146,7 +153,9 @@ class RecomputeMomentumTest(TestCase):
 
         self.assertEqual(thread.unique_reactors_count, 0)
         self.assertEqual(thread.unique_commenters_count, 0)
-        self.assertEqual(thread.momentum_score, 0)
+        # points=0 => engagement_boost = 0.6*ln(1) = 0 => momentum = freshness.
+        expected = math.exp(-5 / 8)
+        self.assertAlmostEqual(thread.momentum_score, expected, places=3)
 
     def test_active_window_skips_old_posts(self):
         """Posts outside the --days window are not recalculated."""
@@ -255,7 +264,7 @@ class ForYouViewTest(TestCase):
     def test_threshold_and_momentum_ordering(self):
         """
         With >= PAGE_SIZE posts meeting the threshold: an old post with no
-        interaction does NOT enter, a new one (<2h) DOES (grace), and the
+        interaction does NOT enter, a new one (<6h) DOES (grace), and the
         one with the highest momentum comes first.
         """
         # PAGE_SIZE+1 posts with 1 commenter each (they meet the threshold).
@@ -265,14 +274,14 @@ class ForYouViewTest(TestCase):
             make_thread(self.user_b, sub=thread)
             qualifying.append(thread)
 
-        # The most recent of the qualifying ones dominates by decay: same
-        # numerator, lower age => higher momentum.
+        # The most recent of the qualifying ones dominates: same points,
+        # lower age => higher freshness => higher momentum.
         hot = make_thread(self.author, age_hours=3, text="hot")
         make_thread(self.user_b, sub=hot)
 
-        # Old (>2h) with no interaction: must NOT enter.
-        stale = make_thread(self.author, age_hours=10, text="stale")
-        # New (<2h) with no interaction: DOES enter (grace window).
+        # Old (>6h) with no interaction: must NOT enter.
+        stale = make_thread(self.author, age_hours=30, text="stale")
+        # New (<6h) with no interaction: DOES enter (grace window).
         fresh = make_thread(self.author, age_hours=1, text="fresh")
 
         call_command("recompute_momentum")
@@ -336,7 +345,8 @@ class ForYouPersonalizedTest(TestCase):
             tag_thread(thread, tag)
         return thread
 
-    def test_mix_is_momentum_ordered_without_duplicates(self):
+    @patch("app.rest.threads.foryou_jitter", return_value=1.0)
+    def test_mix_is_momentum_ordered_without_duplicates(self, _mock_jitter):
         """
         STEP 1 + STEP 4 of the algorithm: the candidate composition is
         70/30 (user tags + global discovery), but the feed ORDER is
@@ -670,7 +680,8 @@ class ForYouAffinityBoostTest(TestCase):
             tag_thread(thread, name)
         return thread
 
-    def test_affinity_boost_reorders_the_top(self):
+    @patch("app.rest.threads.foryou_jitter", return_value=1.0)
+    def test_affinity_boost_reorders_the_top(self, _mock_jitter):
         """
         A post with 3 matching tags and LESS base momentum beats the
         global top (×2.05); with 1 tag (×1.35) it doesn't make it. The
@@ -881,11 +892,14 @@ class SearchTopOrderingTest(TestCase):
         return decode_body(r)
 
     def test_top_orders_by_momentum_latest_chronological_no_filter(self):
-        # 3 posts que coinciden con el término. 'old' es el más nuevo
-        # (más arriba en latest) pero sin interacción → momentum 0;
-        # 'hot' es más viejo pero con actividad → más momentum.
+        # 3 posts que coinciden con el término. Bajo el modelo freshness-first
+        # ("hot" solo le gana a "old" con freshness cercana + interacción real
+        # — un gap de horas grande ya no se remonta con puntos): 'old' es el
+        # más nuevo (más arriba en latest) y sin interacción, pero 'hot' está
+        # casi tan fresco Y con actividad → más momentum que old; 'quiet' es
+        # el más viejo de los tres y sin interacción → el de menor momentum.
         old = make_thread(self.author, age_hours=1, text="lluvia hoy")
-        hot = make_thread(self.author, age_hours=10, text="lluvia fuerte")
+        hot = make_thread(self.author, age_hours=2, text="lluvia fuerte")
         make_thread(self.user_b, sub=hot)  # comentarista → momentum
         quiet = make_thread(self.author, age_hours=5, text="lluvia ayer")
 
@@ -1040,15 +1054,19 @@ class SearchMediaTest(TestCase):
         self.assertEqual(body["results"][0]["media_count"], 1)
 
     def test_media_ordered_by_parent_momentum(self):
+        # Freshness-first: a big age gap can't be recovered by engagement
+        # alone (see test_top_orders_by_momentum_latest_chronological_no_filter's
+        # comment) — hot needs to stay close in age to quiet for its
+        # engagement to actually win the top spot.
         quiet = make_thread(self.author, age_hours=1, text="lluvia hoy")
         quiet_file = make_file(quiet, tag="quiet")
-        hot = make_thread(self.author, age_hours=10, text="lluvia fuerte")
+        hot = make_thread(self.author, age_hours=2, text="lluvia fuerte")
         hot_file = make_file(hot, tag="hot")
         make_thread(self.viewer, sub=hot)  # commenter → momentum
         call_command("recompute_momentum")
 
         body = self.search("lluvia")
-        # hot is older but has momentum → its file leads the gallery.
+        # hot is slightly older but has momentum → its file leads the gallery.
         self.assertEqual(
             [i["uid"] for i in body["results"]],
             [hot_file.uid, quiet_file.uid],

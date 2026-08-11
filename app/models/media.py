@@ -49,6 +49,16 @@ class ThreadFile(BaseModel):
         help_text="Marked NSFW by the client-side detector (informational).",
     )
 
+    # DELIBERATE user choice (never auto-detected), distinct from is_nsfw:
+    # the uploader marks their own image/video as a spoiler and can
+    # re-toggle it anytime — at confirm time (app/rest/thread_files.py) or
+    # later via the dedicated toggle action, both mask-owned.
+    is_spoiler = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="User-marked spoiler — deliberately hidden, distinct from the automatic is_nsfw flag.",
+    )
+
     # CONFIGURATION metadata (NOT EXIF): the compression + NSFW attributes the
     # frontend computed and sent — including dimensions and dominant color, which
     # are NO LONGER dedicated columns. Stored verbatim after a light key
@@ -81,6 +91,18 @@ class ThreadFile(BaseModel):
         default="",
         help_text="Full public URL of the object (client-facing).",
     )
+
+    class Meta:
+        # Neither app/methods/threads.py's with_card_relations prefetch nor
+        # ThreadSerializer's fallback query declares its own .order_by() —
+        # without a default here, Postgres gives NO ordering guarantee for
+        # an unordered SELECT, and a plain UPDATE (e.g. the spoiler toggle,
+        # app/rest/thread_files.py's spoiler action) can shift a row's
+        # physical position, visibly reordering the media array on the next
+        # read. create_at is set once at upload and never touched by that
+        # toggle; id (UUID, unique but non-monotonic) only breaks ties for
+        # same-instant uploads — it doesn't drive the primary order.
+        ordering = ["create_at", "id"]
 
     def __str__(self) -> str:
         return self.uid

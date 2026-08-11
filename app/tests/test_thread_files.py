@@ -9,6 +9,7 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
 # Django
+from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 
 # Models
@@ -20,6 +21,7 @@ client = Client()
 
 PRESIGN_URL = "/thread-files/presign/"
 CONFIRM_URL = "/thread-files/confirm/"
+SPOILER_URL = "/thread-files/spoiler/"
 
 
 def decode_body(response):
@@ -278,6 +280,94 @@ class ThreadFileConfirmTest(TestCase):
         )
 
         response = post(CONFIRM_URL, self._confirm_body(uid="otherfile123"))
+        self.assertEqual(response.status_code, 404)
+
+    @mock.patch(GET_BACKEND, return_value=FakeBackend(exists=True))
+    def test_confirm_stores_is_spoiler(self, _backend):
+        # MaskMiddleware caches request.mask by hash (60s TTL) — since every
+        # test in this file shares REQUESTER_HASH, a mask cached by a
+        # PREVIOUS test's now-rolled-back row can leak in here otherwise.
+        cache.clear()
+        # Deliberate user choice at attach time — distinct from is_nsfw
+        # (client-detected). Defaults False when omitted.
+        response = post(CONFIRM_URL, self._confirm_body(is_spoiler=True))
+
+        self.assertEqual(response.status_code, 200)
+        body = decode_body(response)
+        self.assertTrue(body["is_spoiler"])
+        self.pending.refresh_from_db()
+        self.assertTrue(self.pending.is_spoiler)
+
+
+@override_settings(ENCRYPTED_RESPONSE=False, SINGLE_REQUEST_PROTECT=False)
+class ThreadFileSpoilerToggleTest(TestCase):
+    """Re-toggling spoiler on an ALREADY-published file, anytime after
+    confirm — independent of is_nsfw, same ownership boundary as confirm."""
+
+    def setUp(self):
+        # Same precaution as test_thread_edit.py: the mask cache (60s TTL)
+        # outlives each test's rolled-back transaction in the same process.
+        cache.clear()
+        self.mask = Mask.objects.create(hash=REQUESTER_HASH, country_code="CO")
+        self.thread = Thread.objects.create(content={}, text="hello", mask=self.mask)
+        self.file = ThreadFile.objects.create(
+            uid="spoilerfile1",
+            file_key="m/aa/aa/spoiler.webp",
+            file_url="https://cdn.test/m/aa/aa/spoiler.webp",
+            mask=self.mask,
+            thread=self.thread,
+            is_active=True,
+            is_spoiler=False,
+        )
+
+    def test_toggle_spoiler_on_as_owner(self):
+        response = post(SPOILER_URL, {"uid": self.file.uid, "is_spoiler": True})
+
+        self.assertEqual(response.status_code, 200)
+        body = decode_body(response)
+        self.assertTrue(body["is_spoiler"])
+        self.file.refresh_from_db()
+        self.assertTrue(self.file.is_spoiler)
+
+    def test_toggle_spoiler_off_as_owner(self):
+        self.file.is_spoiler = True
+        self.file.save(update_fields=["is_spoiler"])
+
+        response = post(SPOILER_URL, {"uid": self.file.uid, "is_spoiler": False})
+
+        self.assertEqual(response.status_code, 200)
+        self.file.refresh_from_db()
+        self.assertFalse(self.file.is_spoiler)
+
+    def test_toggle_spoiler_rejects_non_owner(self):
+        other_mask = Mask.objects.create(hash="hash-other-spoiler", country_code="CO")
+        other_thread = Thread.objects.create(content={}, text="x", mask=other_mask)
+        other_file = ThreadFile.objects.create(
+            uid="spoilerfile2",
+            file_key="m/bb/bb/spoiler2.webp",
+            file_url="https://cdn.test/m/bb/bb/spoiler2.webp",
+            mask=other_mask,
+            thread=other_thread,
+            is_active=True,
+        )
+
+        response = post(SPOILER_URL, {"uid": other_file.uid, "is_spoiler": True})
+
+        self.assertEqual(response.status_code, 404)
+        other_file.refresh_from_db()
+        self.assertFalse(other_file.is_spoiler)
+
+    def test_toggle_spoiler_rejects_detached_pending_file(self):
+        pending = ThreadFile.objects.create(
+            uid="spoilerfile3",
+            file_key="m/cc/cc/spoiler3.webp",
+            mask=self.mask,
+            thread=None,
+            is_active=False,
+        )
+
+        response = post(SPOILER_URL, {"uid": pending.uid, "is_spoiler": True})
+
         self.assertEqual(response.status_code, 404)
 
 

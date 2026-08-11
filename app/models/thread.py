@@ -81,14 +81,20 @@ class Thread(BaseModel):
     )
 
     # ── Momentum engine (For You) ────────────────────────────────────────
-    # Precomputed by `manage.py recompute_momentum` (cron every 5-10 min).
+    # Precomputed by `manage.py recompute_momentum` (cron every 10 min).
     # The For You feed NEVER computes the formula per request: it only reads
     # these indexed fields (WHERE on the counters + ORDER BY momentum_score).
+    #
+    # Freshness-first, engagement-modulated: freshness is the ONLY age-based
+    # term (a brand-new post ranks on arrival, no engagement required);
+    # engagement multiplies on top, log-scaled (diminishing returns).
     #
     #   points = unique_reactors + unique_commenters*3
     #          + commenters_replied_by_author*5 [+ log10(views+1)*2 — no
     #            views counter in v1, term omitted]
-    #   momentum_score = points / (age_hours + 2)^1.5
+    #   freshness = e^(-age_hours / MOMENTUM_FRESH_TAU_HOURS)   # TAU=8h
+    #   engagement_boost = MOMENTUM_ENGAGE_K * ln(1 + points)   # K=0.6
+    #   momentum_score = freshness * (1 + engagement_boost)
     #
     # Golden rule: each signal counts DISTINCT MASKS and excludes the author.
     momentum_score = models.FloatField(
@@ -101,6 +107,51 @@ class Thread(BaseModel):
 
     unique_commenters_count = models.PositiveIntegerField(
         default=0, db_index=True, help_text="Distinct masks that commented, excluding the author."
+    )
+
+    # Set explicitly by the edit endpoint (app/rest/threads.py: edit), never
+    # derived in save() — a future unrelated write must never silently stamp
+    # it. NULL means never edited. Distinct from `update_at` (auto_now=True):
+    # that column is also touched by unrelated writes (e.g. moderation
+    # shadowban), so it cannot double as the "this content was edited" signal.
+    edited_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text="Timestamp of the last content edit (text/media). NULL if never edited.",
+    )
+
+    # Excluded from feed/search (list, foryou/closeyou, search) but NEVER
+    # from retrieve/responses — a private thread stays fully viewable by
+    # anyone who has its direct /p/:uid link, it just doesn't surface
+    # anywhere discoverable. Toggleable anytime via the edit endpoint
+    # (app/rest/serializers/thread_edit_serializer.py).
+    is_private = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Excluded from feed/search — viewable only via direct URL.",
+    )
+
+    # A "snap" thread self-deletes 24h after creation: set ONLY at creation
+    # time (app/rest/threads.py: create), by computing expire_date = now +
+    # 24h in the same call — never exposed as a writable ThreadEditSerializer
+    # field, so it can never change after posting (see that serializer's
+    # closed field list). Unlike is_private, a snap thread stays indexable
+    # while it's alive (it doesn't touch visibility/is_private at all) — its
+    # disappearance is driven purely by the existing expire_date filtering
+    # every read path already applies, plus purge_inactive's GC sweep.
+    is_snap = models.BooleanField(
+        default=False,
+        help_text="Self-deletes 24h after creation (via expire_date). Set only at creation, never editable.",
+    )
+
+    # Owner-controlled: reject new replies while True. Enforced server-side
+    # in app/rest/threads.py's create() (the real boundary) — the frontend
+    # hiding the reply box is only a courtesy, not the security check.
+    # Toggleable anytime via the edit endpoint, same as is_private.
+    replies_disabled = models.BooleanField(
+        default=False,
+        help_text="Owner turned off commenting on this thread.",
     )
 
     def save(self, *args, **kwargs):
