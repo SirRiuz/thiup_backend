@@ -11,6 +11,7 @@ from django.utils import timezone
 # Models
 from app.models.mask import Mask
 from app.models.thread import Thread
+from app.tests.test_foryou import decode_body
 
 client = Client()
 
@@ -49,14 +50,14 @@ class ThreadPrivacySnapRepliesTest(TransactionTestCase):
     def test_private_thread_created_flag_and_retrieve_still_works(self):
         response = create_thread(text="privacytestunique123", is_private=True)
         self.assertEqual(response.status_code, 201)
-        body = response.json()
+        body = decode_body(response)
         self.assertTrue(body["is_private"])
 
         # Direct-link retrieve must NOT be gated by is_private — that's the
         # whole point of "private", unlike visibility=False.
         retrieve = client.get(f"/threads/{body['uid']}/")
         self.assertEqual(retrieve.status_code, 200)
-        self.assertTrue(retrieve.json()["is_private"])
+        self.assertTrue(decode_body(retrieve)["is_private"])
 
     def test_private_thread_excluded_from_list(self):
         create_thread(text="privacylistunique456", is_private=True)
@@ -65,7 +66,7 @@ class ThreadPrivacySnapRepliesTest(TransactionTestCase):
 
         listing = client.get("/threads/")
         self.assertEqual(listing.status_code, 200)
-        texts = [r["text"] for r in listing.json()["results"]]
+        texts = [r["text"] for r in decode_body(listing)["results"]]
         self.assertNotIn("privacylistunique456", texts)
         self.assertIn("publiclistunique456", texts)
 
@@ -74,19 +75,19 @@ class ThreadPrivacySnapRepliesTest(TransactionTestCase):
 
         results = client.get("/search/?q=privacysearchunique789")
         self.assertEqual(results.status_code, 200)
-        texts = [r.get("text") for r in results.json().get("results", [])]
+        texts = [r.get("text") for r in decode_body(results).get("results", [])]
         self.assertNotIn("privacysearchunique789", texts)
 
     def test_private_thread_editable_back_to_public(self):
         created = create_thread(text="toggleprivacyunique", is_private=True)
-        uid = created.json()["uid"]
+        uid = decode_body(created)["uid"]
 
         toggled = edit_thread(uid, text="toggleprivacyunique", is_private=False)
         self.assertEqual(toggled.status_code, 200)
-        self.assertFalse(toggled.json()["is_private"])
+        self.assertFalse(decode_body(toggled)["is_private"])
 
         listing = client.get("/threads/")
-        texts = [r["text"] for r in listing.json()["results"]]
+        texts = [r["text"] for r in decode_body(listing)["results"]]
         self.assertIn("toggleprivacyunique", texts)
 
     # ── Snap threads ─────────────────────────────────────────────────
@@ -94,7 +95,7 @@ class ThreadPrivacySnapRepliesTest(TransactionTestCase):
     def test_snap_thread_sets_expiry_roughly_24h_out(self):
         response = create_thread(is_snap=True)
         self.assertEqual(response.status_code, 201)
-        body = response.json()
+        body = decode_body(response)
         self.assertTrue(body["is_snap"])
         self.assertIsNotNone(body["expires_at_iso"])
 
@@ -105,7 +106,7 @@ class ThreadPrivacySnapRepliesTest(TransactionTestCase):
 
     def test_snap_flag_is_immutable_via_edit(self):
         created = create_thread(is_snap=True)
-        uid = created.json()["uid"]
+        uid = decode_body(created)["uid"]
         thread = Thread.objects.get(uid=uid)
         original_expire = thread.expire_date
 
@@ -120,7 +121,7 @@ class ThreadPrivacySnapRepliesTest(TransactionTestCase):
 
     def test_purge_inactive_deactivates_expired_snap_thread(self):
         created = create_thread(is_snap=True)
-        uid = created.json()["uid"]
+        uid = decode_body(created)["uid"]
         thread = Thread.objects.get(uid=uid)
         # Force it into the past directly — no need to wait 24h in a test.
         thread.expire_date = timezone.now() - timezone.timedelta(hours=1)
@@ -135,15 +136,15 @@ class ThreadPrivacySnapRepliesTest(TransactionTestCase):
 
     def test_reply_rejected_when_parent_disabled_replies(self):
         parent = create_thread(text="repliesoffparent", replies_disabled=True)
-        parent_uid = parent.json()["uid"]
+        parent_uid = decode_body(parent)["uid"]
 
         reply = create_thread(text="a reply", sub=parent_uid)
         self.assertEqual(reply.status_code, 400)
-        self.assertEqual(reply.json().get("detail"), "replies_disabled")
+        self.assertEqual(decode_body(reply).get("detail"), "replies_disabled")
 
     def test_reply_allowed_after_re_enabling(self):
         parent = create_thread(text="repliesreenableparent", replies_disabled=True)
-        parent_uid = parent.json()["uid"]
+        parent_uid = decode_body(parent)["uid"]
 
         edit_thread(parent_uid, text="repliesreenableparent", replies_disabled=False)
 
@@ -152,8 +153,8 @@ class ThreadPrivacySnapRepliesTest(TransactionTestCase):
 
     def test_replies_disabled_exposed_and_editable(self):
         created = create_thread(text="repliesflagparent")
-        uid = created.json()["uid"]
-        self.assertFalse(created.json()["replies_disabled"])
+        uid = decode_body(created)["uid"]
+        self.assertFalse(decode_body(created)["replies_disabled"])
 
         toggled = edit_thread(uid, text="repliesflagparent", replies_disabled=True)
-        self.assertTrue(toggled.json()["replies_disabled"])
+        self.assertTrue(decode_body(toggled)["replies_disabled"])

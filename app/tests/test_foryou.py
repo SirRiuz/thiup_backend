@@ -539,7 +539,8 @@ class ForYouRegionBoostTest(TestCase):
         thread.refresh_from_db()
         return thread
 
-    def test_region_boost_reorders_without_mutating_base(self):
+    @patch("app.rest.threads.foryou_jitter", return_value=1.0)
+    def test_region_boost_reorders_without_mutating_base(self, _mock_jitter):
         """
         A post from the reader's region with LESS base momentum beats one
         from another region with more — but the served momentum_score
