@@ -199,6 +199,15 @@ if CAPTCHA_PROTECT and not (CAP_SITE_KEY and CAP_SECRET):
         "CAPTCHA_PROTECT=True requires CAP_SITE_KEY and CAP_SECRET (create them in the Cap dashboard)."
     )
 
+# Retention for Notification/EngagementDaily — age-based hard deletes bolted
+# onto purge_inactive's existing every-2-days cron (see that command).
+# Neither model is ever soft-deleted by user action, so they sit OUTSIDE
+# PURGE_MODELS (which only sweeps rows already is_active=False). Notifications
+# stay short (privacy — no ever-growing interaction history); engagement
+# rollups stay longer since they exist to feed future trend analytics.
+NOTIFICATION_RETENTION_DAYS = config("NOTIFICATION_RETENTION_DAYS", cast=int, default=30)
+ENGAGEMENT_RETENTION_DAYS = config("ENGAGEMENT_RETENTION_DAYS", cast=int, default=90)
+
 # Seed for the gateway's ROTATING PATH (/{hash}/). Dedicated to deriving the
 # path — it does NOT sign anything critical (that is API_SECRET_KEY). It also
 # ships in the frontend bundle → it is PUBLIC obfuscation, NOT a secret, and is
@@ -411,6 +420,10 @@ REST_FRAMEWORK = {
         "feed": config("THROTTLE_FEED", default="60/min"),
         # Profile reads (/me/, /users/<hash>/): annotated Count/Sum joins.
         "profile": config("THROTTLE_PROFILE", default="120/min"),
+        # Batch engagement ingestion (/batch/): fire-and-forget telemetry,
+        # a handful of flushes per session (interval tick + tab-hide), not
+        # per-event — the 200-event/request cap already bounds payload size.
+        "batch_ingest": config("THROTTLE_BATCH", default="30/min"),
     },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "DEFAULT_RENDERER_CLASSES": [

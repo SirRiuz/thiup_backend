@@ -12,11 +12,31 @@ from app.methods.presence import mark_online
 from app.models.mask import Mask
 from app.utils.client import get_client_ip
 
-# A Mask row is immutable except for country_code, so a short-lived cached
-# copy is safe and saves the get_or_create SELECT before EVERY view — with a
-# remote DB that round trip is pure latency. LocMem (per-process), same TTL
-# as the presence window; a country change still writes through immediately.
+# A Mask row is treated as immutable except for country_code (handled
+# inline below) and unread_notifications_count (mutated OUTSIDE this
+# middleware's request — by the notification signals and mark-read — so it
+# can't self-correct on the next request the way country_code does). A
+# short-lived cached copy is otherwise safe and saves the get_or_create
+# SELECT before EVERY view — with a remote DB that round trip is pure
+# latency. LocMem (per-process), same TTL as the presence window.
 MASK_CACHE_TTL = 60
+
+
+def mask_cache_key(hash: str) -> str:
+    return f"mask:{hash}"
+
+
+def invalidate_mask_cache(hash: str) -> None:
+    """Drop the cached Mask instance so the next request re-fetches from DB.
+
+    Required after mutating any field on a Mask OTHER than country_code
+    from outside this middleware's own request/response cycle — otherwise
+    a stale cached copy keeps serving the old value for up to
+    MASK_CACHE_TTL seconds regardless of the DB write. Callers:
+    notification_signals.py (unread_notifications_count increment) and
+    NotificationsViewSet.mark_read (reset to 0).
+    """
+    cache.delete(mask_cache_key(hash))
 
 
 class MaskMiddleware:
@@ -37,7 +57,7 @@ class MaskMiddleware:
         country = get_country(address)
         request.mask = None
 
-        cache_key = f"mask:{hash}"
+        cache_key = mask_cache_key(hash)
         obj = cache.get(cache_key)
         if obj is None:
             obj, _ = Mask.objects.get_or_create(hash=hash)

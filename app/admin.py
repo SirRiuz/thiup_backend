@@ -14,6 +14,7 @@ from app.models.blocked_term import BlockedTerm
 from app.models.mask import Mask
 from app.models.media import ThreadFile
 from app.models.momentum_log import MomentumLog
+from app.models.notification import Notification
 from app.models.purge_log import PurgeLog
 from app.models.reaction import Reaction
 from app.models.reaction_relation import ReactionRelation
@@ -209,6 +210,27 @@ class ReactionRelationsAdmin(BaseModelAdmin):
         return obj.reaction.emoji
 
     reaction_prev.short_description = "reaction"
+
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    """
+    In-app notifications: NOT a BaseModel (no uid/is_active — see
+    app/models/notification.py), so this uses plain admin.ModelAdmin
+    instead of BaseModelAdmin. Add/edit is intentionally left ON: creating
+    a row here goes through Notification's own post_save signal
+    (app/signals/notification_signals.py::bump_unread_badge) exactly like
+    an organically-created one — the recipient's badge increments and their
+    cached Mask is invalidated the same way, so a hand-created row for
+    testing behaves identically to a real reaction/reply notification.
+    """
+
+    list_display = ("id", "recipient", "actor", "verb", "thread", "reaction", "is_read", "create_at")
+    list_filter = ("verb", "is_read")
+    search_fields = ("recipient__hash", "actor__hash", "thread__uid")
+    autocomplete_fields = ("recipient", "actor", "thread", "reaction")
+    readonly_fields = ("id", "create_at")
+    ordering = ("-create_at",)
 
 
 @admin.register(Tag)

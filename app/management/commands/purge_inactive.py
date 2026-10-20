@@ -4,6 +4,7 @@ import time
 from datetime import timedelta
 
 # Django
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
@@ -11,7 +12,9 @@ from django.utils import timezone
 # Module import (not the symbol): the backend is resolved at CALL time, so
 # late configuration and test patching of get_backend both take effect.
 from app.methods import storage_backends
+from app.models.engagement_daily import EngagementDaily
 from app.models.media import ThreadFile
+from app.models.notification import Notification
 from app.models.purge_log import PurgeLog
 from app.models.reaction_relation import ReactionRelation
 from app.models.report import Report
@@ -129,6 +132,31 @@ class Command(BaseCommand):
             # DB first, storage second: a storage hiccup leaves cheap orphaned
             # objects (logged inside delete_objects), never resurrected rows.
             removed = storage_backends.get_backend().delete_objects(doomed_keys) if doomed_keys else 0
+
+            # Age-based retention sweeps — deliberately OUTSIDE PURGE_MODELS:
+            # neither Notification nor EngagementDaily is ever soft-deleted by
+            # user action, so the is_active=False registry loop above never
+            # touches them. Two flat, unconditional single-statement deletes,
+            # kept out of total_selected/budget bookkeeping since they're
+            # unrelated to the --limit/cascade/storage machinery above.
+            notif_cutoff = timezone.now() - timedelta(days=settings.NOTIFICATION_RETENTION_DAYS)
+            notif_deleted, _ = Notification.objects.filter(create_at__lt=notif_cutoff).delete()
+            if notif_deleted:
+                breakdown["Notification"] = {"deleted": notif_deleted}
+                total_deleted += notif_deleted
+
+            engagement_cutoff = timezone.now().date() - timedelta(days=settings.ENGAGEMENT_RETENTION_DAYS)
+            engagement_deleted, _ = EngagementDaily.objects.filter(day__lt=engagement_cutoff).delete()
+            if engagement_deleted:
+                breakdown["EngagementDaily"] = {"deleted": engagement_deleted}
+                total_deleted += engagement_deleted
+
+            if notif_deleted or engagement_deleted:
+                LOGGER.info(
+                    "purge_inactive: retention — %s notification(s), %s engagement rollup(s) hard-deleted.",
+                    notif_deleted,
+                    engagement_deleted,
+                )
         except Exception as exc:
             duration_ms = int((time.monotonic() - started) * 1000)
             # .exception includes the full traceback in the log.
